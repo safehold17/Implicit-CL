@@ -1,0 +1,38 @@
+project_root: /home/chen/workspace/dcd-ctrlsim
+dcd_config_path: ${project_root}/cfgs/data
+
+# ctrl-sim 模型路径
+model_path: ${project_root}/checkpoints/model.ckpt
+
+# ========== Nocturne + CtRL-Sim 环境配置 ==========
+nocturne_env:
+  # 环境注册名称
+  env_name: "Nocturne-CtrlSim-Adversarial-v0"
+  
+  # 场景配置
+  scenario_index_path: ${project_root}/data/scenarios_index.json
+  scenario_data_dir: ${project_root}/data/nocturne_waymo/formatted_json_v2_no_tl_train
+  preprocess_dir: ${project_root}/data/preprocess
+  
+  # 对手配置
+  opponent_checkpoint: ${model_path}
+  opponent_k: 7  # 对手车辆数量（选择距离 ego 最近的 K 个）
+  
+  # 环境参数
+  max_episode_steps: 90
+  device: "cuda"
+  
+  # Adversary 配置（用于 PAIRED/ACCEL）
+  random_z_dim: 50  # 随机条件向量维度
+  
+  # 动态场景池
+  dynamic_scenario_pool: false
+  max_scenario_pool_size: 10000
+  
+  # 观测和动作维度（根据实际实现调整）
+  obs_dim: 128
+  action_dim: 2
+  
+  # Tilting 参数范围
+  tilt_range: [-25.0, 25.0]
+  tilt_mutation_std: 5.0
