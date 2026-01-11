@@ -218,13 +218,43 @@ class Evaluator(object):
 				print('Recording video!', flush=True)
 
 		if is_nocturne:
-			# Nocturne 环境需要额外配置参数
-			# 注意：gym_make 会使用注册时的默认参数,这里可以覆盖
+			# Nocturne 环境使用自定义视频录制（不依赖 gym render）
 			if record_video:
-				from gym.wrappers.monitor import Monitor
-				# 使用 kwargs 提供的路径，或回退到默认值
 				video_dir = kwargs.get('video_dir', 'videos/')
-				env = Monitor(env, video_dir, force=True)
+				# 使用简单的包装器来管理视频录制
+				original_env = env
+				
+				class VideoWrapper:
+					def __init__(self):
+						self.env = original_env
+						self.video_dir = video_dir
+						self.episode_count = 0
+						self.observation_space = original_env.observation_space
+						self.action_space = original_env.action_space
+					
+					def reset(self, **kw):
+						# 对于 Nocturne 环境，默认使用 reset_random()
+						if hasattr(self.env, 'reset_random') and not kw:
+							obs = self.env.reset_random()
+						else:
+							obs = self.env.reset(**kw)
+						name = f"episode_{self.episode_count:04d}"
+						self.env.start_recording(self.video_dir, name, fps=10, dpi=100)
+						return obs
+					
+					def step(self, action):
+						return self.env.step(action)
+					
+					def close(self):
+						if self.env.recording_video:
+							self.env.stop_recording()
+							self.episode_count += 1
+						self.env.close()
+					
+					def __getattr__(self, name):
+						return getattr(self.env, name)
+				
+				env = VideoWrapper()
 			return env
 
 		if is_multigrid and kwargs.get('use_global_policy'):

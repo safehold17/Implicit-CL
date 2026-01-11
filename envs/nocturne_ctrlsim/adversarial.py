@@ -12,6 +12,7 @@ import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Union
 
 from .level import ScenarioLevel
+from .video_recorder import NocturneVideoRecorder
 from util.build_scenario_index import ScenarioIndex
 from adapters.ctrl_sim import (
     CtrlSimOpponentAdapter,
@@ -229,6 +230,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # ========== 指标追踪 ==========
         self.reset_metrics()
+        
+        # ========== 视频录制 ==========
+        self.video_recorder: Optional[NocturneVideoRecorder] = None
+        self.recording_video = False
     
     # ========== Adversary 接口（PAIRED/ACCEL）==========
     
@@ -512,6 +517,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         2. 应用所有动作到 Nocturne 仿真
         3. 仿真步进
         4. 计算奖励和终止条件
+        5. 如果启用录制，捕获当前帧
         """
         self.current_step += 1
         
@@ -537,7 +543,15 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # 5. 仿真步进
         self.sim.step(self.dt)
         
-        # 5. 计算奖励和终止条件
+        # 6. 如果启用录制，捕获当前帧
+        if self.recording_video and self.video_recorder is not None:
+            self.video_recorder.capture_frame(
+                self.scenario,
+                self.vehicles,
+                highlight_vehicle_ids=[self.ego_vehicle.getID()] if self.ego_vehicle else None
+            )
+        
+        # 7. 计算奖励和终止条件
         obs = self._get_student_observation()
         reward = self._compute_reward()
         done = self._check_done()
@@ -853,11 +867,80 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def render(self, mode='human'):
         """渲染环境（可选）"""
-        # TODO: 实现 Nocturne 渲染
+        # 目前不支持实时渲染
+        # 使用 start_recording() / stop_recording() 进行视频录制
         pass
+    
+    def start_recording(self, output_dir: str, video_name: str, fps: int = 10, dpi: int = 100):
+        """
+        开始录制视频
+        
+        Args:
+            output_dir: 输出目录
+            video_name: 视频文件名（不含扩展名）
+            fps: 帧率
+            dpi: 分辨率
+        """
+        if self.video_recorder is None:
+            self.video_recorder = NocturneVideoRecorder(
+                output_dir=output_dir,
+                fps=fps,
+                dpi=dpi,
+                delete_images=True
+            )
+        
+        self.video_recorder.start_recording(video_name)
+        self.recording_video = True
+        
+        # 捕获第一帧（初始状态）
+        if self.scenario is not None and self.vehicles:
+            self.video_recorder.capture_frame(
+                self.scenario,
+                self.vehicles,
+                highlight_vehicle_ids=[self.ego_vehicle.getID()] if self.ego_vehicle else None
+            )
+    
+    def stop_recording(self, video_name: Optional[str] = None) -> Optional[str]:
+        """
+        停止录制并保存视频
+        
+        Args:
+            video_name: 视频文件名（如果与 start_recording 不同）
+        
+        Returns:
+            视频文件路径，如果没有录制则返回 None
+        """
+        if not self.recording_video or self.video_recorder is None:
+            return None
+        
+        self.recording_video = False
+        
+        try:
+            if video_name is None:
+                # 使用默认名称
+                if self.current_level:
+                    video_name = f"scenario_{self.current_level.scenario_id}"
+                else:
+                    video_name = "episode"
+            
+            video_path = self.video_recorder.save_video(video_name)
+            return video_path
+        except Exception as e:
+            print(f"Error saving video: {e}")
+            return None
     
     def close(self):
         """关闭环境"""
+        # 如果正在录制，先停止
+        if self.recording_video:
+            self.stop_recording()
+        
+        # 清理录制器
+        if self.video_recorder is not None:
+            self.video_recorder.close()
+            self.video_recorder = None
+        
+        # 清理 Nocturne 资源
         if self.sim is not None:
             # TODO: 清理 Nocturne 资源
             pass

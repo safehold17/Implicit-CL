@@ -287,6 +287,10 @@ class CtrlSimOpponentAdapter:
         Returns:
             actions: {veh_id: (acceleration, steering)} 动作字典
         """
+        # 边界情况: 没有车辆时直接返回空字典
+        if len(vehicles) == 0 or self._policy is None:
+            return {}
+        
         # 1. 更新 vehicle_data_dict（参考: policy_evaluator.py 第 516-524 行）
         self._vehicle_data_dict = self._update_vehicle_data_dict(
             t, vehicles, self._vehicle_data_dict
@@ -581,20 +585,30 @@ class CtrlSimOpponentAdapter:
         """
         # 获取所有车辆位置和存在状态
         veh_ids = list(vehicle_data_dict.keys())
+        num_vehicles = len(veh_ids)
+        
+        # 边界情况:没有车辆或只有一个车辆时,无法计算车-车距离
+        if num_vehicles == 0:
+            return vehicle_data_dict
+        
         all_x = np.array([vehicle_data_dict[v]["position"][t]['x'] for v in veh_ids])
         all_y = np.array([vehicle_data_dict[v]["position"][t]['y'] for v in veh_ids])
         all_existence = np.array([vehicle_data_dict[v]["existence"][t] for v in veh_ids])
         
-        # 计算车-车距离
-        ag_data = np.concatenate([
-            all_x[:, np.newaxis], 
-            all_y[:, np.newaxis], 
-            all_existence[:, np.newaxis]
-        ], axis=1)[:, np.newaxis, :]
-        
-        veh_veh_dist = self.dataset.compute_dist_to_nearest_vehicle_rewards(
-            ag_data, normalize=False
-        ) * all_existence[:, np.newaxis].astype(float)
+        # 计算车-车距离 (只有多于一个车辆时才计算)
+        if num_vehicles > 1:
+            ag_data = np.concatenate([
+                all_x[:, np.newaxis], 
+                all_y[:, np.newaxis], 
+                all_existence[:, np.newaxis]
+            ], axis=1)[:, np.newaxis, :]
+            
+            veh_veh_dist = self.dataset.compute_dist_to_nearest_vehicle_rewards(
+                ag_data, normalize=False
+            ) * all_existence[:, np.newaxis].astype(float)
+        else:
+            # 只有一个车辆,距离设为0
+            veh_veh_dist = np.zeros((1, 1))
         
         # 计算车-边界距离
         if len(self._road_edge_polylines) > 0:
