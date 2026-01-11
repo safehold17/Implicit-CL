@@ -32,8 +32,9 @@ class ScenarioLevel:
     veh_edge_tilt: float
 
     def __post_init__(self):
-        if self.seed < 0 or self.seed >= 2**24:
-            raise ValueError(f"seed must be in [0, 2**24), got {self.seed}")
+        # 验证 seed 为非负整数
+        if self.seed < 0:
+            raise ValueError(f"seed must be non-negative, got {self.seed}")
 
         for name, val in [
             ("goal_tilt", self.goal_tilt),

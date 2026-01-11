@@ -47,7 +47,7 @@ class DataBridge:
         self.dt = cfg.nocturne.dt
         self.steps = cfg.nocturne.steps
         
-        # 用于加载预处理数据
+        # For loading preprocessed data
         self._preprocessed_dset: Optional[RLWaymoDatasetCtRLSim] = None
         self._preprocessed_files_cache: Optional[List[str]] = None
     

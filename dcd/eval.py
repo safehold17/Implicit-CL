@@ -30,6 +30,7 @@ from envs.multigrid.fourrooms import *
 from envs.multigrid.mst_maze import *
 from envs.box2d import *
 from envs.bipedalwalker import *
+from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim 环境
 from envs.wrappers import VecMonitor, VecPreprocessImageWrapper, ParallelAdversarialVecEnv, \
 	MultiGridFullyObsWrapper, VecFrameStack, CarRacingWrapper
 from util import DotDict, str2bool, make_agent, create_parallel_env, is_discrete_actions
@@ -177,6 +178,7 @@ class Evaluator(object):
 
 		is_multigrid = env_name.startswith('MultiGrid')
 		is_car_racing = env_name.startswith('CarRacing')
+		is_nocturne = env_name.startswith('Nocturne')
 
 		if is_car_racing:
 			grayscale = kwargs.get('grayscale', False)
@@ -198,16 +200,27 @@ class Evaluator(object):
 				env = Monitor(env, "videos/", force=True)
 				print('Recording video!', flush=True)
 
-		if is_multigrid and kwargs.get('use_global_policy'):
-			env = MultiGridFullyObsWrapper(env, is_adversarial=False)
-
+	if is_nocturne:
+		# Nocturne 环境需要额外配置参数
+		# 注意：gym_make 会使用注册时的默认参数，这里可以覆盖
+		if record_video:
+			from gym.wrappers.monitor import Monitor
+			# 使用 kwargs 提供的路径，或回退到默认值
+			video_dir = kwargs.get('video_dir', 'videos/')
+			env = Monitor(env, video_dir, force=True)
 		return env
+
+	if is_multigrid and kwargs.get('use_global_policy'):
+		env = MultiGridFullyObsWrapper(env, is_adversarial=False)
+
+	return env
 
 	@staticmethod
 	def wrap_venv(venv, env_name, device='cpu'):
 		is_multigrid = env_name.startswith('MultiGrid') or env_name.startswith('MiniGrid')
 		is_car_racing = env_name.startswith('CarRacing')
 		is_bipedal = env_name.startswith('BipedalWalker')
+		is_nocturne = env_name.startswith('Nocturne')
 
 		obs_key = None
 		scale = None
@@ -218,7 +231,7 @@ class Evaluator(object):
 		# Channels first
 		transpose_order = [2,0,1]
 
-		if is_bipedal:
+		if is_bipedal or is_nocturne:
 			transpose_order = None
 
 		venv = VecMonitor(venv=venv, filename=None, keep_buf=100)

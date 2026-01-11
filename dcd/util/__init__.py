@@ -144,6 +144,19 @@ def _make_env(args):
     if args.singleton_env:
         env_kwargs.update({
             'fixed_environment': True})
+    
+    # ✅ 新增：Nocturne 环境配置
+    if args.env_name.startswith('Nocturne'):
+        env_kwargs.update({
+            'scenario_index_path': getattr(args, 'scenario_index_path', 'data/scenarios_index.json'),
+            'opponent_checkpoint': getattr(args, 'opponent_checkpoint', 'checkpoints/model.ckpt'),
+            'scenario_data_dir': getattr(args, 'scenario_data_dir', 'data/nocturne_waymo/formatted_json_v2_no_tl_train'),
+            'preprocess_dir': getattr(args, 'preprocess_dir', 'data/preprocess'),
+            'max_episode_steps': getattr(args, 'max_episode_steps', 90),
+            'device': getattr(args, 'device', 'cuda'),
+        })
+        return gym_make(args.env_name, **env_kwargs)
+
     if args.env_name.startswith('CarRacing'):
         env_kwargs.update({
             'n_control_points': args.num_control_points,
@@ -185,12 +198,25 @@ def create_parallel_env(args, adversary=True):
     is_multigrid = args.env_name.startswith('MultiGrid')
     is_car_racing = args.env_name.startswith('CarRacing')
     is_bipedalwalker = args.env_name.startswith('BipedalWalker')
+    is_nocturne = args.env_name.startswith('Nocturne')
+
+    # ⚠️ 警告：GPU 内存风险
+    if is_nocturne and getattr(args, 'device', 'cpu') == 'cuda' and args.num_processes > 1:
+        print(f"WARNING: Running {args.num_processes} Nocturne environments on GPU may cause OOM.")
 
     make_fn = lambda: _make_env(args)
 
     venv = ParallelAdversarialVecEnv([make_fn]*args.num_processes, adversary=adversary)
     venv = VecMonitor(venv=venv, filename=None, keep_buf=100)
-    venv = VecNormalize(venv=venv, ob=False, ret=args.normalize_returns)
+    
+    # ✅ 改进：Nocturne 观测空间可能需要归一化
+    # BipedalWalker 使用 ob=False，但 Nocturne 的 128 维向量可能需要 ob=True
+    # 根据实际测试结果调整
+    normalize_obs = False
+    if is_nocturne and getattr(args, 'normalize_observations', False):
+        normalize_obs = True
+    
+    venv = VecNormalize(venv=venv, ob=normalize_obs, ret=args.normalize_returns)
 
     obs_key = None
     scale = None
@@ -202,13 +228,13 @@ def create_parallel_env(args, adversary=True):
     if is_car_racing:
         ued_venv = VecPreprocessImageWrapper(venv=venv) # move to tensor
 
-    if is_bipedalwalker:
+    if is_bipedalwalker or is_nocturne:
         transpose_order = None
 
     venv = VecPreprocessImageWrapper(venv=venv, obs_key=obs_key,
             transpose_order=transpose_order, scale=scale)
 
-    if is_multigrid or is_bipedalwalker:
+    if is_multigrid or is_bipedalwalker or is_nocturne:
         ued_venv = venv
 
     if args.singleton_env:

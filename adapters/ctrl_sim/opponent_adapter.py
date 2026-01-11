@@ -1,9 +1,8 @@
 """
-CtRL-Sim 对手策略适配器
+CtRL-Sim 对手策略适配器  
 
 复用 ctrl-sim 的 AutoregressivePolicy，适配 DCD 环境的调用模式。
 
-参考:
 - evaluators/policy_evaluator.py 第 427-560 行的评估循环
 - policies/autoregressive_policy.py 核心推理逻辑
 - policies/policy.py Policy 基类
@@ -202,7 +201,7 @@ class CtrlSimOpponentAdapter:
             veh_edge_tilt=veh_edge_tilt
         )
         
-        # 如果策略已存在，更新其 tilt_dict
+        # 如果策略已存在，更新其 tilt_dictcheckpoint_path
         if self._policy is not None:
             self._policy.tilt_dict = self.current_tilt.to_dict()
             self._policy.goal_tilt = goal_tilt

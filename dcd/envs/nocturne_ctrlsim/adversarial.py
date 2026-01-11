@@ -33,10 +33,10 @@ DEFAULT_LEVEL_PARAMS = [0, 0.0, 0.0, 0.0]
 
 
 def rand_int_seed():
-    """生成随机种子（限制在 [0, 2**24) 范围内）"""
+    """生成随机种子（32 位无符号整数）"""
     import os
-    # 生成 3 字节（24 位）的随机数，确保在 [0, 2**24) 范围内
-    return int.from_bytes(os.urandom(3), byteorder="little")
+    # 生成 4 字节（32 位）的随机数
+    return int.from_bytes(os.urandom(4), byteorder="little")
 
 
 class NocturneCtrlSimAdversarial(gym.Env):
