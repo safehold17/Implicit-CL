@@ -23,7 +23,8 @@ class AutoregressivePolicy(Policy):
                  name,
                  action_temperature, 
                  nucleus_sampling, 
-                 nucleus_threshold):
+                 nucleus_threshold,
+                 device='cuda'):
         
         super(AutoregressivePolicy, self).__init__(cfg, 
                                                    model_path,
@@ -41,7 +42,8 @@ class AutoregressivePolicy(Policy):
         
         self.action_temperature = action_temperature 
         self.nucleus_sampling = nucleus_sampling 
-        self.nucleus_threshold = nucleus_threshold 
+        self.nucleus_threshold = nucleus_threshold
+        self.device = device
         if tilt_dict['tilt']:
             self.goal_tilt = tilt_dict['goal_tilt']
             self.veh_veh_tilt = tilt_dict['veh_veh_tilt']
@@ -180,7 +182,7 @@ class AutoregressivePolicy(Policy):
         processed_rtgs_road = {}
         
         for focal_id in motion_datas.keys():
-            data = motion_datas[focal_id].cuda()
+            data = motion_datas[focal_id].to(self.device)
             veh_ids_in_data = data_veh_ids[focal_id]
 
             focal_idx_in_model = new_agent_idx_dicts[focal_id][self.veh_id_to_idx[veh_ids_in_data[0]]]
@@ -199,7 +201,7 @@ class AutoregressivePolicy(Policy):
                         data['agent'].rtgs[0, new_agent_idx_dicts[focal_id][self.veh_id_to_idx[veh_id]], token_index, 2] = processed_rtgs_road[veh_id] 
                         continue
                     
-                    vehicle_data_dict, data, next_rtgs = self.process_predicted_rtg(rtg_logits, token_index, veh_id, dset, vehicle_data_dict, data, new_agent_idx_dicts[focal_id], is_tilted=veh_id in veh_ids_in_data)
+                    vehicle_data_dict, data, next_rtgs = self.process_predicted_rtg(rtg_logits, token_index, veh_id, dset, vehicle_data_dict, data, new_agent_idx_dicts[focal_id], is_tilted=veh_id in veh_ids_in_data, device=self.device)
                     processed_rtg_veh_ids.append(veh_id)
                     assert veh_id not in processed_rtgs_goal.keys()
                     processed_rtgs_goal[veh_id] = next_rtgs[0]

@@ -105,7 +105,7 @@ class Policy:
             self.goals[i, t] = goal[:self.cfg_rl_waymo.goal_dim]
 
     
-    def process_predicted_rtg(self, rtg_logits, token_index, veh_id, dset, vehicle_data_dict, data, new_agent_idx_dict, is_tilted=False):
+    def process_predicted_rtg(self, rtg_logits, token_index, veh_id, dset, vehicle_data_dict, data, new_agent_idx_dict, is_tilted=False, device='cuda'):
         idx = new_agent_idx_dict[self.veh_id_to_idx[veh_id]]
         
         next_rtg_logits = rtg_logits[0, idx, token_index].reshape(self.cfg_rl_waymo.rtg_discretization, self.cfg_model.num_reward_components)
@@ -115,9 +115,9 @@ class Policy:
         
         # is_tilted is whether we tilt the specific agent and self.tilt_dict['tilt'] is whether the model supports tilting
         if is_tilted and self.tilt_dict['tilt']:
-            tilt_logits = torch.from_numpy(dset.get_tilt_logits(self.tilt_dict['goal_tilt'], self.tilt_dict['veh_veh_tilt'], self.tilt_dict['veh_edge_tilt'])).cuda()
+            tilt_logits = torch.from_numpy(dset.get_tilt_logits(self.tilt_dict['goal_tilt'], self.tilt_dict['veh_veh_tilt'], self.tilt_dict['veh_edge_tilt'])).to(device)
         else:
-            tilt_logits = torch.from_numpy(dset.get_tilt_logits(0, 0, 0)).cuda()
+            tilt_logits = torch.from_numpy(dset.get_tilt_logits(0, 0, 0)).to(device)
 
         next_rtg_goal_dis = F.softmax(next_rtg_goal_logits + tilt_logits[:, 0], dim=0)
         next_rtg_goal = torch.multinomial(next_rtg_goal_dis, 1)

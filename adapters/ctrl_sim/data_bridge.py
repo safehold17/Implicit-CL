@@ -9,12 +9,12 @@ Bridge the DCD environment with the ctrl-sim data format
 """
 import os
 import sys
+import glob
 import pickle
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
 from utils.sim import get_ground_truth_states, get_road_data, get_moving_vehicles, get_sim
-from datasets.rl_waymo.dataset_ctrl_sim import RLWaymoDatasetCtRLSim
 
 
 class DataBridge:
@@ -26,6 +26,10 @@ class DataBridge:
     2. Load preprocessed data (RTG, road information)
     3. Identify moving vehicles
     4. Get road data
+    
+    参考 ctrl-sim 的实现:
+    - evaluators/evaluator.py: load_preprocessed_data()
+    - evaluators/policy_evaluator.py: 使用 test_filenames.pkl 索引场景
     
     Example:
     ```python
@@ -39,25 +43,32 @@ class DataBridge:
     def __init__(self, cfg: Any, preprocess_dir: str):
         """
         Args:
-            cfg: Hydra
-            preprocess_dir
+            cfg: Hydra 配置
+            preprocess_dir: 预处理数据目录路径
         """
         self.cfg = cfg
         self.preprocess_dir = preprocess_dir
         self.dt = cfg.nocturne.dt
         self.steps = cfg.nocturne.steps
+        self.cfg_dataset = cfg.dataset.waymo
         
-        # For loading preprocessed data
-        self._preprocessed_dset: Optional[RLWaymoDatasetCtRLSim] = None
-        self._preprocessed_files_cache: Optional[List[str]] = None
+        # 预处理文件缓存
+        self._preprocessed_files_cache: Optional[Dict[str, str]] = None
+        self._preproc_data_cache: Dict[str, Dict] = {}
     
-    def _ensure_preprocessed_dset(self):
-        """Delay initialization of preprocessed dataset"""
-        if self._preprocessed_dset is None:
-            self._preprocessed_dset = RLWaymoDatasetCtRLSim(
-                self.cfg, split_name='test', mode='eval'
-            )
-            self._preprocessed_files_cache = self._preprocessed_dset.files
+    def _ensure_preprocessed_files_cache(self):
+        """延迟初始化预处理文件缓存，建立 scenario_id -> file_path 映射"""
+        if self._preprocessed_files_cache is None:
+            self._preprocessed_files_cache = {}
+            # 扫描预处理目录中的所有 pkl 文件
+            pkl_files = glob.glob(os.path.join(self.preprocess_dir, '*.pkl'))
+            for filepath in pkl_files:
+                # 文件名格式: tfrecord-00011-of-00150_131_physics.pkl
+                # 对应场景 ID: tfrecord-00011-of-00150_131
+                basename = os.path.basename(filepath)
+                if basename.endswith('_physics.pkl'):
+                    scenario_id = basename.replace('_physics.pkl', '')
+                    self._preprocessed_files_cache[scenario_id] = filepath
     
     def get_ground_truth(
         self, 
@@ -153,63 +164,142 @@ class DataBridge:
         scenario_filename: str
     ) -> Tuple[Optional[Dict], bool]:
         """
-        Load preprocessed data (contains RTG and road information)
+        加载预处理数据（包含 RTG 和道路信息）
         
-        evaluators/evaluator.py lines 47-59 load_preprocessed_data()
+        参考 evaluators/evaluator.py 第 47-59 行 load_preprocessed_data()
+        和 datasets/rl_waymo/dataset_ctrl_sim.py 的 get_data() 方法
         
         Args:
-            scenario_filename: Scene file name (without extension, e.g. 'scenario_001')
+            scenario_filename: 场景文件名（不含扩展名，如 'tfrecord-00011-of-00150_131'）
         
         Returns:
-            preproc_data: Preprocessed data, containing:
-                - 'rtgs': shape (num_agents, steps, num_reward_components)
-                - 'road_points': Road point information
-                - 'road_types': Road type information
-            file_exists: Whether the file exists
+            preproc_data: 预处理数据字典，包含:
+                - 'rtgs': shape (num_agents, steps+1, 3) - RTG 值
+                - 'road_points': 道路点信息
+                - 'road_types': 道路类型信息
+            file_exists: 文件是否存在
         """
-        self._ensure_preprocessed_dset()
+        self._ensure_preprocessed_files_cache()
         
-        # Construct the path of the preprocessed file
-        filename = os.path.join(
-            self.preprocess_dir, 
-            f'{scenario_filename}_physics.pkl'
+        # 检查缓存
+        if scenario_filename in self._preproc_data_cache:
+            return self._preproc_data_cache[scenario_filename], True
+        
+        # 查找预处理文件
+        if scenario_filename not in self._preprocessed_files_cache:
+            return None, False
+        
+        filepath = self._preprocessed_files_cache[scenario_filename]
+        
+        try:
+            with open(filepath, 'rb') as f:
+                raw_data = pickle.load(f)
+            
+            # 处理数据，计算 RTG（参考 dataset_ctrl_sim.py get_data() mode='eval' 分支）
+            preproc_data = self._process_preprocessed_data(raw_data)
+            
+            # 缓存结果
+            self._preproc_data_cache[scenario_filename] = preproc_data
+            
+            return preproc_data, True
+            
+        except Exception as e:
+            print(f"Warning: Failed to load preprocessed data for {scenario_filename}: {e}")
+            return None, False
+    
+    def _process_preprocessed_data(self, raw_data: Dict) -> Dict:
+        """
+        处理原始预处理数据，计算 RTG
+        
+        参考 dataset_ctrl_sim.py 的 get_data() 方法（mode='eval' 分支）
+        """
+        ag_data = raw_data['ag_data']
+        ag_rewards = raw_data['ag_rewards']
+        veh_edge_dist_rewards = raw_data['veh_edge_dist_rewards']
+        veh_veh_dist_rewards = raw_data['veh_veh_dist_rewards']
+        road_points = raw_data['road_points']
+        road_types = raw_data['road_types']
+        
+        # 计算综合奖励（参考 dataset.py compute_rewards）
+        all_rewards = self._compute_rewards(
+            ag_data, ag_rewards, 
+            veh_edge_dist_rewards, veh_veh_dist_rewards
         )
         
-        file_exists = filename in self._preprocessed_files_cache
+        # 计算 RTG (Return-To-Go): 累积未来奖励
+        # shape: (num_agents, steps+1, num_reward_components)
+        rtgs = np.cumsum(all_rewards[:, ::-1], axis=1)[:, ::-1]
         
-        if file_exists:
-            idx = self._preprocessed_files_cache.index(filename)
-            preproc_data = self._preprocessed_dset[idx]
-        else:
-            preproc_data = None
+        return {
+            'rtgs': rtgs,
+            'road_points': road_points,
+            'road_types': road_types,
+            # 保留原始数据以便需要时使用
+            'ag_data': ag_data,
+            'ag_rewards': ag_rewards,
+            'filtered_ag_ids': raw_data.get('filtered_ag_ids', []),
+        }
+    
+    def _compute_rewards(
+        self, 
+        ag_data: np.ndarray, 
+        ag_rewards: np.ndarray,
+        veh_edge_dist_rewards: np.ndarray, 
+        veh_veh_dist_rewards: np.ndarray
+    ) -> np.ndarray:
+        """
+        计算综合奖励
         
-        return preproc_data, file_exists
+        参考 dataset.py 的 compute_rewards() 方法
+        
+        奖励维度:
+        - 0: pos_target_achieved (0 or 1)
+        - 1: heading_target_achieved (0 or 1)  
+        - 2: speed_target_achieved (0 or 1)
+        - 3: pos_goal_shaped
+        - 4: veh_veh_dist
+        - 5: veh_edge_dist
+        """
+        cfg = self.cfg_dataset
+        
+        # ag_rewards shape: (num_agents, steps+1, 6)
+        # 包含: pos_target, heading_target, speed_target, pos_shaped, speed_shaped, heading_shaped
+        
+        # 构建完整奖励数组
+        num_agents, num_steps, _ = ag_rewards.shape
+        all_rewards = np.zeros((num_agents, num_steps, 6), dtype=np.float32)
+        
+        # 复制基础奖励
+        all_rewards[:, :, :3] = ag_rewards[:, :, :3]  # target achieved
+        all_rewards[:, :, 3] = ag_rewards[:, :, 3]    # pos_goal_shaped
+        
+        # 添加距离奖励（参考 dataset.py 第 267-280 行）
+        all_rewards[:, :, 4] = veh_veh_dist_rewards * cfg.veh_veh_collision_rew_multiplier
+        all_rewards[:, :, 5] = veh_edge_dist_rewards * cfg.veh_edge_collision_rew_multiplier
+        
+        return all_rewards
+    
+    def get_available_scenario_ids(self) -> List[str]:
+        """获取所有有预处理数据的场景 ID 列表"""
+        self._ensure_preprocessed_files_cache()
+        return list(self._preprocessed_files_cache.keys())
     
     def load_preprocessed_data_direct(
         self,
         scenario_filename: str
     ) -> Tuple[Optional[Dict], bool]:
         """
-        Load preprocessed data directly from the file (without depending on the dataset object)
+        直接从文件加载预处理数据（不经过 dataset 对象）
         
         Args:
-            scenario_filename: Scene file name (without extension)
+            scenario_filename: 场景文件名（不含扩展名）
         
         Returns:
-            preproc_data: Preprocessed data
-            file_exists: Whether the file exists
+            preproc_data: 预处理数据
+            file_exists: 文件是否存在
         """
-        filename = os.path.join(
-            self.preprocess_dir,
-            f'{scenario_filename}_physics.pkl'
-        )
-        
-        if os.path.exists(filename):
-            with open(filename, 'rb') as f:
-                preproc_data = pickle.load(f)
-            return preproc_data, True
-        else:
-            return None, False
+        # 使用新的 load_preprocessed_data 方法
+        return self.load_preprocessed_data(scenario_filename)
     
     def get_moving_vehicle_ids(self, scenario) -> List[int]:
         """

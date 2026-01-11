@@ -527,7 +527,14 @@ class NocturneCtrlSimAdversarial(gym.Env):
             if veh is not None:
                 self.opponent.apply_action(veh, (accel, steer))
         
-        # 4. 仿真步进
+        # 4. 记录所有车辆的动作（用于下一步的 update_state）
+        self.opponent.record_all_actions(
+            self.current_step - 1, 
+            self.vehicles, 
+            opponent_actions
+        )
+        
+        # 5. 仿真步进
         self.sim.step(self.dt)
         
         # 5. 计算奖励和终止条件
@@ -673,6 +680,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
         1. 随机选择参数
         2. 随机选择方向：-1, 0, +1
         3. 应用高斯扰动
+        
+        注意：只变异 tilt 参数，不改变 scenario_id
         """
         from dataclasses import replace
         
@@ -680,20 +689,13 @@ class NocturneCtrlSimAdversarial(gym.Env):
         params = ['goal_tilt', 'veh_veh_tilt', 'veh_edge_tilt']
         
         for _ in range(num_edits):
-            # 决定是否变异 scenario_id（30% 概率）
-            if len(self.scenario_ids) > 1 and np.random.rand() < 0.3:
-                other_scenarios = [s for s in self.scenario_ids if s != level.scenario_id]
-                if other_scenarios:
-                    mutations['scenario_id'] = np.random.choice(other_scenarios)
-                    mutations['seed'] = rand_int_seed()
-            else:
-                # 变异 tilt 参数
-                param = np.random.choice(params)
-                current_val = mutations.get(param, getattr(level, param))
-                direction = np.random.randint(-1, 2)  # -1, 0, 1
-                mutation = direction * np.random.uniform(0, TILT_MUTATION_STD)
-                new_val = np.clip(current_val + mutation, *TILT_RANGE)
-                mutations[param] = round(float(new_val), 1)
+            # 只变异 tilt 参数，不改变 scenario_id
+            param = np.random.choice(params)
+            current_val = mutations.get(param, getattr(level, param))
+            direction = np.random.randint(-1, 2)  # -1, 0, 1
+            mutation = direction * np.random.uniform(0, TILT_MUTATION_STD)
+            new_val = np.clip(current_val + mutation, *TILT_RANGE)
+            mutations[param] = round(float(new_val), 1)
         
         return replace(level, **mutations)
     

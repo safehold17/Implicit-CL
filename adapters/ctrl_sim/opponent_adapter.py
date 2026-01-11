@@ -7,6 +7,13 @@ CtRL-Sim 对手策略适配器
 - policies/autoregressive_policy.py 核心推理逻辑
 - policies/policy.py Policy 基类
 """
+# 必须首先设置路径，在任何其他导入之前
+import os as _os
+import sys as _sys
+_CTRLSIM_PATH = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))), 'third_party', 'ctrl-sim')
+if _CTRLSIM_PATH not in _sys.path:
+    _sys.path.insert(0, _CTRLSIM_PATH)
+
 import os
 import sys
 import numpy as np
@@ -175,7 +182,8 @@ class CtrlSimOpponentAdapter:
             name='ctrl_sim',
             action_temperature=self.action_temperature,
             nucleus_sampling=self.nucleus_sampling,
-            nucleus_threshold=self.nucleus_threshold
+            nucleus_threshold=self.nucleus_threshold,
+            device=self.device
         )
     
     def set_tilting(
@@ -345,6 +353,52 @@ class CtrlSimOpponentAdapter:
         if veh_id in self._vehicle_data_dict:
             self._vehicle_data_dict[veh_id]["acceleration"].append(action[0])
             self._vehicle_data_dict[veh_id]["steering"].append(action[1])
+    
+    def record_all_actions(self, t: int, vehicles: List, controlled_actions: Dict[int, Tuple[float, float]]):
+        """
+        记录所有车辆的动作（包括非控车辆使用 ground truth）
+        
+        参考: policy_evaluator.py 第 532-540 行
+        
+        Args:
+            t: 当前时间步
+            vehicles: 所有车辆列表
+            controlled_actions: 被控车辆的动作字典
+        """
+        for veh in vehicles:
+            veh_id = veh.getID()
+            if veh_id in controlled_actions:
+                # 被控车辆使用预测的动作
+                action = controlled_actions[veh_id]
+            else:
+                # 非控车辆使用 ground truth 动作
+                action = self._get_gt_action(veh_id, t)
+            self.record_action(veh_id, action)
+    
+    def _get_gt_action(self, veh_id: int, t: int) -> Tuple[float, float]:
+        """
+        获取 ground truth 动作
+        
+        参考: policy_evaluator.py apply_gt_action()
+        """
+        if veh_id not in self._gt_data_dict:
+            return (0.0, 0.0)
+        
+        gt_traj = np.array(self._gt_data_dict[veh_id]['traj'])
+        
+        # 计算加速度（速度差分）
+        if t < len(gt_traj) - 1:
+            accel = (gt_traj[t+1, 3] - gt_traj[t, 3]) / self.dt
+        else:
+            accel = 0.0
+        
+        # 计算转向（航向差分）
+        if t < len(gt_traj) - 1:
+            steer = (gt_traj[t+1, 2] - gt_traj[t, 2]) / self.dt
+        else:
+            steer = 0.0
+        
+        return (float(accel), float(steer))
     
     # ========== 辅助方法（复用 PolicyEvaluator 逻辑）==========
     

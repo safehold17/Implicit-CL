@@ -3,7 +3,7 @@ Register Nocturne + CtRL-Sim environment to DCD framework
 
 """
 import gym
-from dcd.envs.registration import register as gym_register
+from envs.registration import register as gym_register
 
 env_list = []
 

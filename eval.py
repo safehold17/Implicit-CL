@@ -24,15 +24,22 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 from envs.registration import make as gym_make
-from envs.multigrid.maze import *
-from envs.multigrid.crossing import *
-from envs.multigrid.fourrooms import *
-from envs.multigrid.mst_maze import *
+# from envs.multigrid.maze import *
+# from envs.multigrid.crossing import *
+# from envs.multigrid.fourrooms import *
+# from envs.multigrid.mst_maze import *
 from envs.box2d import *
 from envs.bipedalwalker import *
 from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim 环境
 from envs.wrappers import VecMonitor, VecPreprocessImageWrapper, ParallelAdversarialVecEnv, \
-	MultiGridFullyObsWrapper, VecFrameStack, CarRacingWrapper
+	VecFrameStack, CarRacingWrapper
+# MultiGridFullyObsWrapper 依赖 gym_minigrid，延迟导入
+try:
+	from envs.wrappers import MultiGridFullyObsWrapper
+	HAS_MULTIGRID = True
+except ImportError:
+	HAS_MULTIGRID = False
+	MultiGridFullyObsWrapper = None
 from util import DotDict, str2bool, make_agent, create_parallel_env, is_discrete_actions
 from arguments import parser
 
@@ -171,14 +178,24 @@ class Evaluator(object):
 
 	@staticmethod
 	def make_env(env_name, record_video=False, **kwargs):
+		is_nocturne = env_name.startswith('Nocturne')
+		
 		if env_name in ['BipedalWalker-v3', 'BipedalWalkerHardcore-v3']:
 			env = gym.make(env_name)
+		elif is_nocturne:
+			# Nocturne 环境需要额外配置参数，直接实例化
+			from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
+			nocturne_kwargs = {
+				k: v for k, v in kwargs.items() 
+				if k in ['scenario_index_path', 'opponent_checkpoint', 
+				         'scenario_data_dir', 'preprocess_dir', 'device']
+			}
+			env = NocturneCtrlSimAdversarial(**nocturne_kwargs)
 		else:
 			env = gym_make(env_name)
 
 		is_multigrid = env_name.startswith('MultiGrid')
 		is_car_racing = env_name.startswith('CarRacing')
-		is_nocturne = env_name.startswith('Nocturne')
 
 		if is_car_racing:
 			grayscale = kwargs.get('grayscale', False)
@@ -200,20 +217,22 @@ class Evaluator(object):
 				env = Monitor(env, "videos/", force=True)
 				print('Recording video!', flush=True)
 
-	if is_nocturne:
-		# Nocturne 环境需要额外配置参数
-		# 注意：gym_make 会使用注册时的默认参数，这里可以覆盖
-		if record_video:
-			from gym.wrappers.monitor import Monitor
-			# 使用 kwargs 提供的路径，或回退到默认值
-			video_dir = kwargs.get('video_dir', 'videos/')
-			env = Monitor(env, video_dir, force=True)
+		if is_nocturne:
+			# Nocturne 环境需要额外配置参数
+			# 注意：gym_make 会使用注册时的默认参数,这里可以覆盖
+			if record_video:
+				from gym.wrappers.monitor import Monitor
+				# 使用 kwargs 提供的路径，或回退到默认值
+				video_dir = kwargs.get('video_dir', 'videos/')
+				env = Monitor(env, video_dir, force=True)
+			return env
+
+		if is_multigrid and kwargs.get('use_global_policy'):
+			if MultiGridFullyObsWrapper is None:
+				raise ImportError("MultiGrid environment requires gym_minigrid. Install with: pip install gym-minigrid")
+			env = MultiGridFullyObsWrapper(env, is_adversarial=False)
+
 		return env
-
-	if is_multigrid and kwargs.get('use_global_policy'):
-		env = MultiGridFullyObsWrapper(env, is_adversarial=False)
-
-	return env
 
 	@staticmethod
 	def wrap_venv(venv, env_name, device='cpu'):
