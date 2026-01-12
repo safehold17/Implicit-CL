@@ -587,3 +587,31 @@ parser.add_argument(
     default='tanh',
     choices=['tanh', 'gelu', 'relu'],
     help='Student 网络激活函数')
+
+# ============== Nocturne 环境配置参数 ==============
+# 用于 Nocturne + ctrl-sim 驾驶环境
+parser.add_argument(
+    '--scenario_index_path',
+    type=str,
+    default='data/scenarios_index.json',
+    help='Nocturne 场景索引 JSON 文件路径')
+parser.add_argument(
+    '--opponent_checkpoint',
+    type=str,
+    default='checkpoints/model.ckpt',
+    help='ctrl-sim 对手模型 checkpoint 路径')
+parser.add_argument(
+    '--scenario_data_dir',
+    type=str,
+    default='data/nocturne_waymo/formatted_json_v2_no_tl_train',
+    help='Nocturne 场景数据目录')
+parser.add_argument(
+    '--preprocess_dir',
+    type=str,
+    default='data/preprocess',
+    help='ctrl-sim 预处理数据目录')
+parser.add_argument(
+    '--nocturne_max_episode_steps',
+    type=int,
+    default=90,
+    help='Nocturne 环境最大步数')

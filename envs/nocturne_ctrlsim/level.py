@@ -1,6 +1,7 @@
 """
 Scenario Level data structure.
 """
+import ast
 from dataclasses import dataclass
 import numpy as np
 from typing import Tuple, Dict
@@ -58,7 +59,8 @@ class ScenarioLevel:
 
     @classmethod
     def from_level_string(cls, level_str: str) -> "ScenarioLevel":
-        t = eval(level_str)
+        # 使用 ast.literal_eval 替代 eval 以避免代码执行风险
+        t = ast.literal_eval(level_str)
         return cls(
             scenario_id=t[0],
             seed=t[1],
