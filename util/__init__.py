@@ -255,6 +255,8 @@ def create_parallel_env(args, adversary=True):
 def is_dense_reward_env(env_name):
     if env_name.startswith('CarRacing'):
         return True
+    elif env_name.startswith('Nocturne'):
+        return True  # Nocturne 使用 dense reward
     else:
         return False
 
