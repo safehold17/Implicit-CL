@@ -12,7 +12,8 @@ from dcd_models import \
     BipedalWalkerStudentPolicy, \
     BipedalWalkerAdversaryPolicy, \
     BipedalWalkerRecurrentStudentPolicy, \
-    BipedalWalkerRecurrentAdversaryPolicy
+    BipedalWalkerRecurrentAdversaryPolicy, \
+    StudentPolicy
 
 def model_for_multigrid_agent(
     env,
@@ -128,6 +129,65 @@ def model_for_bipedalwalker_agent(
 
     return model
 
+def model_for_nocturne_agent(
+    env,
+    agent_type='agent',
+    input_dim=64,
+    hidden_dim=128,
+    num_neighbors=16,
+    top_k_road_points=64,
+    dropout=0.0,
+    act_func="tanh",
+):
+    """
+    为 Nocturne 驾驶环境创建 Student 策略模型
+    
+    适用于 Nocturne + ctrl-sim 等驾驶场景。
+    使用方案A：ctrl-sim 语义观测 + 连续动作（accel, steer）。
+    
+    Args:
+        env: 环境实例（需提供 observation_space 和 action_space）
+        agent_type: 'agent' (student) 或 'adversary_env'
+        input_dim: 各模态嵌入维度（Late Fusion 中间层）
+        hidden_dim: 融合后的隐藏层维度
+        num_neighbors: 邻车截断数量 K
+        top_k_road_points: 道路点截断数量 R
+        dropout: Dropout 概率
+        act_func: 激活函数 ("tanh" 或 "gelu")
+    
+    Returns:
+        model: StudentPolicy 实例
+    
+    Raises:
+        NotImplementedError: 当 agent_type 为 'adversary_env' 时
+            （Nocturne 的对手由 ctrl-sim 提供，不需要可训练的 adversary）
+    """
+    # Nocturne 的 adversary_env 由 ctrl-sim 提供，不需要训练
+    if 'adversary_env' in agent_type:
+        raise NotImplementedError(
+            "Nocturne adversary is handled by ctrl-sim CtrlSimOpponentAdapter, "
+            "not a trainable policy. Do not call make_agent for 'adversary_env' "
+            "when using Nocturne environment."
+        )
+    
+    # 验证环境空间
+    obs_shape = env.observation_space.shape
+    action_space = env.action_space
+    
+    # 创建 Student 策略（连续动作版）
+    model = StudentPolicy(
+        obs_shape=obs_shape,
+        action_space=action_space,
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        max_controlled_agents=num_neighbors + 1,  # +1 for ego
+        top_k_road_points=top_k_road_points,
+        dropout=dropout,
+        act_func=act_func,
+    )
+    
+    return model
+
 def model_for_env_agent(
     env_name,
     env,
@@ -143,7 +203,14 @@ def model_for_env_agent(
     use_categorical_adv=False,
     use_goal=False,
     num_goal_bins=1,
-    use_lstm=False):
+    use_lstm=False,
+    # Nocturne Student 策略参数
+    student_input_dim=64,
+    student_hidden_dim=128,
+    student_num_neighbors=16,
+    student_top_k_road=64,
+    student_dropout=0.0,
+    student_act_func="tanh"):
     assert agent_type in ['agent', 'adversary_agent', 'adversary_env']
         
     if env_name.startswith('MultiGrid'):
@@ -171,6 +238,17 @@ def model_for_env_agent(
             agent_type=agent_type,
             recurrent_arch=recurrent_arch,
             use_lstm=use_lstm)
+    elif env_name.startswith('Nocturne') or env_name.startswith('nocturne'):
+        model = model_for_nocturne_agent(
+            env=env,
+            agent_type=agent_type,
+            input_dim=student_input_dim,
+            hidden_dim=student_hidden_dim,
+            num_neighbors=student_num_neighbors,
+            top_k_road_points=student_top_k_road,
+            dropout=student_dropout,
+            act_func=student_act_func,
+        )
     else:
         raise ValueError(f'Unsupported environment {env_name}.')
 
@@ -217,7 +295,14 @@ def make_agent(name, env, args, device='cpu'):
         use_categorical_adv=vars(args).get('use_categorical_adv', False),
         use_goal=vars(args).get('sparse_rewards', False),
         num_goal_bins=vars(args).get('num_goal_bins', 1),
-        use_lstm=vars(args).get('use_lstm', False))
+        use_lstm=vars(args).get('use_lstm', False),
+        # Nocturne Student 参数
+        student_input_dim=vars(args).get('student_input_dim', 64),
+        student_hidden_dim=vars(args).get('student_hidden_dim', 128),
+        student_num_neighbors=vars(args).get('student_num_neighbors', 16),
+        student_top_k_road=vars(args).get('student_top_k_road', 64),
+        student_dropout=vars(args).get('student_dropout', 0.0),
+        student_act_func=vars(args).get('student_act_func', 'tanh'))
 
     algo = None
     storage = None

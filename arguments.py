@@ -553,3 +553,37 @@ parser.add_argument(
     '--num_goal_bins',
     type=int, default=1,
     help="Number of goal bins when using sparse rewards for CarRacing.")
+
+# ============== Nocturne Student 策略参数 ==============
+# 适用于 Nocturne + ctrl-sim 驾驶环境
+parser.add_argument(
+    '--student_input_dim',
+    type=int,
+    default=64,
+    help='Student Late Fusion 各模态嵌入维度')
+parser.add_argument(
+    '--student_hidden_dim',
+    type=int,
+    default=128,
+    help='Student Late Fusion 融合后隐藏层维度')
+parser.add_argument(
+    '--student_num_neighbors',
+    type=int,
+    default=16,
+    help='Student 邻车截断数量（观测中的最近邻车数）')
+parser.add_argument(
+    '--student_top_k_road',
+    type=int,
+    default=64,
+    help='Student 道路点截断数量（观测中的最近道路点数）')
+parser.add_argument(
+    '--student_dropout',
+    type=float,
+    default=0.0,
+    help='Student 网络 Dropout 概率')
+parser.add_argument(
+    '--student_act_func',
+    type=str,
+    default='tanh',
+    choices=['tanh', 'gelu', 'relu'],
+    help='Student 网络激活函数')

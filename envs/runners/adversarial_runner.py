@@ -163,6 +163,17 @@ class AdversarialRunner(object):
             else:
                 param_env_bounds = {'actions': [0,2,8]}
             reward_bounds = (-200, 350)
+        elif args.env_name.startswith('Nocturne') or args.env_name.startswith('nocturne'):
+            # Nocturne Level 参数：4 维连续空间
+            # - scenario_idx: 场景索引（离散，范围取决于场景池大小）
+            # - goal_tilt: 目标奖励倾斜 [-25, 25]
+            # - veh_veh_tilt: 车-车碰撞奖励倾斜 [-25, 25]
+            # - veh_edge_tilt: 车-边界碰撞奖励倾斜 [-25, 25]
+            # 
+            # ALP-GMM 参数格式: {'actions': [dim, low, high]}
+            # 这里使用 4 维连续参数空间，范围 [0, 4]（内部映射到实际值）
+            param_env_bounds = {'actions': [0, 4, 4]}  # 4 维，范围 [0, 4]
+            reward_bounds = (-100, 100)  # 奖励范围需根据实际调整
         else:
             raise ValueError(f'Environment {args.env_name} not supported for ALP-GMM')
 
@@ -368,6 +379,62 @@ class AdversarialRunner(object):
 
         return stats
 
+    def _get_env_stats_nocturne(self, agent_info, adversary_agent_info):
+        """
+        获取 Nocturne 环境的统计信息
+        
+        依赖环境实现 get_complexity_info() 方法，返回每个并行环境的指标字典。
+        
+        预期指标（环境端需实现）：
+        - scenario_id: 场景 ID
+        - goal_tilt / veh_veh_tilt / veh_edge_tilt: tilt 参数
+        - collision_rate: 碰撞率
+        - offroad_rate: 出界率
+        - goal_reached_rate: 到达目标率
+        - avg_progress: 平均进度
+        - episode_length: 平均 episode 长度
+        
+        Args:
+            agent_info: agent rollout 信息
+            adversary_agent_info: adversary agent rollout 信息（Nocturne 不使用）
+        
+        Returns:
+            stats: 包含场景复杂度指标的字典
+        """
+        # 从环境获取复杂度信息
+        try:
+            infos = self.venv.get_complexity_info()
+        except AttributeError:
+            # 环境未实现 get_complexity_info，返回空统计
+            return {}
+        
+        num_envs = len(infos)
+        if num_envs == 0:
+            return {}
+        
+        # 聚合所有并行环境的指标
+        sums = defaultdict(float)
+        counts = defaultdict(int)
+        for info in infos:
+            for k, v in info.items():
+                if isinstance(v, (int, float)) and not np.isnan(v):
+                    sums[k] += v
+                    counts[k] += 1
+        
+        # 计算平均值
+        stats = {}
+        for k, v in sums.items():
+            if counts[k] > 0:
+                stats['scenario_' + k] = sums[k] / counts[k]
+        
+        # 从 agent_info 提取额外统计（如有）
+        if 'episode_return' in agent_info:
+            episode_returns = agent_info['episode_return']
+            if len(episode_returns) > 0:
+                stats['mean_episode_return'] = np.mean(episode_returns)
+        
+        return stats
+
     def _get_env_stats(self, agent_info, adversary_agent_info, log_replay_complexity=False):
         env_name = self.args.env_name
         if env_name.startswith('MultiGrid'):
@@ -376,6 +443,8 @@ class AdversarialRunner(object):
             stats = self._get_env_stats_car_racing(agent_info, adversary_agent_info)
         elif env_name.startswith('BipedalWalker'):
             stats = self._get_env_stats_bipedalwalker(agent_info, adversary_agent_info)
+        elif env_name.startswith('Nocturne') or env_name.startswith('nocturne'):
+            stats = self._get_env_stats_nocturne(agent_info, adversary_agent_info)
         else:
             raise ValueError(f'Unsupported environment, {self.args.env_name}')
 
