@@ -260,14 +260,21 @@ class BipedalWalkerAdversaryPolicy(DeviceAwareModule):
 
 
 class NNBase(nn.Module):
-    def __init__(self, recurrent, recurrent_input_size, hidden_size):
+    def __init__(self, recurrent_arch, recurrent_input_size, hidden_size):
         super(NNBase, self).__init__()
 
         self._hidden_size = hidden_size
-        self._recurrent = recurrent
+        self._recurrent_arch = recurrent_arch
+        self._recurrent = recurrent_arch is not None and recurrent_arch in ['lstm', 'gru']
 
-        if recurrent:
-            self.rnn = nn.GRU(recurrent_input_size, hidden_size)
+        if self._recurrent:
+            if recurrent_arch == 'lstm':
+                self.rnn = nn.LSTM(recurrent_input_size, hidden_size)
+            elif recurrent_arch == 'gru':
+                self.rnn = nn.GRU(recurrent_input_size, hidden_size)
+            else:
+                raise ValueError(f"Unsupported recurrent_arch: {recurrent_arch}")
+            
             for name, param in self.rnn.named_parameters():
                 if 'bias' in name:
                     nn.init.constant_(param, 0)
@@ -346,10 +353,16 @@ class NNBase(nn.Module):
         return x, hxs
 
 class MLPBase(NNBase):
-    def __init__(self, num_inputs, recurrent=False, hidden_size=64):
-        super(MLPBase, self).__init__(recurrent, num_inputs, hidden_size)
+    def __init__(self, num_inputs, recurrent=False, recurrent_arch=None, hidden_size=64):
+        # 兼容旧的 boolean recurrent 参数
+        if recurrent and recurrent_arch is None:
+            recurrent_arch = 'gru'  # 默认使用 GRU
+        elif not recurrent:
+            recurrent_arch = None
+        
+        super(MLPBase, self).__init__(recurrent_arch, num_inputs, hidden_size)
 
-        if recurrent:
+        if self._recurrent:
             num_inputs = hidden_size
 
         init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.

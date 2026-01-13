@@ -51,6 +51,7 @@ class NocturneTeacherPolicy(DeviceAwareModule):
         action_space, 
         random=False,
         recurrent=False,
+        recurrent_arch=None,
         base_kwargs=None
     ):
         super().__init__()
@@ -59,7 +60,13 @@ class NocturneTeacherPolicy(DeviceAwareModule):
             base_kwargs = {}
         
         self.random = random
-        self._recurrent = recurrent
+        # 兼容旧的 boolean recurrent 参数
+        if recurrent and recurrent_arch is None:
+            recurrent_arch = 'gru'  # 默认使用 GRU
+        elif not recurrent:
+            recurrent_arch = None
+        self._recurrent = recurrent_arch is not None
+        self._recurrent_arch = recurrent_arch
         
         # 解析观测空间维度
         self.design_dim = observation_space['image'].shape[0]  # level 参数维度（4）
@@ -69,7 +76,8 @@ class NocturneTeacherPolicy(DeviceAwareModule):
         obs_dim = self.design_dim + self.random_z_dim + 1
         
         # 基础网络（MLP 或 RNN）
-        if recurrent:
+        base_kwargs['recurrent_arch'] = recurrent_arch
+        if recurrent_arch is not None:
             base_kwargs['recurrent'] = True
         self.base = MLPBase(obs_dim, **base_kwargs)
         
