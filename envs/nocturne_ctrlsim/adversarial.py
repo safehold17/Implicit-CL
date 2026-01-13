@@ -271,6 +271,18 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # ========== 视频录制 ==========
         self.video_recorder: Optional[NocturneVideoRecorder] = None
         self.recording_video = False
+        
+        # ========== 初始化随机种子 ==========
+        self.seed_value = seed
+    
+    # ========== 基础环境接口 ==========
+    
+    def seed(self, seed=None):
+        """设置环境的随机种子"""
+        if seed is not None:
+            self.level_seed = seed
+            self.seed_value = seed
+        return [self.level_seed]
     
     # ========== Adversary 接口（PAIRED/ACCEL）==========
     
@@ -411,14 +423,21 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # 设置随机种子
         np.random.seed(level.seed)
         
-        # 加载 Nocturne 场景
-        self._load_scenario(level.scenario_id)
+        # ⚠️ 重要：必须先获取 GT 数据，再加载主场景
+        # 原因：get_ground_truth() 内部会创建临时 Simulation 并执行步进，
+        # 这会破坏 Nocturne 的全局状态，导致之后创建的 Simulation 中
+        # 的车辆对象变得无效（设置属性时会发生段错误）。
+        # 解决方案：先获取 GT 数据（让临时 Simulation 完成并销毁），
+        # 然后再加载主场景。
         
         # 获取 ground truth 数据（需要添加 .json 后缀）
         self._gt_data_dict = self.data_bridge.get_ground_truth(
             self.scenario_data_dir, 
             f"{level.scenario_id}.json"
         )
+        
+        # 加载 Nocturne 场景（必须在获取 GT 数据之后）
+        self._load_scenario(level.scenario_id)
         
         # 选择 ego 车辆（需要 GT 数据来选择 interesting pair）
         self.ego_vehicle = self._select_ego_vehicle()
@@ -992,13 +1011,20 @@ class NocturneCtrlSimAdversarial(gym.Env):
         interesting_pair = self._find_interesting_pair(moving_veh_ids)
         
         if interesting_pair is None:
-            raise ValueError(
-                f"No interesting vehicle pair found in scenario {self.current_level.scenario_id}. "
-                "Scenario will be skipped."
+            # 如果没有找到 interesting pair，降级选择：选择第一个 moving vehicle
+            print(
+                f"Warning: No interesting vehicle pair found in scenario {self.current_level.scenario_id}. "
+                f"Using first moving vehicle as ego."
             )
-        
-        # 3. 确定性选择: veh_id 较小的作为 ego
-        ego_veh_id = min(interesting_pair)
+            if len(moving_veh_ids) > 0:
+                ego_veh_id = moving_veh_ids[0]
+            else:
+                raise ValueError(
+                    f"No moving vehicles found in scenario {self.current_level.scenario_id}."
+                )
+        else:
+            # 3. 确定性选择: veh_id 较小的作为 ego
+            ego_veh_id = min(interesting_pair)
         
         return self._get_vehicle_by_id(ego_veh_id)
     

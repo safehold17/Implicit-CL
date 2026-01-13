@@ -55,7 +55,9 @@ if __name__ == '__main__':
     def log_stats(stats):
         filewriter.log(stats)
         if args.verbose:
-            HumanOutputFormat(sys.stdout).writekvs(stats)
+            # 构造 key_excluded 字典（所有 key 都不排除）
+            key_excluded = {k: () for k in stats.keys()}
+            HumanOutputFormat(sys.stdout).write(stats, key_excluded=key_excluded, step=0)
 
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
@@ -184,7 +186,7 @@ if __name__ == '__main__':
                         adv_test_stats[f"advagent_{curr_key}"] = adv_test_stats[curr_key]
                         adv_test_stats.pop(curr_key, None)
                     stats.update(adv_test_stats)
-            else:
+            elif evaluator is not None:
                 stats.update({k:None for k in evaluator.get_stats_keys()})
 
             update_end_time = timer()
@@ -239,7 +241,8 @@ if __name__ == '__main__':
                         normalize=True, channels_first=False)
                 plt.close()
 
-    evaluator.close()
+    if evaluator is not None:
+        evaluator.close()
     venv.close()
 
     if display:
