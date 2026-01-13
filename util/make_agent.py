@@ -139,6 +139,7 @@ def model_for_nocturne_agent(
     dropout=0.0,
     act_func="tanh",
     recurrent=False,
+    recurrent_arch=None,
     random_teacher=False,
 ):
     """
@@ -157,7 +158,8 @@ def model_for_nocturne_agent(
         top_k_road_points: 道路点截断数量 R
         dropout: Dropout 概率
         act_func: 激活函数 ("tanh" 或 "gelu")
-        recurrent: 是否使用循环网络（仅 Teacher）
+        recurrent: 是否使用循环网络（仅 Teacher，向后兼容）
+        recurrent_arch: RNN 架构类型 ('lstm' 或 'gru'，仅 Teacher）
         random_teacher: 是否使用随机 Teacher（基线对比）
     
     Returns:
@@ -175,6 +177,7 @@ def model_for_nocturne_agent(
             action_space=action_space,
             random=random_teacher,
             recurrent=recurrent,
+            recurrent_arch=recurrent_arch,
             base_kwargs={'hidden_size': hidden_dim}
         )
         return model
@@ -261,6 +264,7 @@ def model_for_env_agent(
             dropout=student_dropout,
             act_func=student_act_func,
             recurrent=recurrent_arch is not None if is_teacher else False,
+            recurrent_arch=recurrent_arch if is_teacher else None,
             random_teacher=random_teacher,
         )
     else:
