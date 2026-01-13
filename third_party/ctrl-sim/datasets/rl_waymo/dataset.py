@@ -202,7 +202,7 @@ class RLWaymoDataset(Dataset):
     def compute_dist_to_nearest_vehicle_rewards(self, ag_data, normalize=True):
         num_timesteps = ag_data.shape[1]
         
-        ag_positions = ag_data[:,:,:2]
+        ag_positions = ag_data[:,:,:2].copy()  # 使用 copy 避免修改原数组
         ag_existence = ag_data[:,:,-1]
 
         # set x/y position at each nonexisting timestep to np.inf
@@ -211,8 +211,10 @@ class RLWaymoDataset(Dataset):
 
         # data[:, np.newaxis] has shape (A, 1, 90, 2) and data[np.newaxis, :] has shape (1, A, 90, 2)
         # Subtracting these gives an array of shape (A, A, 90, 2) with pairwise differences
-        diff = ag_positions[:, np.newaxis] - ag_positions[np.newaxis, :]
-        squared_dist = np.sum(diff**2, axis=-1)
+        # 使用 errstate 忽略 inf - inf = nan 的警告，后续有 nan_to_num 处理
+        with np.errstate(invalid='ignore'):
+            diff = ag_positions[:, np.newaxis] - ag_positions[np.newaxis, :]
+            squared_dist = np.sum(diff**2, axis=-1)
 
         # Replace zero distances (distance to self) with np.inf
         for i in range(num_timesteps):

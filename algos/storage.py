@@ -380,6 +380,10 @@ class RolloutStorage(object):
             return self.actions.squeeze(-1)
 
     def _split_batched_lstm_recurrent_hidden_states(self, hxs):
+        # Handle both 1D (single process) and 2D (multiple processes) cases
+        if hxs.dim() == 1:
+            return (hxs[:self.recurrent_hidden_state_size].unsqueeze(0),
+                    hxs[self.recurrent_hidden_state_size:].unsqueeze(0))
         return (hxs[:, :self.recurrent_hidden_state_size],
                 hxs[:, self.recurrent_hidden_state_size:])
 

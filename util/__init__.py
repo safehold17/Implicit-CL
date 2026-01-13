@@ -106,6 +106,10 @@ def save_images(images, path=None, normalize=False, channels_first=False):
         return
 
     if isinstance(images, (list, tuple)):
+        # 过滤 None 值并确保所有图像类型一致
+        images = [img for img in images if img is not None]
+        if len(images) == 0:
+            return
         images = torch.tensor(np.stack(images), dtype=torch.float)
     elif isinstance(images, np.ndarray):
         images = torch.tensor(images, dtype=torch.float)
