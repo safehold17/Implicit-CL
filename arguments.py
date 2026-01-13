@@ -406,7 +406,7 @@ parser.add_argument(
 parser.add_argument(
     "--weight_log_interval", 
     type=int, 
-    default=0,
+    default=1,
     help="Save level weights every this many updates. *Only for PLR with a fixed level buffer.*")
 parser.add_argument(
     "--screenshot_interval", 
