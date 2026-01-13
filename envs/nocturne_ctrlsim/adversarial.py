@@ -180,17 +180,35 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._goal_reached: bool = False
         self._offroad_occurred: bool = False
         
+        # Episode 统计（用于训练监控）
+        self._episode_collision_occurred: bool = False
+        self._episode_goal_reached: bool = False
+        self._episode_offroad_occurred: bool = False
+        self._episode_steps: int = 0
+        self._episode_progress: float = 0.0  # 目标进度 [0, 1]
+        
         # Level 参数向量（用于 adversary 构建）
         # [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt]
         self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
         
-        # ========== 可配置参数（来自 config.yaml）==========
-        self._obs_dim = obs_dim
+        # ========== Student 观测配置（从 args 传入）==========
+        # 这些参数在 make_agent 时会用到，这里设置默认值
+        self._max_observable_agents = kwargs.get('student_num_neighbors', 16)
+        self._top_k_road_points = kwargs.get('student_top_k_road', 64)
+        
+        # 缓存道路数据（在 _initialize_simulation 后填充）
+        self._road_graph_cache: Optional[List[Dict]] = None
+        
+        # ========== 观测和动作空间（Student）==========
+        # 计算 Late Fusion 观测维度: ego(6) + partners(K×6) + road_graph(R×13)
+        late_fusion_obs_dim = 6 + self._max_observable_agents * 6 + self._top_k_road_points * 13
+        
+        # 使用配置的 obs_dim 或计算的维度（取较大者以兼容）
+        self._obs_dim = max(obs_dim, late_fusion_obs_dim)
         self._action_dim = action_dim
         self.tilt_range = tilt_range if tilt_range is not None else list(DEFAULT_TILT_RANGE)
         self.tilt_mutation_std = tilt_mutation_std
         
-        # ========== 观测和动作空间（Student）==========
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, 
             shape=(self._obs_dim,), 
@@ -383,6 +401,13 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._goal_reached = False
         self._offroad_occurred = False
         
+        # 重置 episode 统计
+        self._episode_collision_occurred = False
+        self._episode_goal_reached = False
+        self._episode_offroad_occurred = False
+        self._episode_steps = 0
+        self._episode_progress = 0.0
+        
         # 设置随机种子
         np.random.seed(level.seed)
         
@@ -427,6 +452,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
             self._preproc_data,
             self.opponent_vehicle_ids,
         )
+        
+        # 缓存道路数据（用于 Student 观测）
+        self._road_graph_cache = self.data_bridge.get_road_data(self.scenario)
     
     def generate_random_z(self) -> np.ndarray:
         """生成随机条件向量（用于 adversary 观测）"""
@@ -626,6 +654,23 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # 8. 计算奖励和终止条件
         obs = self._get_student_observation()
         reward = self._compute_reward()
+        
+        # 更新 episode 统计
+        self._episode_steps += 1
+        if self._collision_occurred:
+            self._episode_collision_occurred = True
+        if self._goal_reached:
+            self._episode_goal_reached = True
+        if self._offroad_occurred:
+            self._episode_offroad_occurred = True
+        
+        # 计算目标进度（当前距离 vs 初始距离）
+        if self.ego_vehicle and self._ego_goal_dict and self._ego_goal_dist_normalizer > 0:
+            ego_pos = self.ego_vehicle.getPosition()
+            goal_pos = self._ego_goal_dict['pos']
+            current_dist = np.linalg.norm(goal_pos - np.array([ego_pos.x, ego_pos.y]))
+            self._episode_progress = max(0.0, 1.0 - current_dist / self._ego_goal_dist_normalizer)
+        
         done = self._check_done()
         info = self._get_info()
         
@@ -727,12 +772,16 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def get_complexity_info(self) -> Dict[str, Any]:
         """
-        返回当前 level 的复杂度信息（用于日志和分析）
+        返回当前 level 的复杂度信息和 episode 统计（用于日志和分析）
+        
+        Returns:
+            包含 level 参数和 episode 统计的字典
         """
         if self.current_level is None:
             return {}
         
-        return {
+        info = {
+            # Level 参数
             'scenario_id': self.current_level.scenario_id,
             'seed': self.current_level.seed,
             'opponent_k': self.opponent_k,
@@ -740,7 +789,17 @@ class NocturneCtrlSimAdversarial(gym.Env):
             'veh_veh_tilt': self.current_level.veh_veh_tilt,
             'veh_edge_tilt': self.current_level.veh_edge_tilt,
             'scenario_pool_size': len(self.scenario_ids),
+            
+            # Episode 统计（用于训练监控）
+            'collision_rate': 1.0 if self._episode_collision_occurred else 0.0,
+            'goal_reached_rate': 1.0 if self._episode_goal_reached else 0.0,
+            'offroad_rate': 1.0 if self._episode_offroad_occurred else 0.0,
+            'avg_progress': self._episode_progress,
+            'episode_steps': self._episode_steps,
+            'episode_reward': self.episode_reward,
         }
+        
+        return info
     
     # ========== 内部辅助方法 ==========
     
@@ -1104,15 +1163,147 @@ class NocturneCtrlSimAdversarial(gym.Env):
             self.ego_vehicle.brake(abs(accel))
         self.ego_vehicle.steering = steer
     
+    def _build_road_graph_obs(
+        self, 
+        ego_pos, 
+        ego_heading: float
+    ) -> List[np.ndarray]:
+        """
+        构建 Road Graph 观测（符合 gpudrive 格式）
+        
+        Road Graph 特征 (13 维):
+        - pos_x, pos_y (2): 道路点相对于 ego 的位置
+        - length (1): 道路段长度
+        - scale_x, scale_y (2): 道路点尺度
+        - orientation (1): 道路方向
+        - type_onehot (7): 道路类型 one-hot编码
+        
+        Args:
+            ego_pos: ego 车辆位置
+            ego_heading: ego 车辆朝向
+        
+        Returns:
+            road_graph_states: List of road point features (R 个 13 维向量)
+        """
+        if self._road_graph_cache is None or len(self._road_graph_cache) == 0:
+            # 没有道路数据，返回空的 road graph
+            return [np.zeros(13, dtype=np.float32) for _ in range(self._top_k_road_points)]
+        
+        # 提取道路点特征
+        road_points = []
+        
+        for road_item in self._road_graph_cache:
+            road_type = road_item['type']
+            geometry = road_item['geometry']
+            
+            # 处理不同类型的几何数据
+            if isinstance(geometry, list) and len(geometry) > 0:
+                # 道路线（多个点）
+                for i, pt in enumerate(geometry):
+                    # 相对位置
+                    rel_x = pt['x'] - ego_pos.x
+                    rel_y = pt['y'] - ego_pos.y
+                    
+                    # 计算道路段长度
+                    if i < len(geometry) - 1:
+                        next_pt = geometry[i + 1]
+                        seg_length = np.sqrt(
+                            (next_pt['x'] - pt['x'])**2 + 
+                            (next_pt['y'] - pt['y'])**2
+                        )
+                        # 方向：指向下一个点
+                        orientation = np.arctan2(
+                            next_pt['y'] - pt['y'],
+                            next_pt['x'] - pt['x']
+                        )
+                    else:
+                        seg_length = 1.0  # 默认值
+                        orientation = 0.0
+                    
+                    # 道路点尺度（默认值）
+                    scale_x = 1.0
+                    scale_y = 1.0
+                    
+                    # 道路类型 one-hot (7 维)
+                    # ctrl-sim: {none:0, lane:1, road_line:2, road_edge:3, stop_sign:4, crosswalk:5, speed_bump:6, other:7}
+                    # gpudrive: {None:0, RoadLine:1, RoadEdge:2, RoadLane:3, CrossWalk:4, SpeedBump:5, StopSign:6}
+                    # 映射到 gpudrive 顺序
+                    type_mapping = {
+                        'none': 0,
+                        'road_line': 1,
+                        'road_edge': 2,
+                        'lane': 3,
+                        'crosswalk': 4,
+                        'speed_bump': 5,
+                        'stop_sign': 6,
+                        'other': 0,  # 映射到 None
+                    }
+                    type_idx = type_mapping.get(road_type, 0)
+                    type_onehot = np.zeros(7, dtype=np.float32)
+                    type_onehot[type_idx] = 1.0
+                    
+                    # 拼接特征 (13 维)
+                    road_feat = np.array([
+                        rel_x,
+                        rel_y,
+                        seg_length,
+                        scale_x,
+                        scale_y,
+                        orientation,
+                        *type_onehot
+                    ], dtype=np.float32)
+                    
+                    road_points.append((np.sqrt(rel_x**2 + rel_y**2), road_feat))
+            
+            elif isinstance(geometry, dict):
+                # 静态目标（如 stop_sign）
+                rel_x = geometry['x'] - ego_pos.x
+                rel_y = geometry['y'] - ego_pos.y
+                
+                type_mapping = {
+                    'stop_sign': 6,
+                    'crosswalk': 4,
+                    'speed_bump': 5,
+                }
+                type_idx = type_mapping.get(road_type, 0)
+                type_onehot = np.zeros(7, dtype=np.float32)
+                type_onehot[type_idx] = 1.0
+                
+                road_feat = np.array([
+                    rel_x,
+                    rel_y,
+                    0.0,  # length
+                    1.0,  # scale_x
+                    1.0,  # scale_y
+                    0.0,  # orientation
+                    *type_onehot
+                ], dtype=np.float32)
+                
+                road_points.append((np.sqrt(rel_x**2 + rel_y**2), road_feat))
+        
+        # 按距离排序，选择最近的 top_k 个点
+        road_points.sort(key=lambda x: x[0])
+        
+        road_graph_states = []
+        num_valid_points = min(len(road_points), self._top_k_road_points)
+        
+        for i in range(num_valid_points):
+            road_graph_states.append(road_points[i][1])
+        
+        # 填充不足的道路点
+        for _ in range(self._top_k_road_points - num_valid_points):
+            road_graph_states.append(np.zeros(13, dtype=np.float32))
+        
+        return road_graph_states
+
     def _get_student_observation(self) -> np.ndarray:
         """
-        获取学生策略的观测
+        获取学生策略的观测（Late Fusion 格式，与 gpudrive 一致）
         
-        观测向量结构（参考 ctrlsim_obs.md）：
-        - Ego 状态: [pos_x, pos_y, vel_x, vel_y, heading, speed, length, width] (8 维)
-        - 目标状态: [goal_x, goal_y, goal_heading, goal_speed, dist_to_goal] (5 维)
-        - 邻车状态: K 辆车 × [rel_x, rel_y, rel_vx, rel_vy, heading, speed, length, width] (K×8 维)
-        - 填充到 obs_dim
+        观测向量结构：
+        - Ego 状态: [speed, length, width, rel_goal_x, rel_goal_y, collision_state] (6 维)
+        - Partners: K 辆车 × [speed, rel_pos_x, rel_pos_y, rel_orientation, length, width] (K×6 维)
+        - Road graph: R 个点 × [pos_x, pos_y, length, scale_x, scale_y, orientation, type_onehot(7)] (R×13 维)
         
         Returns:
             观测向量，形状为 (obs_dim,)
@@ -1120,69 +1311,75 @@ class NocturneCtrlSimAdversarial(gym.Env):
         if self.ego_vehicle is None or self._ego_goal_dict is None:
             return np.zeros(self._obs_dim, dtype=np.float32)
         
-        obs = []
-        
-        # ========== Ego 状态 (8 维) ==========
+        # ========== Ego 状态 (6 维) ==========
         ego_pos = self.ego_vehicle.getPosition()
-        ego_vel = self.ego_vehicle.getVelocity()
         ego_heading = self.ego_vehicle.getHeading()
         ego_speed = self.ego_vehicle.getSpeed()
         
+        # 相对目标位置（ego 坐标系）
+        goal_pos = self._ego_goal_dict['pos']
+        rel_goal_x = goal_pos[0] - ego_pos.x
+        rel_goal_y = goal_pos[1] - ego_pos.y
+        
+        # 碰撞状态
+        collision_state = 1.0 if self._collision_occurred else 0.0
+        
         ego_state = np.array([
-            ego_pos.x,
-            ego_pos.y,
-            ego_vel.x,
-            ego_vel.y,
-            ego_heading,
             ego_speed,
             self.ego_vehicle.getLength(),
             self.ego_vehicle.getWidth(),
+            rel_goal_x,
+            rel_goal_y,
+            collision_state,
         ], dtype=np.float32)
-        obs.append(ego_state)
         
-        # ========== 目标状态 (5 维) ==========
-        goal_pos = self._ego_goal_dict['pos']
-        goal_heading = self._ego_goal_dict['heading']
-        goal_speed = self._ego_goal_dict['speed']
-        dist_to_goal = np.linalg.norm(goal_pos - np.array([ego_pos.x, ego_pos.y]))
+        # ========== Partner 状态 (K×6 维) ==========
+        # 使用 args 配置的 num_neighbors，从 __init__ 获取
+        max_neighbors = getattr(self, '_max_observable_agents', 16)
+        partner_states = []
         
-        goal_state = np.array([
-            goal_pos[0],
-            goal_pos[1],
-            goal_heading,
-            goal_speed,
-            dist_to_goal,
-        ], dtype=np.float32)
-        obs.append(goal_state)
-        
-        # ========== 邻车状态 ==========
-        # 选择最近的 K 辆邻车（已在 opponent_vehicles 中）
-        num_neighbors = min(len(self.opponent_vehicles), 7)
+        # 选择最近的 K 辆邻车
+        num_neighbors = min(len(self.opponent_vehicles), max_neighbors)
         
         for i in range(num_neighbors):
             veh = self.opponent_vehicles[i]
             veh_pos = veh.getPosition()
-            veh_vel = veh.getVelocity()
             
-            # 相对于 ego 的位置和速度
-            neighbor_state = np.array([
-                veh_pos.x - ego_pos.x,  # 相对位置
-                veh_pos.y - ego_pos.y,
-                veh_vel.x - ego_vel.x,  # 相对速度
-                veh_vel.y - ego_vel.y,
-                veh.getHeading(),
+            # 相对于 ego 的位置
+            rel_pos_x = veh_pos.x - ego_pos.x
+            rel_pos_y = veh_pos.y - ego_pos.y
+            
+            # 相对朝向
+            rel_orientation = veh.getHeading() - ego_heading
+            # 归一化到 [-pi, pi]
+            while rel_orientation > np.pi:
+                rel_orientation -= 2 * np.pi
+            while rel_orientation < -np.pi:
+                rel_orientation += 2 * np.pi
+            
+            partner_state = np.array([
                 veh.getSpeed(),
+                rel_pos_x,
+                rel_pos_y,
+                rel_orientation,
                 veh.getLength(),
                 veh.getWidth(),
             ], dtype=np.float32)
-            obs.append(neighbor_state)
+            partner_states.append(partner_state)
         
         # 填充不足的邻车为零向量
-        for _ in range(7 - num_neighbors):
-            obs.append(np.zeros(8, dtype=np.float32))
+        for _ in range(max_neighbors - num_neighbors):
+            partner_states.append(np.zeros(6, dtype=np.float32))
         
-        # 拼接所有观测
-        obs_concat = np.concatenate(obs)  # 8 + 5 + 7*8 = 69 维
+        # ========== Road Graph (R×13 维) ==========
+        road_graph_states = self._build_road_graph_obs(ego_pos, ego_heading)
+        
+        # ========== 拼接所有观测 ==========
+        obs_parts = [ego_state]
+        obs_parts.extend(partner_states)
+        obs_parts.extend(road_graph_states)
+        
+        obs_concat = np.concatenate(obs_parts)
         
         # 填充或截断到 obs_dim
         if len(obs_concat) < self._obs_dim:

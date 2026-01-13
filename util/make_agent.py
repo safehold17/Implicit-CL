@@ -138,43 +138,51 @@ def model_for_nocturne_agent(
     top_k_road_points=64,
     dropout=0.0,
     act_func="tanh",
+    recurrent=False,
+    random_teacher=False,
 ):
     """
-    为 Nocturne 驾驶环境创建 Student 策略模型
+    为 Nocturne 驾驶环境创建策略模型
     
     适用于 Nocturne + ctrl-sim 等驾驶场景。
-    使用方案A：ctrl-sim 语义观测 + 连续动作（accel, steer）。
+    - agent: Student 策略（Late Fusion，连续动作）
+    - adversary_env: Teacher 策略（关卡生成者，用于 PAIRED/Minimax）
     
     Args:
         env: 环境实例（需提供 observation_space 和 action_space）
-        agent_type: 'agent' (student) 或 'adversary_env'
+        agent_type: 'agent' (student) 或 'adversary_env' (teacher)
         input_dim: 各模态嵌入维度（Late Fusion 中间层）
         hidden_dim: 融合后的隐藏层维度
         num_neighbors: 邻车截断数量 K
         top_k_road_points: 道路点截断数量 R
         dropout: Dropout 概率
         act_func: 激活函数 ("tanh" 或 "gelu")
+        recurrent: 是否使用循环网络（仅 Teacher）
+        random_teacher: 是否使用随机 Teacher（基线对比）
     
     Returns:
-        model: StudentPolicy 实例
-    
-    Raises:
-        NotImplementedError: 当 agent_type 为 'adversary_env' 时
-            （Nocturne 的对手由 ctrl-sim 提供，不需要可训练的 adversary）
+        model: StudentPolicy 或 NocturneTeacherPolicy 实例
     """
-    # Nocturne 的 adversary_env 由 ctrl-sim 提供，不需要训练
-    if 'adversary_env' in agent_type:
-        raise NotImplementedError(
-            "Nocturne adversary is handled by ctrl-sim CtrlSimOpponentAdapter, "
-            "not a trainable policy. Do not call make_agent for 'adversary_env' "
-            "when using Nocturne environment."
-        )
+    from dcd_models import NocturneTeacherPolicy
     
-    # 验证环境空间
+    # Teacher 策略（关卡生成者）
+    if 'adversary_env' in agent_type:
+        obs_space = env.adversary_observation_space
+        action_space = env.adversary_action_space
+        
+        model = NocturneTeacherPolicy(
+            observation_space=obs_space,
+            action_space=action_space,
+            random=random_teacher,
+            recurrent=recurrent,
+            base_kwargs={'hidden_size': hidden_dim}
+        )
+        return model
+    
+    # Student 策略（驾驶策略）
     obs_shape = env.observation_space.shape
     action_space = env.action_space
     
-    # 创建 Student 策略（连续动作版）
     model = StudentPolicy(
         obs_shape=obs_shape,
         action_space=action_space,
@@ -210,7 +218,9 @@ def model_for_env_agent(
     student_num_neighbors=16,
     student_top_k_road=64,
     student_dropout=0.0,
-    student_act_func="tanh"):
+    student_act_func="tanh",
+    # Nocturne Teacher 策略参数
+    random_teacher=False):
     assert agent_type in ['agent', 'adversary_agent', 'adversary_env']
         
     if env_name.startswith('MultiGrid'):
@@ -239,6 +249,8 @@ def model_for_env_agent(
             recurrent_arch=recurrent_arch,
             use_lstm=use_lstm)
     elif env_name.startswith('Nocturne') or env_name.startswith('nocturne'):
+        # 对 Teacher 使用 recurrent_arch，对 Student 不使用
+        is_teacher = 'adversary_env' in agent_type
         model = model_for_nocturne_agent(
             env=env,
             agent_type=agent_type,
@@ -248,6 +260,8 @@ def model_for_env_agent(
             top_k_road_points=student_top_k_road,
             dropout=student_dropout,
             act_func=student_act_func,
+            recurrent=recurrent_arch is not None if is_teacher else False,
+            random_teacher=random_teacher,
         )
     else:
         raise ValueError(f'Unsupported environment {env_name}.')
@@ -302,7 +316,9 @@ def make_agent(name, env, args, device='cpu'):
         student_num_neighbors=vars(args).get('student_num_neighbors', 16),
         student_top_k_road=vars(args).get('student_top_k_road', 64),
         student_dropout=vars(args).get('student_dropout', 0.0),
-        student_act_func=vars(args).get('student_act_func', 'tanh'))
+        student_act_func=vars(args).get('student_act_func', 'tanh'),
+        # Nocturne Teacher 参数
+        random_teacher=vars(args).get('random_teacher', False))
 
     algo = None
     storage = None

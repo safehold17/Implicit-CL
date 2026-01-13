@@ -10,3 +10,4 @@ from .car_racing_models import CarRacingNetwork, CarRacingBezierAdversaryEnvNetw
 from .walker_models import BipedalWalkerStudentPolicy, BipedalWalkerAdversaryPolicy
 from .recurrent_walker_models import BipedalWalkerRecurrentStudentPolicy, BipedalWalkerRecurrentAdversaryPolicy
 from .student_models import StudentPolicy, LateFusionBase
+from .teacher_nocturne import NocturneTeacherPolicy
