@@ -25,6 +25,9 @@ from .walker_models import DiagGaussian, FixedNormal
 
 # ============== 观测空间常量 ==============
 # 与 gpudrive/env/constants.py 保持一致
+# Ego: [speed, length, width, rel_goal_x, rel_goal_y, collision_state]
+# Partner: [speed, rel_pos_x, rel_pos_y, rel_orientation, length, width]
+# Road graph: [pos_x, pos_y, length, scale_x, scale_y, orientation, type_onehot(7)]
 EGO_FEAT_DIM = 6
 PARTNER_FEAT_DIM = 6
 ROAD_GRAPH_FEAT_DIM = 13
