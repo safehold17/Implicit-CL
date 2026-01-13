@@ -197,6 +197,17 @@ if __name__ == '__main__':
             stats.update(test_stats) # Ensures sps column is always before test stats
             log_stats(stats)
 
+        # === Log PLR level weights ===
+        if args.weight_log_interval > 0 and \
+           j % args.weight_log_interval == 0 and \
+           train_runner.level_samplers:
+            # Get the first available level sampler (usually 'agent')
+            level_sampler = train_runner.all_level_samplers[0]
+            if level_sampler is not None:
+                weights = level_sampler.sample_weights()
+                seeds = level_sampler.seeds
+                filewriter.log_level_weights(weights, seeds)
+
         checkpoint_idx = getattr(train_runner, args.checkpoint_basis)
 
         if checkpoint_idx != last_checkpoint_idx:
@@ -244,6 +255,8 @@ if __name__ == '__main__':
     if evaluator is not None:
         evaluator.close()
     venv.close()
+
+    filewriter.close(successful=True)
 
     if display:
         display.stop()
