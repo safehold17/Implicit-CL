@@ -33,7 +33,7 @@ from envs.bipedalwalker import *
 from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim 环境（触发注册）
 from envs.runners.adversarial_runner import AdversarialRunner 
 from util import make_agent, FileWriter, safe_checkpoint, create_parallel_env, make_plr_args, save_images
-from scripts.eval import Evaluator
+from eval import Evaluator
 
 
 if __name__ == '__main__':
