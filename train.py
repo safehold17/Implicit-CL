@@ -9,6 +9,7 @@ import os
 import time
 import timeit
 import logging
+import numpy as np
 from arguments import parser
 
 import torch
@@ -58,6 +59,24 @@ if __name__ == '__main__':
             # 构造 key_excluded 字典（所有 key 都不排除）
             key_excluded = {k: () for k in stats.keys()}
             HumanOutputFormat(sys.stdout).write(stats, key_excluded=key_excluded, step=0)
+
+    def log_final_test_eval(env_returns, agent_name):
+        if env_returns is None:
+            return
+        for env_name, returns in env_returns.items():
+            if returns:
+                mean_return = float(np.mean(returns))
+                median_return = float(np.median(returns))
+            else:
+                mean_return = ''
+                median_return = ''
+            filewriter.log_final_test_eval({
+                'env_name': env_name,
+                'agent_name': agent_name,
+                'num_test_seeds': '',
+                'mean_episode_return': mean_return,
+                'median_episode_return': median_return,
+            })
 
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
@@ -180,16 +199,35 @@ if __name__ == '__main__':
         if log:
             # Eval
             test_stats = {}
+            agent_env_returns = None
+            adv_env_returns = None
             if evaluator is not None and (j % args.test_interval == 0 or j == num_updates - 1):
-                test_stats = evaluator.evaluate(train_runner.agents['agent'])
+                if j == num_updates - 1:
+                    test_stats, agent_env_returns = evaluator.evaluate(
+                        train_runner.agents['agent'],
+                        return_episode_returns=True)
+                else:
+                    test_stats = evaluator.evaluate(train_runner.agents['agent'])
                 stats.update(test_stats)
-                if args.use_accel_paired:
-                    adv_test_stats = evaluator.evaluate(train_runner.agents['adversary_agent'])
-                    curr_keys = list(adv_test_stats.keys())
-                    for curr_key in curr_keys:
-                        adv_test_stats[f"advagent_{curr_key}"] = adv_test_stats[curr_key]
-                        adv_test_stats.pop(curr_key, None)
-                    stats.update(adv_test_stats)
+                if train_runner.agents.get('adversary_agent') is not None and (
+                    args.use_accel_paired or j == num_updates - 1
+                ):
+                    if j == num_updates - 1:
+                        adv_test_stats, adv_env_returns = evaluator.evaluate(
+                            train_runner.agents['adversary_agent'],
+                            return_episode_returns=True)
+                    else:
+                        adv_test_stats = evaluator.evaluate(train_runner.agents['adversary_agent'])
+                    if args.use_accel_paired:
+                        curr_keys = list(adv_test_stats.keys())
+                        for curr_key in curr_keys:
+                            adv_test_stats[f"advagent_{curr_key}"] = adv_test_stats[curr_key]
+                            adv_test_stats.pop(curr_key, None)
+                        stats.update(adv_test_stats)
+
+                if j == num_updates - 1:
+                    log_final_test_eval(agent_env_returns, 'agent')
+                    log_final_test_eval(adv_env_returns, 'adversary_agent')
             elif evaluator is not None:
                 stats.update({k:None for k in evaluator.get_stats_keys()})
 

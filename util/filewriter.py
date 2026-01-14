@@ -160,7 +160,13 @@ class FileWriter:
         self._logger.info("Saving logs data to %s", self.paths["logs"])
         self._logger.info("Saving logs' fields to %s", self.paths["fields"])
         self.fieldnames = ["_tick", "_time"]
-        self.final_test_eval_fieldnames = ['num_test_seeds', 'mean_episode_return', 'median_episode_return']
+        self.final_test_eval_fieldnames = [
+            'env_name',
+            'agent_name',
+            'num_test_seeds',
+            'mean_episode_return',
+            'median_episode_return',
+        ]
         self.level_seeds_fieldnames = ['new_seeds', 'new_seed_indices']
         if os.path.exists(self.paths["logs"]):
             self._logger.warning(

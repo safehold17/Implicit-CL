@@ -314,7 +314,8 @@ class Evaluator(object):
 		deterministic=False, 
 		show_progress=False,
 		render=False,
-		accumulator='mean'):
+		accumulator='mean',
+		return_episode_returns=False):
 
 		# Evaluate agent for N episodes
 		venv = self.venv
@@ -393,6 +394,8 @@ class Evaluator(object):
 			else:
 				stats[f"test_returns:{env_name}"] = env_returns[env_name]
 
+		if return_episode_returns:
+			return stats, env_returns
 		return stats
 
 
