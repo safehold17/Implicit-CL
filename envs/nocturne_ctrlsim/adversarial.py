@@ -8,6 +8,7 @@ Nocturne + CtRL-Sim 对抗环境
 - Level 变异和编辑
 """
 import gym
+import math
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Union
 
@@ -1591,10 +1592,127 @@ class NocturneCtrlSimAdversarial(gym.Env):
         return info
     
     def render(self, mode='human'):
-        """渲染环境（可选）"""
-        # 目前不支持实时渲染
-        # 使用 start_recording() / stop_recording() 进行视频录制
-        pass
+        """渲染环境（静态截图）"""
+        if mode not in ['human', 'rgb_array', 'level']:
+            raise NotImplementedError
+
+        if self.scenario is None or not self.vehicles:
+            return None
+
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+        import matplotlib.patches as mpatches
+        import matplotlib.transforms as transforms
+
+        vehicle_data = []
+        positions = []
+        for veh in self.vehicles:
+            pos = veh.getPosition()
+            if pos.x == -10000 and pos.y == -10000:
+                continue
+            vehicle_data.append({
+                'id': veh.getID(),
+                'x': pos.x,
+                'y': pos.y,
+                'heading': veh.getHeading(),
+                'length': veh.getLength(),
+                'width': veh.getWidth(),
+            })
+            positions.append([pos.x, pos.y])
+
+        if not vehicle_data:
+            return None
+
+        fig = Figure(figsize=(10, 10))
+        canvas = FigureCanvas(fig)
+        ax = fig.add_subplot(111)
+
+        def _draw_road(geometry, color, linewidth):
+            if isinstance(geometry, dict):
+                ax.scatter(geometry['x'], geometry['y'], color='red', s=20, zorder=1)
+            elif isinstance(geometry, list) and len(geometry) > 0:
+                xs = [p['x'] for p in geometry]
+                ys = [p['y'] for p in geometry]
+                ax.plot(xs, ys, color=color, linewidth=linewidth, zorder=1)
+
+        roads_data = self._road_graph_cache
+        if roads_data is None and self.scenario is not None:
+            roads_data = self.data_bridge.get_road_data(self.scenario)
+
+        if roads_data:
+            for road in roads_data:
+                if road.get('type') == 'road_edge':
+                    _draw_road(road.get('geometry', []), color='grey', linewidth=0.5)
+            for road in roads_data:
+                if road.get('type') != 'road_edge':
+                    _draw_road(road.get('geometry', []), color='lightgray', linewidth=0.3)
+
+        positions = np.array(positions)
+        x_min = np.min(positions[:, 0]) - 25
+        x_max = np.max(positions[:, 0]) + 25
+        y_min = np.min(positions[:, 1]) - 25
+        y_max = np.max(positions[:, 1]) + 25
+
+        if (x_max - x_min) > (y_max - y_min):
+            diff = (x_max - x_min) - (y_max - y_min)
+            y_min -= diff / 2
+            y_max += diff / 2
+        else:
+            diff = (y_max - y_min) - (x_max - x_min)
+            x_min -= diff / 2
+            x_max += diff / 2
+
+        line_scale = (x_max - x_min) / 140 if x_max > x_min else 1.0
+        lw = 0.35 / line_scale
+        heading_lw = 0.25 / line_scale
+
+        highlight_ids = set()
+        if self.ego_vehicle is not None:
+            highlight_ids.add(self.ego_vehicle.getID())
+
+        for veh in vehicle_data:
+            is_highlight = veh['id'] in highlight_ids
+            color = '#ff6b6b' if is_highlight else '#ffde8b'
+            alpha = 0.8 if is_highlight else 0.5
+
+            length = veh['length'] * 0.8
+            width = veh['width'] * 0.8
+            bbox_x_min = veh['x'] - width / 2
+            bbox_y_min = veh['y'] - length / 2
+
+            rectangle = mpatches.FancyBboxPatch(
+                (bbox_x_min, bbox_y_min),
+                width, length,
+                ec='black', fc=color, linewidth=lw, alpha=alpha,
+                boxstyle=mpatches.BoxStyle("Round", pad=0.3),
+                zorder=4
+            )
+
+            tr = transforms.Affine2D().rotate_deg_around(
+                veh['x'], veh['y'], math.degrees(veh['heading']) - 90
+            ) + ax.transData
+            rectangle.set_transform(tr)
+            ax.add_patch(rectangle)
+
+            heading_length = length / 2 + 1.5
+            line_end_x = veh['x'] + heading_length * math.cos(veh['heading'])
+            line_end_y = veh['y'] + heading_length * math.sin(veh['heading'])
+            ax.plot(
+                [veh['x'], line_end_x], [veh['y'], line_end_y],
+                color='black', zorder=6, alpha=0.25, linewidth=heading_lw
+            )
+
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.set_aspect('equal', adjustable='box')
+        ax.tick_params(left=False, right=False, labelleft=False, labelbottom=False, bottom=False)
+
+        fig.tight_layout()
+        canvas.draw()
+        image = np.asarray(canvas.buffer_rgba())[:, :, :3].copy()
+        fig.clear()
+
+        return image
     
     def start_recording(self, output_dir: str, video_name: str, fps: int = 10, dpi: int = 100):
         """
