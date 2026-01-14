@@ -154,8 +154,11 @@ class SubprocVecEnv(VecEnv):
     def step_async(self, action):
         self._assert_not_closed()
         action = np.array_split(action, self.nremotes)
+        # 在评估模式下使用 step_env 而不是 step
+        # step_env 在 episode 结束时调用 reset_agent() 而不是 reset()
+        cmd = 'step_env' if self.is_eval else 'step'
         for remote, action in zip(self.remotes, action):
-            remote.send(('step', action))
+            remote.send((cmd, action))
         self.waiting = True
 
     def step_wait(self):

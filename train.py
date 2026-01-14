@@ -155,7 +155,11 @@ if __name__ == '__main__':
             num_action_repeat=args.num_action_repeat,
             use_global_critic=args.use_global_critic,
             use_global_policy=args.use_global_policy,
-            device=device)
+            device=device,
+            scenario_index_path=args.scenario_index_path,
+            opponent_checkpoint=args.opponent_checkpoint,
+            scenario_data_dir=args.scenario_data_dir,
+            preprocess_dir=args.preprocess_dir)
 
     # === Train === 
     last_checkpoint_idx = getattr(train_runner, args.checkpoint_basis)

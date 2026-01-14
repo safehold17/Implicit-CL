@@ -246,7 +246,7 @@ parser.add_argument(
 parser.add_argument(
     "--level_replay_prob", 
     type=float,
-    default=0.,
+    default=0.5,
     help="Probability of sampling a replay level instead of a new level.")
 parser.add_argument(
     "--level_replay_alpha",
