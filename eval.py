@@ -325,7 +325,12 @@ class Evaluator(object):
 			returns = []
 			solved_episodes = 0
 
-			obs = venv.reset()
+			# 对于 Nocturne-CtrlSim-Adversarial 环境，在评估时使用 reset_random
+			# 因为 reset() 返回 adversary 观测（字典），而我们需要 agent 观测（数组）
+			if env_name.startswith('Nocturne') and hasattr(venv, 'reset_random'):
+				obs = venv.reset_random()
+			else:
+				obs = venv.reset()
 			recurrent_hidden_states = torch.zeros(
 				self.num_processes, agent.algo.actor_critic.recurrent_hidden_state_size, device=self.device)
 			if agent.algo.actor_critic.is_recurrent and agent.algo.actor_critic.rnn.arch == 'lstm':
