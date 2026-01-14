@@ -1669,11 +1669,20 @@ class NocturneCtrlSimAdversarial(gym.Env):
         highlight_ids = set()
         if self.ego_vehicle is not None:
             highlight_ids.add(self.ego_vehicle.getID())
+        opponent_ids = set(self.opponent_vehicle_ids) if self.opponent_vehicle_ids else set()
 
         for veh in vehicle_data:
             is_highlight = veh['id'] in highlight_ids
-            color = '#ff6b6b' if is_highlight else '#ffde8b'
-            alpha = 0.8 if is_highlight else 0.5
+            is_opponent = (not is_highlight) and veh['id'] in opponent_ids
+            if is_highlight:
+                color = '#ff6b6b'
+                alpha = 0.8
+            elif is_opponent:
+                color = '#4aa3ff'
+                alpha = 0.8
+            else:
+                color = '#ffde8b'
+                alpha = 0.5
 
             length = veh['length'] * 0.8
             width = veh['width'] * 0.8

@@ -44,8 +44,8 @@ class InterestingPairFinder:
         self,
         cfg,
         goal_dist_threshold: float = 20.0,
-        timestep_diff_threshold: int = 30,
-        traj_len_threshold: int = 50,
+        timestep_diff_threshold: int = 40,
+        traj_len_threshold: int = 30,
         history_steps: int = 10,
         max_episode_steps: int = 90
     ):
