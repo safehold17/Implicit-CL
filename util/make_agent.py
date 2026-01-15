@@ -163,16 +163,16 @@ def model_for_nocturne_agent(
         random_teacher: 是否使用随机 Teacher（基线对比）
     
     Returns:
-        model: StudentPolicy 或 NocturneTeacherPolicy 实例
+        model: StudentPolicy 或 NocturneAdversaryPolicy 实例
     """
-    from dcd_models import NocturneTeacherPolicy
+    from dcd_models import NocturneAdversaryPolicy
     
     # Teacher 策略（关卡生成者）
     if 'adversary_env' in agent_type:
         obs_space = env.adversary_observation_space
         action_space = env.adversary_action_space
         
-        model = NocturneTeacherPolicy(
+        model = NocturneAdversaryPolicy(
             observation_space=obs_space,
             action_space=action_space,
             random=random_teacher,

@@ -1,10 +1,3 @@
-# Copyright (c) 2017 Ilya Kostrikov
-# 
-# Licensed under the MIT License;
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://opensource.org/licenses/MIT
 
 """
 Student 驾驶策略网络（Late Fusion 架构）

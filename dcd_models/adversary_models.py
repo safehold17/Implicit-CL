@@ -1,10 +1,4 @@
-# Copyright (c) 2017 Ilya Kostrikov
-# 
-# Licensed under the MIT License;
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://opensource.org/licenses/MIT
+
 
 """
 Teacher 策略网络（用于 PAIRED/Minimax）
@@ -26,7 +20,7 @@ from .common import DeviceAwareModule
 from .walker_models import DiagGaussian, MLPBase
 
 
-class NocturneTeacherPolicy(DeviceAwareModule):
+class NocturneAdversaryPolicy(DeviceAwareModule):
     """
     Nocturne Teacher 策略（关卡生成者）
     
