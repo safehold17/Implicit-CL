@@ -343,9 +343,9 @@ class NNBase(nn.Module):
 
 class MLPBase(NNBase):
     def __init__(self, num_inputs, recurrent=False, recurrent_arch=None, hidden_size=64):
-        # 兼容旧的 boolean recurrent 参数
+        # old boolean recurrent parameter
         if recurrent and recurrent_arch is None:
-            recurrent_arch = 'gru'  # 默认使用 GRU
+            recurrent_arch = 'gru'  # default to GRU if recurrent is True
         elif not recurrent:
             recurrent_arch = None
         
