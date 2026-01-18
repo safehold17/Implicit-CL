@@ -42,6 +42,10 @@ class VecNormalize(VecEnvWrapper):
         return obs, rews, news, infos
 
     def _obfilt(self, obs):
+        # 如果观测是字典类型(adversary observation),直接返回不进行归一化
+        if isinstance(obs, dict):
+            return obs
+            
         if self.ob_rms:
             self.ob_rms.update(obs)
             obs = np.clip((obs - self.ob_rms.mean) / np.sqrt(self.ob_rms.var + self.epsilon), -self.clipob, self.clipob)
