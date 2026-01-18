@@ -21,7 +21,7 @@ from .filewriter import FileWriter
 from envs.wrappers import ParallelAdversarialVecEnv, VecMonitor, VecNormalize, \
     VecPreprocessImageWrapper, VecFrameStack, CarRacingWrapper, TimeLimit
 
-# MultiGridFullyObsWrapper relying on gym_minigrid, delayed import
+# MultiGridFullyObsWrapper depends on gym_minigrid, import lazily
 try:
     from envs.wrappers import MultiGridFullyObsWrapper
 except ImportError:
@@ -106,7 +106,7 @@ def save_images(images, path=None, normalize=False, channels_first=False):
         return
 
     if isinstance(images, (list, tuple)):
-        # Filter out None values and ensure all image types are consistent
+        # Filter None values and ensure all image types are consistent
         images = [img for img in images if img is not None]
         if len(images) == 0:
             return
@@ -213,7 +213,7 @@ def create_parallel_env(args, adversary=True):
     venv = ParallelAdversarialVecEnv([make_fn]*args.num_processes, adversary=adversary)
     venv = VecMonitor(venv=venv, filename=None, keep_buf=100)
 
-    normalize_obs = getattr(args, 'normalize_observations', False) # False 以避免字典观测的归一化错误 avoiding normalization error of dictionary observations
+    normalize_obs = getattr(args, 'normalize_observations', False) # Set to False to avoid normalization error for dictionary observations
     venv = VecNormalize(venv=venv, ob=normalize_obs, ret=args.normalize_returns)
 
     venv = VecPreprocessImageWrapper(venv=venv)
@@ -232,7 +232,7 @@ def is_dense_reward_env(env_name):
     if env_name.startswith('CarRacing'):
         return True
     elif env_name.startswith('Nocturne'):
-        return True  # Nocturne using dense reward
+        return True  # Nocturne 使用 dense reward
     else:
         return False
 
