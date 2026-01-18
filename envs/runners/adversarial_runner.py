@@ -141,7 +141,7 @@ class AdversarialRunner(object):
             self._init_alp_gmm()
 
     @property
-    def use_byte_encoding(self):
+    def use_byte_encoding(self): # add support for Nocturne
         env_name = self.args.env_name
         if self.args.use_editor \
            or env_name.startswith('BipedalWalker') \
@@ -163,17 +163,7 @@ class AdversarialRunner(object):
             else:
                 param_env_bounds = {'actions': [0,2,8]}
             reward_bounds = (-200, 350)
-        elif args.env_name.startswith('Nocturne') or args.env_name.startswith('nocturne'):
-            # Nocturne Level 参数：4 维连续空间
-            # - scenario_idx: 场景索引（离散，范围取决于场景池大小）
-            # - goal_tilt: 目标奖励倾斜 [-25, 25]
-            # - veh_veh_tilt: 车-车碰撞奖励倾斜 [-25, 25]
-            # - veh_edge_tilt: 车-边界碰撞奖励倾斜 [-25, 25]
-            # 
-            # ALP-GMM 参数格式: {'actions': [dim, low, high]}
-            # 这里使用 4 维连续参数空间，范围 [0, 4]（内部映射到实际值）
-            param_env_bounds = {'actions': [0, 4, 4]}  # 4 维，范围 [0, 4]
-            reward_bounds = (-100, 100)  # 奖励范围需根据实际调整
+        # TODO: Add Nocturne support if using ALP-GMM
         else:
             raise ValueError(f'Environment {args.env_name} not supported for ALP-GMM')
 
