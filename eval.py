@@ -296,7 +296,7 @@ class Evaluator(object):
 
 		make_fn = []
 		for env_name in env_names:
-			make_fn = [lambda: Evaluator.make_env(env_name, record_video, **kwargs)]*self.num_processes
+			make_fn = [lambda: Evaluator._make_env(env_name, record_video, **kwargs)]*self.num_processes
 			venv = ParallelAdversarialVecEnv(make_fn, adversary=False, is_eval=True)
 			venv = Evaluator.wrap_venv(venv, env_name, device=device)
 			self.venv[env_name] = venv

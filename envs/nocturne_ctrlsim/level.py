@@ -33,7 +33,6 @@ class ScenarioLevel:
     veh_edge_tilt: float
 
     def __post_init__(self):
-        # 验证 seed 为非负整数
         if self.seed < 0:
             raise ValueError(f"seed must be non-negative, got {self.seed}")
 
@@ -59,7 +58,7 @@ class ScenarioLevel:
 
     @classmethod
     def from_level_string(cls, level_str: str) -> "ScenarioLevel":
-        # 使用 ast.literal_eval 替代 eval 以避免代码执行风险
+        # Use ast.literal_eval instead of eval to avoid code execution risks
         t = ast.literal_eval(level_str)
         return cls(
             scenario_id=t[0],
