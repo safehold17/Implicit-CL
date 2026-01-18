@@ -1,14 +1,3 @@
-# Copyright (c) 2017 Ilya Kostrikov
-# 
-# Licensed under the MIT License;
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://opensource.org/licenses/MIT
-#
-# This file is a modified version code found in
-# https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/
-
 import numpy as np
 import torch
 import torch.nn as nn

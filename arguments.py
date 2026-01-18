@@ -560,33 +560,33 @@ parser.add_argument(
     '--student_input_dim',
     type=int,
     default=64,
-    help='Student Late Fusion 各模态嵌入维度')
+    help='The embedding dimension of each modality in Student Late Fusion')
 parser.add_argument(
     '--student_hidden_dim',
     type=int,
     default=128,
-    help='Student Late Fusion 融合后隐藏层维度')
+    help='The hidden dimension of the fused Student Late Fusion')
 parser.add_argument(
     '--student_num_neighbors',
     type=int,
     default=16,
-    help='Student 邻车截断数量（观测中的最近邻车数）')
+    help='The number of nearest neighbors in the observation (number of nearest cars)')
 parser.add_argument(
     '--student_top_k_road',
     type=int,
     default=64,
-    help='Student 道路点截断数量（观测中的最近道路点数）')
+    help='The number of nearest road points in the observation (number of nearest road points)')
 parser.add_argument(
     '--student_dropout',
     type=float,
     default=0.0,
-    help='Student 网络 Dropout 概率')
+    help='The dropout probability of the Student network')
 parser.add_argument(
     '--student_act_func',
     type=str,
     default='tanh',
     choices=['tanh', 'gelu', 'relu'],
-    help='Student 网络激活函数')
+    help='The activation function of the Student network')
 
 # ============== Nocturne 环境配置参数 ==============
 # 用于 Nocturne + ctrl-sim 驾驶环境
@@ -594,24 +594,24 @@ parser.add_argument(
     '--scenario_index_path',
     type=str,
     default='data/scenarios_index.json',
-    help='Nocturne 场景索引 JSON 文件路径')
+    help='The path to the Nocturne scenario index JSON file')
 parser.add_argument(
     '--opponent_checkpoint',
     type=str,
     default='checkpoints/model.ckpt',
-    help='ctrl-sim 对手模型 checkpoint 路径')
+    help='The path to the ctrl-sim opponent model checkpoint')
 parser.add_argument(
     '--scenario_data_dir',
     type=str,
     default='data/nocturne_waymo/formatted_json_v2_no_tl_train',
-    help='Nocturne 场景数据目录')
+    help='The directory of the Nocturne scenario data')
 parser.add_argument(
     '--preprocess_dir',
     type=str,
     default='data/preprocess',
-    help='ctrl-sim 预处理数据目录')
+    help='The directory of the ctrl-sim preprocessed data')
 parser.add_argument(
     '--nocturne_max_episode_steps',
     type=int,
     default=90,
-    help='Nocturne 环境最大步数')
+    help='The maximum number of steps in the Nocturne environment')

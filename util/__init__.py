@@ -21,7 +21,7 @@ from .filewriter import FileWriter
 from envs.wrappers import ParallelAdversarialVecEnv, VecMonitor, VecNormalize, \
     VecPreprocessImageWrapper, VecFrameStack, CarRacingWrapper, TimeLimit
 
-# MultiGridFullyObsWrapper 依赖 gym_minigrid，延迟导入
+# MultiGridFullyObsWrapper relying on gym_minigrid, delayed import
 try:
     from envs.wrappers import MultiGridFullyObsWrapper
 except ImportError:
@@ -106,7 +106,7 @@ def save_images(images, path=None, normalize=False, channels_first=False):
         return
 
     if isinstance(images, (list, tuple)):
-        # 过滤 None 值并确保所有图像类型一致
+        # Filter out None values and ensure all image types are consistent
         images = [img for img in images if img is not None]
         if len(images) == 0:
             return
@@ -155,7 +155,7 @@ def _make_env(args):
         env_kwargs.update({
             'fixed_environment': True})
     
-    # ✅ 新增：Nocturne 环境配置
+    # Nocturne environment configuration
     if args.env_name.startswith('Nocturne'):
         env_kwargs.update({
             'scenario_index_path': getattr(args, 'scenario_index_path', 'data/scenarios_index.json'),
@@ -205,47 +205,19 @@ def _make_env(args):
 
 
 def create_parallel_env(args, adversary=True):
-    is_multigrid = args.env_name.startswith('MultiGrid')
-    is_car_racing = args.env_name.startswith('CarRacing')
-    is_bipedalwalker = args.env_name.startswith('BipedalWalker')
-    is_nocturne = args.env_name.startswith('Nocturne')
-
-    # ⚠️ 警告：GPU 内存风险
-    if is_nocturne and getattr(args, 'device', 'cpu') == 'cuda' and args.num_processes > 1:
-        print(f"WARNING: Running {args.num_processes} Nocturne environments on GPU may cause OOM.")
+    if not args.env_name.startswith('Nocturne'):
+        raise ValueError(f"Only Nocturne environments are supported, got: {args.env_name}")
 
     make_fn = lambda: _make_env(args)
 
     venv = ParallelAdversarialVecEnv([make_fn]*args.num_processes, adversary=adversary)
     venv = VecMonitor(venv=venv, filename=None, keep_buf=100)
-    
-    # ✅ 改进：Nocturne 观测空间可能需要归一化
-    # BipedalWalker 使用 ob=False，但 Nocturne 的 128 维向量可能需要 ob=True
-    # 根据实际测试结果调整
-    normalize_obs = False
-    if is_nocturne and getattr(args, 'normalize_observations', False):
-        normalize_obs = True
-    
+
+    normalize_obs = getattr(args, 'normalize_observations', False) # False 以避免字典观测的归一化错误 avoiding normalization error of dictionary observations
     venv = VecNormalize(venv=venv, ob=normalize_obs, ret=args.normalize_returns)
 
-    obs_key = None
-    scale = None
-    transpose_order = [2,0,1] # Channels first
-    if is_multigrid:
-        obs_key = 'image'
-        scale = 10.0
-
-    if is_car_racing:
-        ued_venv = VecPreprocessImageWrapper(venv=venv) # move to tensor
-
-    if is_bipedalwalker or is_nocturne:
-        transpose_order = None
-
-    venv = VecPreprocessImageWrapper(venv=venv, obs_key=obs_key,
-            transpose_order=transpose_order, scale=scale)
-
-    if is_multigrid or is_bipedalwalker or is_nocturne:
-        ued_venv = venv
+    venv = VecPreprocessImageWrapper(venv=venv)
+    ued_venv = venv
 
     if args.singleton_env:
         seeds = [args.seed]*args.num_processes
@@ -260,7 +232,7 @@ def is_dense_reward_env(env_name):
     if env_name.startswith('CarRacing'):
         return True
     elif env_name.startswith('Nocturne'):
-        return True  # Nocturne 使用 dense reward
+        return True  # Nocturne using dense reward
     else:
         return False
 
