@@ -30,16 +30,9 @@ from envs.registration import make as gym_make
 # from envs.multigrid.mst_maze import *
 from envs.box2d import *
 from envs.bipedalwalker import *
-from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim 环境
+from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim  env
 from envs.wrappers import VecMonitor, VecPreprocessImageWrapper, ParallelAdversarialVecEnv, \
-	VecFrameStack, CarRacingWrapper
-# MultiGridFullyObsWrapper 依赖 gym_minigrid，延迟导入
-try:
-	from envs.wrappers import MultiGridFullyObsWrapper
-	HAS_MULTIGRID = True
-except ImportError:
-	HAS_MULTIGRID = False
-	MultiGridFullyObsWrapper = None
+	MultiGridFullyObsWrapper, VecFrameStack, CarRacingWrapper
 from util import DotDict, str2bool, make_agent, create_parallel_env, is_discrete_actions
 from arguments import parser
 
@@ -177,19 +170,24 @@ class Evaluator(object):
 		return keys
 
 	@staticmethod
-	def make_env(env_name, record_video=False, **kwargs):
+	def _make_env(env_name, record_video=False, **kwargs):
 		is_nocturne = env_name.startswith('Nocturne')
 		
 		if env_name in ['BipedalWalker-v3', 'BipedalWalkerHardcore-v3']:
 			env = gym.make(env_name)
 		elif is_nocturne:
-			# Nocturne 环境需要额外配置参数，直接实例化
+			# make Nocturne env 
 			from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
-			nocturne_kwargs = {
-				k: v for k, v in kwargs.items() 
-				if k in ['scenario_index_path', 'opponent_checkpoint', 
-				         'scenario_data_dir', 'preprocess_dir', 'device']
-			}
+			nocturne_kwargs = {}
+			for k, v in kwargs.items():
+				if k in [
+					'scenario_index_path',
+					'opponent_checkpoint',
+					'scenario_data_dir',
+					'preprocess_dir',
+					'device'
+				]:
+					nocturne_kwargs[k] = v
 			env = NocturneCtrlSimAdversarial(**nocturne_kwargs)
 		else:
 			env = gym_make(env_name)
@@ -218,10 +216,10 @@ class Evaluator(object):
 				print('Recording video!', flush=True)
 
 		if is_nocturne:
-			# Nocturne 环境使用自定义视频录制（不依赖 gym render）
+			# Nocturne env rendering method (not rely on gym render)
 			if record_video:
 				video_dir = kwargs.get('video_dir', 'videos/')
-				# 使用简单的包装器来管理视频录制
+				# Use a simple wrapper to manage video recording 
 				original_env = env
 				
 				class VideoWrapper:
@@ -233,7 +231,7 @@ class Evaluator(object):
 						self.action_space = original_env.action_space
 					
 					def reset(self, **kw):
-						# 对于 Nocturne 环境，默认使用 reset_random()
+						# in nocturne env, using reset_random()
 						if hasattr(self.env, 'reset_random') and not kw:
 							obs = self.env.reset_random()
 						else:
@@ -325,9 +323,10 @@ class Evaluator(object):
 		for env_name, venv in self.venv.items():
 			returns = []
 			solved_episodes = 0
-
-			# 对于 Nocturne-CtrlSim-Adversarial 环境，在评估时使用 reset_random
-			# 因为 reset() 返回 adversary 观测（字典），而我们需要 agent 观测（数组）
+			# PAIRED/Minimax returns adversary obs, level info, reset 
+			# DR/PLR envs return agent obs, vehicle and map info, reset_random
+			# reset() returns adversary observation (dict), but we need agent observation (array)
+			# For Nocturne-CtrlSim-Adversarial env, use reset_random during evaluation
 			if env_name.startswith('Nocturne') and hasattr(venv, 'reset_random'):
 				obs = venv.reset_random()
 			else:

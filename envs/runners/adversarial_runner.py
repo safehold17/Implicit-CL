@@ -371,38 +371,39 @@ class AdversarialRunner(object):
 
     def _get_env_stats_nocturne(self, agent_info, adversary_agent_info):
         """
-        获取 Nocturne 环境的统计信息
+        Nocturne environment statistics
         
-        依赖环境实现 get_complexity_info() 方法，返回每个并行环境的指标字典。
+        Relies on the environment implementing the get_complexity_info() method, 
+        which returns a dictionary of metrics for each parallel environment.
         
-        预期指标（环境端需实现）：
-        - scenario_id: 场景 ID
-        - goal_tilt / veh_veh_tilt / veh_edge_tilt: tilt 参数
-        - collision_rate: 碰撞率
-        - offroad_rate: 出界率
-        - goal_reached_rate: 到达目标率
-        - avg_progress: 平均进度
-        - episode_length: 平均 episode 长度
+        Expected metrics (to be implemented on the environment side):
+        - scenario_id: Scenario ID
+        - goal_tilt / veh_veh_tilt / veh_edge_tilt: tilt parameters
+        - collision_rate: collision rate
+        - offroad_rate: offroad rate
+        - goal_reached_rate: goal reached rate
+        - avg_progress: average progress
+        - episode_length: average episode length
         
         Args:
-            agent_info: agent rollout 信息
-            adversary_agent_info: adversary agent rollout 信息（Nocturne 不使用）
+            agent_info: agent rollout information
+            adversary_agent_info: adversary agent rollout information (not used in Nocturne)
         
         Returns:
-            stats: 包含场景复杂度指标的字典
+            stats: Dictionary containing scenario complexity metrics
         """
-        # 从环境获取复杂度信息
+        # Retrieve complexity information from the environment
         try:
             infos = self.venv.get_complexity_info()
         except AttributeError:
-            # 环境未实现 get_complexity_info，返回空统计
+            # Environment does not implement get_complexity_info, return empty stats
             return {}
         
         num_envs = len(infos)
         if num_envs == 0:
             return {}
         
-        # 聚合所有并行环境的指标
+        # Aggregate metrics from all parallel environments
         sums = defaultdict(float)
         counts = defaultdict(int)
         for info in infos:
@@ -411,13 +412,13 @@ class AdversarialRunner(object):
                     sums[k] += v
                     counts[k] += 1
         
-        # 计算平均值
+        # Calculate averages
         stats = {}
         for k, v in sums.items():
             if counts[k] > 0:
                 stats['scenario_' + k] = sums[k] / counts[k]
         
-        # 从 agent_info 提取额外统计（如有）
+        # Extract additional statistics from agent_info (if available)
         if 'episode_return' in agent_info:
             episode_returns = agent_info['episode_return']
             if len(episode_returns) > 0:
@@ -454,7 +455,7 @@ class AdversarialRunner(object):
         is_car_racing = env_name.startswith('CarRacing')
         is_bipedal_walker = env_name.startswith('BipedalWalker')
 
-        if self.use_byte_encoding:
+        if self.use_byte_encoding: # True in Nocturne env
             return [x.tobytes() for x in self.ued_venv.get_encodings()]
         elif is_multigrid:
             return self.agents['adversary_env'].storage.get_action_traj(as_string=True)
