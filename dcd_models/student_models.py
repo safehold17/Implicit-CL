@@ -1,12 +1,9 @@
 
 """
-Student 驾驶策略网络（Late Fusion 架构）
+Student model,Late Fusion architecture in gpudrive
 
-适用于 Nocturne + ctrl-sim 环境的 Student 策略训练。
-
-参考实现:
-- gpudrive/networks/late_fusion.py: Late Fusion 网络结构
-- dcd_models/walker_models.py: DCD Policy 接口规范
+- gpudrive/networks/late_fusion.py: Late Fusion
+- dcd_models/walker_models.py: DCD Policy 
 """
 
 import numpy as np
@@ -16,8 +13,8 @@ import torch.nn as nn
 from .common import DeviceAwareModule, init, init_tanh_
 from .walker_models import DiagGaussian, FixedNormal
 
-# ============== 观测空间常量 ==============
-# 与 gpudrive/env/constants.py 保持一致
+# ============== observation ==============
+# same as in  gpudrive/env/constants.py
 # Ego: [speed, length, width, rel_goal_x, rel_goal_y, collision_state]
 # Partner: [speed, rel_pos_x, rel_pos_y, rel_orientation, length, width]
 # Road graph: [pos_x, pos_y, length, scale_x, scale_y, orientation, type_onehot(7)]
@@ -28,18 +25,18 @@ ROAD_GRAPH_FEAT_DIM = 13
 
 class LateFusionBase(nn.Module):
     """
-    Late Fusion 特征提取基类
+    Late Fusion feature extraction base class
     
-    将 Ego、Partner、Road Graph 三种模态分别嵌入后融合。
-    参考: gpudrive/networks/late_fusion.py 的 NeuralNet 类
+    Embed Ego, Partner, and Road Graph modalities separately and then fuse.
+    Reference: NeuralNet class in gpudrive/networks/late_fusion.py
     
     Args:
-        input_dim: 各模态嵌入维度
-        hidden_dim: 融合后的隐藏层维度
-        max_controlled_agents: 最大可控智能体数
-        top_k_road_points: 最近道路点数量
-        dropout: Dropout 概率
-        act_func: 激活函数 ("tanh" 或 "gelu")
+        input_dim: Embedding dimension for each modality
+        hidden_dim: Hidden dimension after fusion
+        max_controlled_agents: Maximum number of controllable agents
+        top_k_road_points: Number of recent road points
+        dropout: Dropout probability
+        act_func: Activation function ("tanh" or "gelu")
     """
     
     def __init__(
@@ -60,7 +57,7 @@ class LateFusionBase(nn.Module):
         self.top_k_road_points = top_k_road_points
         self.num_modes = 3  # Ego, Partner, Road Graph
         
-        # 激活函数选择
+        # activation function
         if act_func == "tanh":
             self.act_func = nn.Tanh()
         elif act_func == "gelu":
@@ -68,11 +65,11 @@ class LateFusionBase(nn.Module):
         else:
             self.act_func = nn.ReLU()
         
-        # 计算观测向量中各部分的索引
+        # Indices for different observation vector parts
         self.ego_state_idx = EGO_FEAT_DIM
         self.partner_obs_idx = EGO_FEAT_DIM + PARTNER_FEAT_DIM * self.max_observable_agents
         
-        # Ego 状态嵌入
+        # Ego state embedding
         self.ego_embed = nn.Sequential(
             self._layer_init(nn.Linear(EGO_FEAT_DIM, input_dim)),
             nn.LayerNorm(input_dim),
@@ -81,7 +78,7 @@ class LateFusionBase(nn.Module):
             self._layer_init(nn.Linear(input_dim, input_dim)),
         )
         
-        # Partner 观测嵌入
+        # Partner observation embedding
         self.partner_embed = nn.Sequential(
             self._layer_init(nn.Linear(PARTNER_FEAT_DIM, input_dim)),
             nn.LayerNorm(input_dim),
@@ -90,7 +87,7 @@ class LateFusionBase(nn.Module):
             self._layer_init(nn.Linear(input_dim, input_dim)),
         )
         
-        # Road Graph 嵌入
+        # Road Graph embedding
         self.road_map_embed = nn.Sequential(
             self._layer_init(nn.Linear(ROAD_GRAPH_FEAT_DIM, input_dim)),
             nn.LayerNorm(input_dim),
@@ -99,36 +96,36 @@ class LateFusionBase(nn.Module):
             self._layer_init(nn.Linear(input_dim, input_dim)),
         )
         
-        # 融合层
+        # Fusion layer
         self.shared_embed = nn.Sequential(
             nn.Linear(input_dim * self.num_modes, hidden_dim),
             nn.Dropout(dropout),
         )
     
     def _layer_init(self, layer, std=np.sqrt(2), bias_const=0.0):
-        """权重初始化（参考 pufferlib.pytorch.layer_init）"""
+        """Weight initialization (pufferlib.pytorch.layer_init)"""
         nn.init.orthogonal_(layer.weight, std)
         nn.init.constant_(layer.bias, bias_const)
         return layer
     
     def unpack_obs(self, obs_flat: torch.Tensor):
         """
-        解包扁平化观测向量
+        Unpack flattened observation vector
         
         Args:
-            obs_flat: (batch_size, obs_dim) 扁平化观测
+            obs_flat: (batch_size, obs_dim) Flattened observation
         
         Returns:
             ego_state: (batch_size, EGO_FEAT_DIM)
             road_objects: (batch_size, max_observable_agents, PARTNER_FEAT_DIM)
             road_graph: (batch_size, top_k_road_points, ROAD_GRAPH_FEAT_DIM)
         """
-        # 提取各部分
+        # Extract different observation parts
         ego_state = obs_flat[:, :self.ego_state_idx]
         partner_obs = obs_flat[:, self.ego_state_idx:self.partner_obs_idx]
         road_graph_obs = obs_flat[:, self.partner_obs_idx:]
         
-        # 重塑为多维张量
+        # Reshape to multi-dimensional tensors
         road_objects = partner_obs.view(
             -1, self.max_observable_agents, PARTNER_FEAT_DIM
         )
@@ -140,60 +137,60 @@ class LateFusionBase(nn.Module):
     
     def encode_observations(self, observation: torch.Tensor) -> torch.Tensor:
         """
-        编码观测（Late Fusion 核心逻辑）
+        Encode observations
         
         Args:
-            observation: (batch_size, obs_dim) 扁平化观测
+            observation: (batch_size, obs_dim) Flattened observation
         
         Returns:
-            hidden: (batch_size, hidden_dim) 融合后的特征
+            hidden: (batch_size, hidden_dim) Fused features
         """
         ego_state, road_objects, road_graph = self.unpack_obs(observation)
         
-        # 各模态独立嵌入
+        # Independent embedding for each modality
         ego_embed = self.ego_embed(ego_state)
         
-        # Partner: 嵌入后 max pooling
+        # Partner: embed then max pooling
         partner_embed, _ = self.partner_embed(road_objects).max(dim=1)
         
-        # Road Graph: 嵌入后 max pooling
+        # Road Graph: embed then max pooling
         road_map_embed, _ = self.road_map_embed(road_graph).max(dim=1)
         
-        # 拼接所有嵌入
+        # Concatenate all embeddings
         embed = torch.cat([ego_embed, partner_embed, road_map_embed], dim=1)
         
-        # 融合层
+        # Fusion layer
         return self.shared_embed(embed)
     
     @property
     def output_size(self):
-        """输出特征维度"""
+        """Output feature dimension"""
         return self.hidden_dim
 
 
 class StudentPolicy(DeviceAwareModule):
     """
-    Student 驾驶策略（DCD Policy 接口）
+    Student driving policy (DCD Policy interface)
     
-    这个类实现了 DCD 框架要求的完整策略接口:
-    - act(): Rollout 时生成动作
-    - get_value(): 计算状态价值
-    - evaluate_actions(): PPO 更新时评估动作
+    This class implements the full policy interface required by the DCD framework:
+    - act(): Generate actions during rollout
+    - get_value(): Compute state value
+    - evaluate_actions(): Evaluate actions during PPO update
     
-    网络架构使用 Late Fusion，与 gpudrive 保持一致。
-    适用于 Nocturne + ctrl-sim 等驾驶环境。
+    The network architecture uses Late Fusion, consistent with gpudrive.
+    Suitable for driving environments like Nocturne + ctrl-sim.
     
     Args:
-        obs_shape: 观测空间形状
-        action_space: 动作空间
-        input_dim: 各模态嵌入维度
-        hidden_dim: 融合后的隐藏层维度
-        max_controlled_agents: 最大可控智能体数
-        top_k_road_points: 最近道路点数量
-        dropout: Dropout 概率
-        act_func: 激活函数
-        recurrent: 是否使用循环网络（暂不支持）
-        base_kwargs: 额外参数
+        obs_shape: Observation space shape
+        action_space: Action space
+        input_dim: Input embedding dimension for each modality
+        hidden_dim: Hidden dimension after fusion
+        max_controlled_agents: Maximum number of controllable agents
+        top_k_road_points: Number of nearest road points
+        dropout: Dropout probability
+        act_func: Activation function
+        recurrent: Whether to use recurrent network (not implemented)
+        base_kwargs: Additional kwargs for base network
     """
     
     def __init__(
@@ -214,7 +211,7 @@ class StudentPolicy(DeviceAwareModule):
         if base_kwargs is None:
             base_kwargs = {}
         
-        # 特征提取基础网络
+        # Feature extraction base network
         self.base = LateFusionBase(
             input_dim=input_dim,
             hidden_dim=hidden_dim,
@@ -224,16 +221,16 @@ class StudentPolicy(DeviceAwareModule):
             act_func=act_func,
         )
         
-        # 连续动作维度（accel, steer 等）
+        # Continuous action dimension (accel, steer, etc.)
         action_dim = action_space.shape[0]
         self.dist = DiagGaussian(hidden_dim, action_dim)
         
-        # Critic: 输出状态价值
+        # Critic: output state value
         self.critic = self._layer_init(
             nn.Linear(hidden_dim, 1), std=1.0
         )
         
-        # 循环网络支持（暂不实现）
+        # Recurrent network support (not implemented)
         self._recurrent = recurrent
         if recurrent:
             raise NotImplementedError(
@@ -241,23 +238,23 @@ class StudentPolicy(DeviceAwareModule):
             )
     
     def _layer_init(self, layer, std=np.sqrt(2), bias_const=0.0):
-        """权重初始化"""
+        """Weight initialization"""
         nn.init.orthogonal_(layer.weight, std)
         nn.init.constant_(layer.bias, bias_const)
         return layer
     
     @property
     def is_recurrent(self):
-        """是否使用循环网络"""
+        """Whether using recurrent network"""
         return self._recurrent
     
     @property
     def recurrent_hidden_state_size(self):
-        """循环隐藏状态大小（非循环返回 1）"""
+        """Recurrent hidden state size (1 if not recurrent)"""
         return 1
     
     def forward(self, inputs):
-        """简化的前向传播（用于推理）"""
+        """Simplified forward pass (for inference)"""
         value, action, action_log_probs, rnn_hxs = self.act(
             inputs, rnn_hxs=None, masks=None, deterministic=False
         )
@@ -265,27 +262,27 @@ class StudentPolicy(DeviceAwareModule):
     
     def act(self, inputs, rnn_hxs=None, masks=None, deterministic=False):
         """
-        根据观测生成动作（Rollout 阶段调用）
+        Generate actions based on observations (called during Rollout)
         
         Args:
-            inputs: 观测 (batch_size, obs_dim)
-            rnn_hxs: 循环隐藏状态（当前未使用）
-            masks: Episode 掩码（当前未使用）
-            deterministic: 是否确定性采样
+            inputs: Observations (batch_size, obs_dim)
+            rnn_hxs: Recurrent hidden states (currently unused)
+            masks: Episode masks (currently unused)
+            deterministic: Whether to sample deterministically
         
         Returns:
-            value: 状态价值 (batch_size, 1)
-            action: 动作 (batch_size, action_dim)
-            action_log_probs: 动作对数概率 (batch_size, 1)
-            rnn_hxs: 更新后的隐藏状态
+            value: State value (batch_size, 1)
+            action: Action (batch_size, action_dim)
+            action_log_probs: Action log probabilities (batch_size, 1)
+            rnn_hxs: Updated hidden states
         """
-        # 特征提取
+        # Feature extraction
         hidden = self.base.encode_observations(inputs)
         
-        # Critic: 状态价值
+        # Critic: state value
         value = self.critic(hidden)
         
-        # Actor: 连续动作
+        # Actor: continuous action
         dist = self.dist(hidden)
         
         if deterministic:
@@ -299,15 +296,15 @@ class StudentPolicy(DeviceAwareModule):
     
     def get_value(self, inputs, rnn_hxs=None, masks=None):
         """
-        获取状态价值（计算 Advantage 时调用）
+        Compute state value (called during Rollout)
         
         Args:
-            inputs: 观测 (batch_size, obs_dim)
-            rnn_hxs: 循环隐藏状态
-            masks: Episode 掩码
+            inputs: Observations (batch_size, obs_dim)
+            rnn_hxs: Recurrent hidden states
+            masks: Episode masks
         
         Returns:
-            value: 状态价值 (batch_size, 1)
+            value: State value  (batch_size, 1)
         """
         hidden = self.base.encode_observations(inputs)
         return self.critic(hidden)
@@ -316,21 +313,21 @@ class StudentPolicy(DeviceAwareModule):
         self, inputs, rnn_hxs, masks, action, return_policy_logits=False
     ):
         """
-        评估给定动作（PPO 更新时调用）
+        Evaluate actions (called during PPO update)
         
         Args:
-            inputs: 观测 (batch_size, obs_dim)
-            rnn_hxs: 循环隐藏状态
-            masks: Episode 掩码
-            action: 要评估的动作 (batch_size, action_dim)
-            return_policy_logits: 是否返回完整分布
+            inputs: Observations (batch_size, obs_dim)
+            rnn_hxs: Recurrent hidden states
+            masks: Episode masks
+            action: Actions to evaluate (batch_size, action_dim)
+            return_policy_logits: Whether to return the full distribution
         
         Returns:
-            value: 状态价值 (batch_size, 1)
-            action_log_probs: 动作对数概率 (batch_size, 1)
-            dist_entropy: 策略熵 (scalar)
-            rnn_hxs: 更新后的隐藏状态
-            [dist]: 可选，完整分布
+            value: State value (batch_size, 1)
+            action_log_probs: Action log probabilities (batch_size, 1)
+            dist_entropy: Policy entropy (scalar)
+            rnn_hxs: Updated hidden states
+            [dist]: Optional, full distribution
         """
         hidden = self.base.encode_observations(inputs)
         value = self.critic(hidden)
