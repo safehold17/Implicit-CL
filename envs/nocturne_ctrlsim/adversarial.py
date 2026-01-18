@@ -1,11 +1,11 @@
 """
-Nocturne + CtRL-Sim 对抗环境
+Nocturne + CtRL-Sim environment
 
-实现 DCD 框架要求的环境接口，支持：
-- PLR (Prioritized Level Replay) 机制
-- PAIRED / ACCEL 等 UED 算法（通过 Adversary 接口）
-- 动态场景池大小
-- Level 变异和编辑
+Support DCD framework requirements:
+- PLR (Prioritized Level Replay) mechanism
+- PAIRED / ACCEL etc. UED algorithms (through Adversary interface)
+- dynamic scenario pool size
+- Level mutation and editing
 """
 import gym
 import math
@@ -23,49 +23,42 @@ from adapters.ctrl_sim import (
 )
 
 
-# ========== Level 参数范围定义 ==========
-# 参考 BipedalWalker 的 PARAM_RANGES_FULL
-# 这些是默认值，可通过配置或构造函数参数覆盖
-DEFAULT_TILT_RANGE = [-25.0, 25.0]  # tilting 参数范围
-DEFAULT_TILT_MUTATION_STD = 5.0  # 变异时的扰动幅度（与 config.yaml 一致）
-DEFAULT_OBS_DIM = 128  # 观测维度
-DEFAULT_ACTION_DIM = 2  # 动作维度（accel, steer）
+# ========== Level parameter ranges ==========
+DEFAULT_TILT_RANGE = [-25.0, 25.0]  # tilting parameter range
+DEFAULT_TILT_MUTATION_STD = 1.0  # perturbation amplitude when mutating (same as config.yaml)
+DEFAULT_OBS_DIM = 128  # observation dimension
+DEFAULT_ACTION_DIM = 2  # action dimension (accel, steer)
 
-# 默认 level 参数向量：[scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt]
+# Default level parameter vector: [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt]
 DEFAULT_LEVEL_PARAMS = [0, 0.0, 0.0, 0.0]
 
 
 def rand_int_seed():
-    """生成随机种子（32 位无符号整数）"""
     import os
-    # 生成 4 字节（32 位）的随机数
+    # generate 4 bytes (32 bits) random number
     return int.from_bytes(os.urandom(4), byteorder="little")
 
 
 class NocturneCtrlSimAdversarial(gym.Env):
     """
-    DCD 对抗环境：Nocturne 场景 + CtRL-Sim 对手
+    DCD adversarial environment: Nocturne scenario + CtRL-Sim opponent
     
-    支持两种使用模式：
+    Supports two usage modes:
     
-    1. **PAIRED/ACCEL 模式**（环境 adversary 构建）：
-       - 调用 reset() 初始化 adversary 构建流程
-       - 调用 step_adversary() 逐步构建 level
-       - 构建完成后调用 reset_agent() 让 student 开始训练
+    1. **PAIRED/ACCEL mode** (environment adversary building):
+       - call reset() to initialize adversary building process
+       - call step_adversary() to build level step by step
+       - call reset_agent() to let student start training after building
     
-    2. **DR/PLR 模式**（直接采样）：
-       - 调用 reset_random() 随机生成 level
-       - 或调用 reset_to_level() 加载指定 level
+    2. **DR/PLR mode** (direct sampling):
+       - call reset_random() to randomly generate level
+       - or call reset_to_level() to load specified level
     
-    Adversary 动作空间（4步构建）：
-    - Step 0: 选择 scenario_id（离散：映射到场景池索引）
-    - Step 1: 设置 goal_tilt（连续：[-1, 1] -> [-25, 25]）
-    - Step 2: 设置 veh_veh_tilt（连续：[-1, 1] -> [-25, 25]）
-    - Step 3: 设置 veh_edge_tilt（连续：[-1, 1] -> [-25, 25]）
-    
-    与 Milestone 1/2 的集成：
-    - 使用 ScenarioLevel 数据结构（Milestone 1）
-    - 使用 CtrlSimOpponentAdapter 和 DataBridge（Milestone 2）
+    Adversary action space (4 steps building):
+    - Step 0: select scenario_id (discrete: map to scenario pool index)
+    - Step 1: set goal_tilt (continuous: [-1, 1] -> [-25, 25])
+    - Step 2: set veh_veh_tilt (continuous: [-1, 1] -> [-25, 25])
+    - Step 3: set veh_edge_tilt (continuous: [-1, 1] -> [-25, 25])
     """
     
     def __init__(
@@ -80,12 +73,12 @@ class NocturneCtrlSimAdversarial(gym.Env):
         cfg: Any = None,
         seed: int = 0,
         fixed_environment: bool = False,
-        # Adversary 配置
+        # Adversary config
         random_z_dim: int = 50,
-        # 动态场景池配置
+        # Dynamic scenario pool config
         dynamic_scenario_pool: bool = False,
         max_scenario_pool_size: int = 10000,
-        # 可配置的空间和 tilting 参数（从 config.yaml 读取）
+
         obs_dim: int = DEFAULT_OBS_DIM,
         action_dim: int = DEFAULT_ACTION_DIM,
         tilt_range: List[float] = None,
@@ -94,19 +87,19 @@ class NocturneCtrlSimAdversarial(gym.Env):
     ):
         """
         Args:
-            scenario_index_path: 场景索引 JSON 文件路径
-            opponent_checkpoint: ctrl-sim 模型 checkpoint 路径
-            scenario_data_dir: Nocturne 场景数据目录
-            preprocess_dir: ctrl-sim 预处理数据目录
-            opponent_k: 对手车辆数量（选择距离 ego 最近的 K 个）
-            max_episode_steps: 最大步数（默认 90，与 ctrl-sim 一致）
-            device: 推理设备
-            cfg: Hydra 配置对象（可选，若为 None 则自动创建）
-            seed: 随机种子
-            fixed_environment: 是否固定环境（用于评估）
-            random_z_dim: 随机向量维度（用于条件生成）
-            dynamic_scenario_pool: 是否启用动态场景池
-            max_scenario_pool_size: 动态场景池最大大小
+            scenario_index_path: Scenario index JSON file path
+            opponent_checkpoint
+            scenario_data_dir: Nocturne scenario data directory
+            preprocess_dir: ctrl-sim preprocessed data directory
+            opponent_k: number of opponent vehicles (select the nearest K to ego)
+            max_episode_steps: maximum number of steps (default 90, same as ctrl-sim)
+            device
+            cfg: Hydra config object (optional, if None, create automatically)
+            seed
+            fixed_environment: whether to fix the environment (for evaluation)
+            random_z_dim: random vector dimension (for conditional generation)
+            dynamic_scenario_pool: whether to enable dynamic scenario pool
+            max_scenario_pool_size: dynamic scenario pool maximum size
         """
         super().__init__()
         
@@ -114,19 +107,19 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.fixed_environment = fixed_environment
         np.random.seed(seed)
         
-        # ========== 场景索引（支持动态扩展）==========
+        # ========== Scenario index (support dynamic extension) ==========
         self.scenario_index_path = scenario_index_path
         self.scenario_index = ScenarioIndex(scenario_index_path)
         self.scenario_ids = list(self.scenario_index.scenario_ids)
         self.scenario_id_to_index = dict(self.scenario_index.scenario_id_to_index)
         self.index_to_scenario_id = dict(self.scenario_index.index_to_scenario_id)
         
-        # 动态场景池配置
+        # Dynamic scenario pool config
         self.dynamic_scenario_pool = dynamic_scenario_pool
         self.max_scenario_pool_size = max_scenario_pool_size
         self._scenario_pool_dirty = False
         
-        # ========== 配置加载 ==========
+        # ========== Config loading ==========
         if cfg is None:
             cfg = create_minimal_config(
                 checkpoint_path=opponent_checkpoint,
@@ -137,29 +130,29 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.scenario_data_dir = scenario_data_dir
         self.preprocess_dir = preprocess_dir
         
-        # ========== 数据桥接器==========
+        # ========== Data bridge ==========
         self.data_bridge = DataBridge(cfg, preprocess_dir)
         
-        # ========== 对手策略适配器==========
+        # ========== Opponent policy adapter ==========
         self.opponent = CtrlSimOpponentAdapter(
             cfg=cfg,
             checkpoint_path=opponent_checkpoint,
             device=device,
         )
         
-        # ========== 环境配置 ==========
+        # ========== Environment config ==========
         self.max_episode_steps = max_episode_steps
         self.device = device
         self.opponent_k = opponent_k
         self.dt = cfg.nocturne.dt
         
-        # ========== 状态变量 ==========
+        # ========== State variables ==========
         self.current_level: Optional[ScenarioLevel] = None
         self.current_step = 0
-        self.adversary_step_count = 0  # Adversary 构建步数
+        self.adversary_step_count = 0  # Adversary building steps
         self.level_seed = seed
         
-        # Nocturne 仿真对象
+        # Nocturne simulation object
         self.sim = None
         self.scenario = None
         self.vehicles: List = []
@@ -167,44 +160,44 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.opponent_vehicles: List = []
         self.opponent_vehicle_ids: List[int] = []
         
-        # Ground truth 和预处理数据
+        # Ground truth and preprocessed data
         self._gt_data_dict: Dict = {}
         self._preproc_data: Optional[Dict] = None
         
-        # Ego 车辆的目标和奖励相关状态（用于 _compute_reward）
+        # Ego vehicle's goal and reward related state (for _compute_reward)
         self._ego_goal_dict: Optional[Dict] = None
         self._ego_goal_dist_normalizer: float = 1.0
-        self._ego_vehicle_data_dict: Dict = {}  # 跟踪 ego 的历史数据
+        self._ego_vehicle_data_dict: Dict = {}  # Track ego's historical data
         
-        # 终止条件状态
+        # Termination condition
         self._collision_occurred: bool = False
         self._goal_reached: bool = False
         self._offroad_occurred: bool = False
         
-        # Episode 统计（用于训练监控）
+        # Episode statistics (for training monitoring)
         self._episode_collision_occurred: bool = False
         self._episode_goal_reached: bool = False
         self._episode_offroad_occurred: bool = False
         self._episode_steps: int = 0
-        self._episode_progress: float = 0.0  # 目标进度 [0, 1]
+        self._episode_progress: float = 0.0  # Target progress [0, 1]
         
-        # Level 参数向量（用于 adversary 构建）
+        # Level parameters vector (for adversary building)
         # [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt]
         self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
         
-        # ========== Student 观测配置（从 args 传入）==========
-        # 这些参数在 make_agent 时会用到，这里设置默认值
+        # ========== Student observation config (from args) ==========
+        # These parameters are used in make_agent, set default values here
         self._max_observable_agents = kwargs.get('student_num_neighbors', 16)
         self._top_k_road_points = kwargs.get('student_top_k_road', 64)
         
-        # 缓存道路数据（在 _initialize_simulation 后填充）
+        # Cache road data (filled after _initialize_simulation)
         self._road_graph_cache: Optional[List[Dict]] = None
         
-        # ========== 观测和动作空间（Student）==========
-        # 计算 Late Fusion 观测维度: ego(6) + partners(K×6) + road_graph(R×13)
+        # ========== Observation and action space (Student) ==========
+        # Calculate Late Fusion observation dimension: ego(6) + partners(K×6) + road_graph(R×13)
         late_fusion_obs_dim = 6 + self._max_observable_agents * 6 + self._top_k_road_points * 13
         
-        # 使用配置的 obs_dim 或计算的维度（取较大者以兼容）
+        # Use config obs_dim or calculated dimension (take larger one for compatibility)
         self._obs_dim = max(obs_dim, late_fusion_obs_dim)
         self._action_dim = action_dim
         self.tilt_range = tilt_range if tilt_range is not None else list(DEFAULT_TILT_RANGE)
@@ -221,21 +214,21 @@ class NocturneCtrlSimAdversarial(gym.Env):
             dtype=np.float32
         )
         
-        # ========== Adversary 空间定义 ==========
-        # Adversary 构建环境需要 4 步：scenario_id + 3 个 tilt 参数
+        # ========== Adversary space definition ==========
+        # Adversary building environment needs 4 steps: scenario_id + 3 tilt parameters
         self.adversary_max_steps = 4
         self.random_z_dim = random_z_dim
-        self.passable = True  # 驾驶场景默认可通过
+        self.passable = True  # Driving scenario default passable
         
-        # Adversary 动作空间：连续动作 [-1, 1]
-        # Step 0: 映射到 scenario 索引
-        # Step 1-3: 映射到 tilt 参数
+        # Adversary action space: continuous action [-1, 1]
+        # Step 0: map to scenario index
+        # Step 1-3: map to tilt parameters
         self.adversary_action_dim = 1
         self.adversary_action_space = gym.spaces.Box(
             low=-1, high=1, shape=(1,), dtype=np.float32
         )
         
-        # Adversary 观测空间
+        # Adversary observation space
         self.adversary_ts_obs_space = gym.spaces.Box(
             low=0, 
             high=self.adversary_max_steps, 
@@ -248,7 +241,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             shape=(random_z_dim,), 
             dtype=np.float32
         )
-        # image: 当前 level 参数向量
+        # image: current level parameters
         self.adversary_image_obs_space = gym.spaces.Box(
             low=-25.0, 
             high=max(len(self.scenario_ids), 25.0),
@@ -261,51 +254,48 @@ class NocturneCtrlSimAdversarial(gym.Env):
             'random_z': self.adversary_randomz_obs_space
         })
         
-        # ========== Encoding 格式 ==========
-        # 使用字符串数组，与 BipedalWalker 兼容
+        # ========== Encoding format ==========
+        # Use string array, compatible with BipedalWalker
         n_u_chars = max(12, len(str(rand_int_seed())))
         self.encoding_u_chars = np.dtype(('U', n_u_chars))
         
-        # ========== 指标追踪 ==========
+        # ========== Metrics tracking ==========
         self.reset_metrics()
         
-        # ========== 视频录制 ==========
+        # ========== Video recording ==========
         self.video_recorder: Optional[NocturneVideoRecorder] = None
         self.recording_video = False
         
-        # ========== 初始化随机种子 ==========
+        # ========== Random seed ==========
         self.seed_value = seed
     
-    # ========== 基础环境接口 ==========
+    # ========== Basic environment interface ==========
     
     def seed(self, seed=None):
-        """设置环境的随机种子"""
+        """Set the random seed of the environment"""
         if seed is not None:
             self.level_seed = seed
             self.seed_value = seed
         return [self.level_seed]
     
-    # ========== Adversary 接口（PAIRED/ACCEL）==========
+    # ========== Adversary interface (PAIRED/ACCEL) ==========
     
     def reset(self) -> Dict:
         """
-        重置环境，准备 adversary 构建流程
-        
-        这是 PAIRED/Minimax 等 UED 算法的入口点。
-        返回 adversary 观测，而非 student 观测。
+        Reset the environment, prepare adversary building process
         
         Returns:
-            adversary 观测字典: {'image', 'time_step', 'random_z'}
+            adversary observation dictionary: {'image', 'time_step', 'random_z'}
         """
         self.adversary_step_count = 0
         
-        # 重置 level 参数为默认值
+        # Reset level parameters to default values
         self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
         
-        # 生成新的 level seed
+        # Generate new level seed
         self.level_seed = rand_int_seed()
         
-        # 返回 adversary 观测
+        # Return adversary observation
         obs = {
             'image': np.array(self.level_params_vec, dtype=np.float32),
             'time_step': np.array([self.adversary_step_count], dtype=np.uint8),
@@ -315,40 +305,38 @@ class NocturneCtrlSimAdversarial(gym.Env):
         return obs
     
     def step_adversary(self, action) -> Tuple[Dict, float, bool, Dict]:
-        """
-        Adversary 构建环境的一步
-        
-        动作映射：
-        - Step 0: action -> scenario_index (离散化到场景池大小)
+        """        
+        Action mapping:
+        - Step 0: action -> scenario_index (discretized to scenario pool size)
         - Step 1: action -> goal_tilt ([-1,1] -> [-25,25])
         - Step 2: action -> veh_veh_tilt ([-1,1] -> [-25,25])
         - Step 3: action -> veh_edge_tilt ([-1,1] -> [-25,25])
         
         Args:
-            action: 连续动作 [-1, 1]
+            action: continuous action [-1, 1]
         
         Returns:
             (obs, reward, done, info)
-            - obs: adversary 观测
-            - reward: 始终为 0（adversary 奖励在 rollout 后计算）
-            - done: 是否完成构建
-            - info: 额外信息
+            - obs: adversary observation
+            - reward: always 0 (adversary reward calculated after rollout)
+            - done: whether the building is completed
+            - info: additional information
         """
         import torch
         if torch.is_tensor(action):
             action = action.item()
         
-        # 根据当前步骤设置参数
+        # Set parameters according to current step
         if self.adversary_step_count == 0:
-            # Step 0: 选择 scenario
-            # 将 [-1, 1] 映射到 [0, num_scenarios-1]
+            # Step 0: select scenario
+            # Map [-1, 1] to [0, num_scenarios-1]
             num_scenarios = len(self.scenario_ids)
             scenario_idx = int((action + 1) / 2 * num_scenarios)
             scenario_idx = np.clip(scenario_idx, 0, num_scenarios - 1)
             self.level_params_vec[0] = scenario_idx
         else:
-            # Step 1-3: 设置 tilt 参数
-            # 将 [-1, 1] 映射到 tilt_range
+            # Step 1-3: set tilt parameters
+            # Map [-1, 1] to tilt_range
             tilt_scale = (self.tilt_range[1] - self.tilt_range[0]) / 2.0
             tilt_value = action * tilt_scale
             tilt_value = np.clip(tilt_value, self.tilt_range[0], self.tilt_range[1])
@@ -356,14 +344,14 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         self.adversary_step_count += 1
         
-        # 检查是否完成构建
+        # Check if the building is completed
         done = self.adversary_step_count >= self.adversary_max_steps
         
         if done:
-            # 构建完成，创建 ScenarioLevel 并初始化环境
+            # Building completed, create ScenarioLevel and initialize environment
             self._build_level_from_params()
         
-        # 返回 adversary 观测
+        # Return adversary observation
         obs = {
             'image': np.array(self.level_params_vec, dtype=np.float32),
             'time_step': np.array([self.adversary_step_count], dtype=np.uint8),
@@ -373,14 +361,15 @@ class NocturneCtrlSimAdversarial(gym.Env):
         return obs, 0, done, {}
     
     def _build_level_from_params(self):
-        """根据 level_params_vec 构建 ScenarioLevel 并初始化环境"""
-        # 检查场景池映射是否需要重建
+        """Build ScenarioLevel from level_params_vec and initialize environment"""
+
+        # Check if the scenario pool mapping needs to be rebuilt
         if self._scenario_pool_dirty:
             self.rebuild_index_mappings()
         
         scenario_idx = int(self.level_params_vec[0])
         
-        # 检查场景 ID 是否存在，如果不存在则记录警告
+        # Check if the scenario ID exists, if not, warning
         if scenario_idx not in self.index_to_scenario_id:
             import warnings
             warnings.warn(
@@ -397,11 +386,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
             veh_edge_tilt=self.level_params_vec[3],
         )
         
-        # 初始化仿真环境（但不返回观测，等 reset_agent 调用）
+        # Initialize simulation environment (but not return observation, wait for reset_agent to call) 
         self._initialize_simulation()
     
     def _initialize_simulation(self):
-        """初始化 Nocturne 仿真（内部方法）"""
+        """Initialize Nocturne simulation (internal method)"""
         if self.current_level is None:
             return
             
@@ -409,41 +398,40 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.current_step = 0
         self.reset_metrics()
         
-        # 重置终止条件状态
+        # Reset termination condition states
         self._collision_occurred = False
         self._goal_reached = False
         self._offroad_occurred = False
         
-        # 重置 episode 统计
+        # Reset episode statistics
         self._episode_collision_occurred = False
         self._episode_goal_reached = False
         self._episode_offroad_occurred = False
         self._episode_steps = 0
         self._episode_progress = 0.0
         
-        # 设置随机种子
+        # Set random seed
         np.random.seed(level.seed)
         
-        # ⚠️ 重要：必须先获取 GT 数据，再加载主场景
-        # 原因：get_ground_truth() 内部会创建临时 Simulation 并执行步进，
-        # 这会破坏 Nocturne 的全局状态，导致之后创建的 Simulation 中
-        # 的车辆对象变得无效（设置属性时会发生段错误）。
-        # 解决方案：先获取 GT 数据（让临时 Simulation 完成并销毁），
-        # 然后再加载主场景。
+        # ⚠️ Important: must get GT data first, then load main scenario
+        # Reason: get_ground_truth() internally creates a temporary Simulation and steps,
+        # this will destroy the global state of Nocturne, causing the vehicle objects in the subsequent Simulation to become invalid (segmentation fault when setting attributes).
+        # Solution: get GT data first (let the temporary Simulation complete and destroy),
+        # then load main scenario.
         
-        # 获取 ground truth 数据（需要添加 .json 后缀）
+        # Get ground truth data (need to add .json suffix)
         self._gt_data_dict = self.data_bridge.get_ground_truth(
             self.scenario_data_dir, 
             f"{level.scenario_id}.json"
         )
         
-        # 加载 Nocturne 场景（必须在获取 GT 数据之后）
+        # Load Nocturne scenario (must after getting GT data)
         self._load_scenario(level.scenario_id)
         
-        # 选择 ego 车辆（需要 GT 数据来选择 interesting pair）
+        # Select ego vehicle (need GT data to select interesting pair)
         self.ego_vehicle = self._select_ego_vehicle()
         
-        # 加载预处理数据（带检查）
+        # Load preprocessed data (with check)
         self._preproc_data, file_exists = self.data_bridge.load_preprocessed_data(
             level.scenario_id
         )
@@ -453,13 +441,13 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 f"Check preprocess_dir: {self.data_bridge.preprocess_dir}"
             )
         
-        # 选择对手控制的车辆（从 moving vehicles 中选择最近的 k 辆）
+        # Select opponent controlled vehicles (select the nearest k from moving vehicles)
         self._select_opponent_vehicles(k=self.opponent_k)
         
-        # 初始化 ego 车辆的目标和奖励相关状态
+        # Initialize ego vehicle's goal and reward related states
         self._initialize_ego_goal_state()
         
-        # 设置对手 tilting
+        # Set opponent tilting
         self.opponent.set_tilting(
             level.goal_tilt, 
             level.veh_veh_tilt, 
@@ -473,61 +461,61 @@ class NocturneCtrlSimAdversarial(gym.Env):
             self.opponent_vehicle_ids,
         )
         
-        # 缓存道路数据（用于 Student 观测）
+        # Cache road data (for Student observation)
         self._road_graph_cache = self.data_bridge.get_road_data(self.scenario)
     
     def generate_random_z(self) -> np.ndarray:
-        """生成随机条件向量（用于 adversary 观测）"""
+        """Generate random condition vector (for adversary observation)"""
         return np.random.uniform(size=(self.random_z_dim,)).astype(np.float32)
     
     @property
     def processed_action_dim(self) -> int:
-        """处理后的动作维度（兼容 AdversarialRunner）"""
+        """Processed action dimension (compatible with AdversarialRunner)"""
         return 1
     
-    # ========== PLR/DR 接口 ==========
+    # ========== PLR/DR interface ==========
     
     def reset_random(self) -> np.ndarray:
         """
-        随机生成新 level 并 reset
+        Randomly generate new level and reset
         
-        这是 DCD Domain Randomization 的入口点。
-        直接跳过 adversary 构建，随机采样所有参数。
+        Entry point for DCD Domain Randomization.
+        Randomly sample all parameters.
         
         Returns:
-            student 初始观测
+            student initial observation
         """
         level = self._sample_random_level()
         return self.reset_to_level(level)
     
     def reset_to_level(self, level: Union[ScenarioLevel, str, np.ndarray]) -> np.ndarray:
         """
-        加载指定 level
+        Load specified level
         
-        支持三种输入格式（兼容 DCD LevelStore）：
-        1. ScenarioLevel 对象
-        2. 字符串（from to_level_string()）
-        3. numpy 数组（from encoding）
+        Supports three input formats (compatible with DCD LevelStore):
+        1. ScenarioLevel object
+        2. String (from to_level_string())
+        3. numpy array (from encoding)
         
         Args:
-            level: Level 对象、字符串或编码数组
+            level: Level object, string or encoding array
         
         Returns:
-            student 初始观测
+            student initial observation
         """
-        # 统一转换为 ScenarioLevel 对象
+        # Convert to ScenarioLevel object
         if isinstance(level, str):
             level = ScenarioLevel.from_level_string(level)
         elif isinstance(level, np.ndarray):
-            # 处理字符串数组格式
-            if level.dtype.kind == 'U':
+            # Process string array format
+            if level.dtype.kind == 'U': # string array unicode
                 level = self._decode_string_encoding(level)
             else:
                 level = ScenarioLevel.from_encoding(level, self.index_to_scenario_id)
         
         self.current_level = level
         
-        # 更新 level_params_vec 以保持一致
+        # Update level_params_vec to keep consistent
         scenario_idx = self.scenario_id_to_index.get(level.scenario_id, 0)
         self.level_params_vec = [
             scenario_idx,
@@ -537,22 +525,22 @@ class NocturneCtrlSimAdversarial(gym.Env):
         ]
         self.level_seed = level.seed
         
-        # 初始化仿真
+        # Initialize simulation
         self._initialize_simulation()
         
-        # 返回 student 观测
+        # Return student observation
         return self._get_student_observation()
     
     def _decode_string_encoding(self, encoding: np.ndarray) -> ScenarioLevel:
-        """从字符串数组编码恢复 ScenarioLevel"""
-        # 检查场景池映射是否需要重建
+        """Decode string array encoding to ScenarioLevel"""
+        # Check if the scenario pool mapping needs to be rebuilt
         if self._scenario_pool_dirty:
             self.rebuild_index_mappings()
         
-        # 格式: [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt, seed]
+        # Format: [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt, seed]
         scenario_idx = int(float(encoding[0]))
         
-        # 检查场景 ID 是否存在，如果不存在则记录警告
+        # Check if the scenario ID exists, if not, warning
         if scenario_idx not in self.index_to_scenario_id:
             import warnings
             warnings.warn(
@@ -571,76 +559,77 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def reset_agent(self) -> np.ndarray:
         """
-        在当前 level 重新 reset（不改变 level 配置）
+        Reset in current level (without changing level configuration)
         
-        用于：
-        1. PAIRED 中 adversary 构建完成后启动 student
-        2. PLR 中同一 level 的多次评估
+        Used for:
+        1. Starting student after adversary building in PAIRED
+        2. Multiple evaluations of the same level in PLR
         
         Returns:
-            student 初始观测
+            student initial observation
         """
         if self.current_level is None:
             raise ValueError("Must call reset_to_level or complete step_adversary first")
         
-        # 重新初始化仿真
+        # Reinitialize simulation
         self._initialize_simulation()
         
         return self._get_student_observation()
     
     def mutate_level(self, num_edits: int = 1) -> np.ndarray:
         """
-        变异当前 level 并 reset
+        Mutate current level and reset
         
-        这是 DCD ACCEL 算法的核心接口，用于 level 编辑。
+        Level editing.
         
-        变异策略（参考 BipedalWalker）：
-        - 随机选择参数进行扰动
-        - 扰动方向：-1, 0, +1
-        - 扰动幅度：高斯分布
+        Mutation strategy:
+        - Randomly select parameters for perturbation
+        - Perturbation direction: -1, 0, +1
+        - Perturbation amplitude: Gaussian distribution
         
         Args:
-            num_edits: 变异次数
+            num_edits: number of mutations
         
         Returns:
-            变异后 level 的 student 初始观测
+            student initial observation after mutation
         """
         if self.current_level is None:
             raise ValueError("Must call reset_to_level first")
         
         if num_edits > 0:
             mutated = self._mutate_level_internal(self.current_level, num_edits)
-            self.level_seed = rand_int_seed()  # 新种子
+            self.level_seed = rand_int_seed()  # new seed
             return self.reset_to_level(mutated)
         
         return self.reset_agent()
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
         """
-        执行一步仿真（Student 动作）
+        Execute one step simulation (Student action)
         
-        数据流：
-        1. 对手策略推理（使用 CtrlSimOpponentAdapter）
-        2. 应用所有动作到 Nocturne 仿真
-        3. 仿真步进
-        4. 计算奖励和终止条件
-        5. 如果启用录制，捕获当前帧
+        Data flow:
+        1. Opponent policy inference (using CtrlSimOpponentAdapter)
+        2. Apply all actions to Nocturne simulation
+        3. Step simulation
+        4. Calculate reward and termination conditions
+        5. If recording is enabled, capture current frame
         """
         self.current_step += 1
+        # TODO： check the sequence of steps
         
-        # 1. 对手推理动作
+        # 1. Opponent policy inference
         opponent_actions = self.opponent.step(self.current_step - 1, self.vehicles)
         
-        # 2. 应用学生动作到 ego 车辆
+        # 2. Apply student action to ego vehicle
         self._apply_student_action(action)
         
-        # 3. 应用对手动作
+        # 3. Apply opponent action
         for veh_id, (accel, steer) in opponent_actions.items():
             veh = self._get_vehicle_by_id(veh_id)
             if veh is not None:
                 self.opponent.apply_action(veh, (accel, steer))
         
-        # 4. 对未控制车辆应用 GT 动作（参考 policy_evaluator.py line 536-538）
+        # 4. Apply GT action to uncontrolled vehicles (see policy_evaluator.py line 536-538)
         ego_id = self.ego_vehicle.getID() if self.ego_vehicle else None
         controlled_ids = set(opponent_actions.keys())
         if ego_id is not None:
@@ -653,17 +642,17 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 if gt_action is not None:
                     self.opponent.apply_action(veh, gt_action)
         
-        # 5. 记录所有车辆的动作（用于下一步的 update_state）
+        # 5. Record all vehicle actions (for next update_state)
         self.opponent.record_all_actions(
             self.current_step - 1, 
             self.vehicles, 
             opponent_actions
         )
         
-        # 6. 仿真步进
+        # 6. Step simulation
         self.sim.step(self.dt)
         
-        # 7. 如果启用录制，捕获当前帧
+        # 7. If recording is enabled, capture current frame
         if self.recording_video and self.video_recorder is not None:
             self.video_recorder.capture_frame(
                 self.scenario,
@@ -671,11 +660,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 highlight_vehicle_ids=[self.ego_vehicle.getID()] if self.ego_vehicle else None
             )
         
-        # 8. 计算奖励和终止条件
+        # 8. Calculate reward and termination conditions
         obs = self._get_student_observation()
         reward = self._compute_reward()
         
-        # 更新 episode 统计
+        # Update episode statistics
         self._episode_steps += 1
         if self._collision_occurred:
             self._episode_collision_occurred = True
@@ -684,7 +673,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         if self._offroad_occurred:
             self._episode_offroad_occurred = True
         
-        # 计算目标进度（当前距离 vs 初始距离）
+        # Calculate target progress (current distance vs initial distance)
         if self.ego_vehicle and self._ego_goal_dict and self._ego_goal_dist_normalizer > 0:
             ego_pos = self.ego_vehicle.getPosition()
             goal_pos = self._ego_goal_dict['pos']
@@ -696,32 +685,31 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         return obs, reward, done, info
     
-    # ========== Level 属性和编码 ==========
+    # ========== Level properties and encoding ==========
     
     @property
     def level(self) -> str:
         """
-        返回当前 level 的字符串表示
+        Return current level string representation
         
-        用于 LevelStore 存储（字符串模式）
+        Used for LevelStore storage (string mode)
         """
         if self.current_level is None:
             return ""
         return self.current_level.to_level_string()
     
     def get_level(self) -> str:
-        """level 属性的方法形式"""
         return self.level
     
     @property
     def encoding(self) -> np.ndarray:
         """
-        返回当前 level 的编码
+        Return current level encoding
         
-        格式与 BipedalWalker 兼容：字符串数组
+        Compatible with BipedalWalker: string array
         [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt, seed]
         
-        用于 PLR buffer 存储（字节模式）
+        Used for PLR buffer storage (byte mode)
         """
         if self.current_level is None:
             enc = DEFAULT_LEVEL_PARAMS + [self.level_seed]
@@ -737,18 +725,18 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 self.current_level.seed,
             ]
         
-        # 转为字符串数组（与 BipedalWalker 兼容）
+        # Convert to string array (compatible with BipedalWalker)
         enc_str = [str(x) for x in enc]
         return np.array(enc_str, dtype=self.encoding_u_chars)
     
     def get_encodings(self) -> List[np.ndarray]:
-        """返回编码列表（兼容 vectorized env 接口）"""
+        """Return encoding list (compatible with vectorized env interface)"""
         return [self.encoding]
     
-    # ========== 动态场景池支持 ==========
+    # ========== Dynamic scenario pool support ==========
     
     def add_scenario(self, scenario_id: str) -> bool:
-        """添加新场景到场景池"""
+        """Add new scenario to scenario pool"""
         if not self.dynamic_scenario_pool:
             return False
         
@@ -769,11 +757,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
         return True
     
     def get_scenario_pool_size(self) -> int:
-        """返回当前场景池大小"""
+        """Return current scenario pool size"""
         return len(self.scenario_ids)
     
     def rebuild_index_mappings(self):
-        """重建索引映射"""
+        """Rebuild index mappings"""
         self.scenario_id_to_index = {
             sid: i for i, sid in enumerate(self.scenario_ids)
         }
@@ -782,26 +770,26 @@ class NocturneCtrlSimAdversarial(gym.Env):
         }
         self._scenario_pool_dirty = False
     
-    # ========== 指标和信息 ==========
+    # ========== Metrics and information ==========
     
     def reset_metrics(self):
-        """重置指标追踪"""
+        """Reset metrics tracking"""
         self.episode_reward = 0.0
         self.collision_count = 0
         self.goal_reached = False
     
     def get_complexity_info(self) -> Dict[str, Any]:
         """
-        返回当前 level 的复杂度信息和 episode 统计（用于日志和分析）
+        Return current level complexity information and episode statistics (for logging and analysis)
         
         Returns:
-            包含 level 参数和 episode 统计的字典
+            Dictionary containing level parameters and episode statistics
         """
         if self.current_level is None:
             return {}
         
         info = {
-            # Level 参数
+            # Level parameters
             'scenario_id': self.current_level.scenario_id,
             'seed': self.current_level.seed,
             'opponent_k': self.opponent_k,
@@ -810,7 +798,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             'veh_edge_tilt': self.current_level.veh_edge_tilt,
             'scenario_pool_size': len(self.scenario_ids),
             
-            # Episode 统计（用于训练监控）
+            # Episode statistics (for training monitoring)
             'collision_rate': 1.0 if self._episode_collision_occurred else 0.0,
             'goal_reached_rate': 1.0 if self._episode_goal_reached else 0.0,
             'offroad_rate': 1.0 if self._episode_offroad_occurred else 0.0,
@@ -821,10 +809,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         return info
     
-    # ========== 内部辅助方法 ==========
+    # ========== Internal helper methods ==========
     
     def _sample_random_level(self) -> ScenarioLevel:
-        """随机生成 level"""
+        """Randomly generate level"""
         return ScenarioLevel(
             scenario_id=np.random.choice(self.scenario_ids),
             seed=rand_int_seed(),
@@ -839,14 +827,14 @@ class NocturneCtrlSimAdversarial(gym.Env):
         num_edits: int
     ) -> ScenarioLevel:
         """
-        执行 level 变异
+        Execute level mutation
         
-        变异策略（参考 BipedalWalker）：
-        1. 随机选择参数
-        2. 随机选择方向：-1, 0, +1
-        3. 应用高斯扰动
+        Mutation strategy (see BipedalWalker):
+        1. Randomly select parameters
+        2. Randomly select direction: -1, 0, +1
+        3. Apply Gaussian perturbation
         
-        注意：只变异 tilt 参数，不改变 scenario_id
+        Note: only mutate tilt parameters, do not change scenario_id
         """
         from dataclasses import replace
         
@@ -854,7 +842,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         params = ['goal_tilt', 'veh_veh_tilt', 'veh_edge_tilt']
         
         for _ in range(num_edits):
-            # 只变异 tilt 参数，不改变 scenario_id
+            # Only mutate tilt parameters, do not change scenario_id
             param = np.random.choice(params)
             current_val = mutations.get(param, getattr(level, param))
             direction = np.random.randint(-1, 2)  # -1, 0, 1
@@ -866,9 +854,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def _load_scenario(self, scenario_id: str):
         """
-        加载 Nocturne 场景
+        Load Nocturne scenario
         
-        参考: third_party/ctrl-sim/utils/sim.py 的 get_sim() 函数
+        See: third_party/ctrl-sim/utils/sim.py get_sim() function
         """
         import os
         from nocturne import Simulation
@@ -876,14 +864,14 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         scenario_path = os.path.join(self.scenario_data_dir, f"{scenario_id}.json")
         
-        # Nocturne Simulation 只需要 scenario 配置字典（扁平格式）
-        # 参考 cfgs/config.py 的 get_scenario_dict() 函数
+        # Nocturne Simulation only needs scenario configuration dictionary
+        # See cfgs/config.py get_scenario_dict() function
         if 'scenario' in self.cfg.nocturne:
             scenario_dict = OmegaConf.to_container(
                 self.cfg.nocturne.scenario, resolve=True
             )
         else:
-            # 回退到基本配置
+            # Fall back to basic configuration
             scenario_dict = {
                 'start_time': 0,
                 'allow_non_vehicles': False,
@@ -893,38 +881,37 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.scenario = self.sim.getScenario()
         self.vehicles = list(self.scenario.vehicles())
         
-        # 设置车辆控制标志（参考 ctrl-sim evaluator.py line 37-39）
+        # Set vehicle control flags (see ctrl-sim evaluator.py line 37-39)
         for veh in self.vehicles:
             veh.expert_control = False
             veh.physics_simulated = True
         
-        # 注意: ego 选择移到 _initialize_simulation() 中，
-        # 因为需要 GT 数据来选择 interesting pair
+        # Note: ego selection is moved to _initialize_simulation() because it needs GT data to select interesting pair
     
     def _get_moving_vehicle_ids(self) -> List[int]:
         """
-        获取场景中所有 moving vehicles 的 ID
+        Get all moving vehicles IDs in the scenario
         
-        参考: ctrl-sim utils/sim.py get_moving_vehicles()
+        See: ctrl-sim utils/sim.py get_moving_vehicles() function
         """
         return [v.getID() for v in self.scenario.getObjectsThatMoved()]
     
     def _find_interesting_pair(self, moving_veh_ids: List[int]) -> Optional[Tuple[int, int]]:
         """
-        找到一对 interesting 车辆（参考 ctrl-sim policy_evaluator.py line 362-412）
+        Find interesting vehicle pairs (see ctrl-sim policy_evaluator.py line 362-412)
         
-        筛选条件:
-        - 目标位置接近（<10米）
-        - 目标时间步接近（<20步）
-        - 轨迹足够长（>=60步）
+        Selection criteria:
+        - Target position is close (<10 meters)
+        - Target time step is close (<20 steps)
+        - Trajectory is long enough (>=60 steps)
         
         Returns:
-            (veh_id_1, veh_id_2) 元组，如果找不到则返回 None
+            (veh_id_1, veh_id_2) tuple, if no interesting pair is found, use first moving vehicle as ego
         """
-        # 配置阈值（参考 ctrl-sim cfg.eval）
-        goal_dist_threshold = 10.0  # 米
-        timestep_diff_threshold = 20  # 步
-        traj_len_threshold = 60  # 步
+        # Configuration thresholds (see ctrl-sim cfg.eval)
+        goal_dist_threshold = 10.0  # meters
+        timestep_diff_threshold = 20  # steps
+        traj_len_threshold = 60  # steps
         history_steps = getattr(self.cfg.nocturne, 'history_steps', 10)
         
         goals = []
@@ -939,7 +926,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             gt_traj = np.array(self._gt_data_dict[veh_id]['traj'])
             existence_mask = gt_traj[:, 4]
             
-            # 计算目标位置和时间步
+            # Calculate target position and time step
             idx_goal = self.max_episode_steps - 1
             idx_disappear = np.where(existence_mask == 0)[0]
             if len(idx_disappear) > 0:
@@ -953,7 +940,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             if idx_goal >= 0 and np.linalg.norm(gt_traj[idx_goal, :2] - goal_pos) > 0.0:
                 goal_pos = gt_traj[idx_goal, :2]
             
-            # 检查轨迹长度
+            # Check trajectory length
             has_valid_traj = existence_mask[history_steps:].sum() >= traj_len_threshold
             
             goals.append(goal_pos)
@@ -968,10 +955,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
         goal_timesteps = np.array(goal_timesteps)
         valid_traj_mask = np.array(valid_traj_mask)
         
-        # 计算目标距离矩阵
+        # Calculate target distance matrix
         dists = np.linalg.norm(goals[:, np.newaxis] - goals[np.newaxis, :], axis=-1)
         
-        # 构建 mask
+        # Build mask
         nearby_mask = dists < goal_dist_threshold
         not_same_mask = dists > 0
         valid_traj_both = np.outer(valid_traj_mask, valid_traj_mask)
@@ -986,20 +973,20 @@ class NocturneCtrlSimAdversarial(gym.Env):
         if len(valid_pairs) == 0:
             return None
         
-        # 确定性选择: 选择第一对（按索引排序，保证一致性）
+        # Deterministic selection: select first pair (sorted by index, to ensure consistency)
         pair_idx = valid_pairs[0]
         return (veh_ids[pair_idx[0]], veh_ids[pair_idx[1]])
     
     def _select_ego_vehicle(self):
         """
-        选择 ego 车辆（学生控制）
+        Select ego vehicle (student controlled)
         
-        使用 find_interesting_pair 逻辑选择两个 interesting 车辆，
-        然后确定性地选择 veh_id 较小的作为 ego。
+        Use find_interesting_pair logic to select two interesting vehicles,
+        then deterministically select the vehicle with smaller veh_id as ego.
         
-        如果找不到 interesting pair，抛出异常。
+        If no interesting pair is found, use first moving vehicle as ego.
         """
-        # 1. 获取 moving vehicles
+        # 1. Get moving vehicles
         moving_veh_ids = self._get_moving_vehicle_ids()
         
         if len(moving_veh_ids) == 0:
@@ -1008,11 +995,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 "Scenario will be skipped."
             )
         
-        # 2. 找到 interesting pair
+        # 2. Find interesting pair
         interesting_pair = self._find_interesting_pair(moving_veh_ids)
         
         if interesting_pair is None:
-            # 如果没有找到 interesting pair，降级选择：选择第一个 moving vehicle
+            # If no interesting pair is found, downgrade to select first moving vehicle as ego
             print(
                 f"Warning: No interesting vehicle pair found in scenario {self.current_level.scenario_id}. "
                 f"Using first moving vehicle as ego."
@@ -1024,23 +1011,23 @@ class NocturneCtrlSimAdversarial(gym.Env):
                     f"No moving vehicles found in scenario {self.current_level.scenario_id}."
                 )
         else:
-            # 3. 确定性选择: veh_id 较小的作为 ego
+            # 3. Deterministic selection: select vehicle with smaller veh_id as ego
             ego_veh_id = min(interesting_pair)
         
         return self._get_vehicle_by_id(ego_veh_id)
     
     def _select_opponent_vehicles(self, k: int = 7):
         """
-        选择对手控制的车辆（距离 ego 最近的 k 个 moving vehicles）
+        Select opponent vehicles (k nearest moving vehicles to ego)
         
-        参考 ctrl-sim 的距离计算方式
+        See: ctrl-sim distance calculation
         """
         if self.ego_vehicle is None:
             self.opponent_vehicles = []
             self.opponent_vehicle_ids = []
             return
         
-        # 1. 获取 moving vehicles（排除 ego）
+        # 1. Get moving vehicles (excluding ego)
         moving_veh_ids = self._get_moving_vehicle_ids()
         ego_id = self.ego_vehicle.getID()
         candidate_ids = [vid for vid in moving_veh_ids if vid != ego_id]
@@ -1050,7 +1037,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             self.opponent_vehicle_ids = []
             return
         
-        # 2. 计算到 ego 的距离
+        # 2. Calculate distance to ego
         ego_pos = self.ego_vehicle.getPosition()
         ego_pos = np.array([ego_pos.x, ego_pos.y])
         
@@ -1063,7 +1050,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             dist = np.linalg.norm(np.array([pos.x, pos.y]) - ego_pos)
             distances.append((dist, veh_id, veh))
         
-        # 3. 按距离排序，选择最近的 k 辆
+        # 3. Sort by distance, select k nearest vehicles
         distances.sort(key=lambda x: x[0])
         selected = distances[:k]
         
@@ -1071,7 +1058,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.opponent_vehicle_ids = [item[1] for item in selected]
     
     def _get_vehicle_by_id(self, veh_id: int):
-        """根据 ID 获取车辆对象"""
+        """Get vehicle object by ID"""
         for veh in self.vehicles:
             if veh.getID() == veh_id:
                 return veh
@@ -1079,22 +1066,22 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def _initialize_ego_goal_state(self):
         """
-        初始化 ego 车辆的目标和奖励相关状态
+        Initialize ego vehicle's target and reward related state
         
-        参考: ctrl-sim evaluator.py initialize_goal_dict() 和 compute_goal_dist_normalizer()
+        See: ctrl-sim evaluator.py initialize_goal_dict() and compute_goal_dist_normalizer()
         """
         if self.ego_vehicle is None:
             return
         
         ego_id = self.ego_vehicle.getID()
         
-        # 获取 GT 轨迹数据
+        # Get GT trajectory data
         if ego_id not in self._gt_data_dict:
             return
         
         gt_traj_data = np.array(self._gt_data_dict[ego_id]['traj'])
         
-        # 计算目标位置（参考 evaluator.py initialize_goal_dict）
+        # Calculate target position (see evaluator.py initialize_goal_dict)
         goal_pos = np.array([
             self.ego_vehicle.target_position.x,
             self.ego_vehicle.target_position.y
@@ -1102,7 +1089,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         goal_heading = self.ego_vehicle.target_heading
         goal_speed = self.ego_vehicle.target_speed
         
-        # 检查车辆是否在轨迹结束前消失，如果是则使用最后有效位置作为目标
+        # Check if vehicle disappears before trajectory ends, if so, use last valid position as target
         existence_mask = gt_traj_data[:, 4]
         idx_disappear = np.where(existence_mask == 0)[0]
         if len(idx_disappear) > 0:
@@ -1118,13 +1105,13 @@ class NocturneCtrlSimAdversarial(gym.Env):
             'speed': goal_speed
         }
         
-        # 计算目标距离归一化因子
+        # Calculate target distance normalization factor
         ego_pos = self.ego_vehicle.getPosition()
         ego_pos = np.array([ego_pos.x, ego_pos.y])
         dist = np.linalg.norm(ego_pos - goal_pos)
         self._ego_goal_dist_normalizer = dist if dist > 0 else 1.0
         
-        # 初始化 ego 的 vehicle_data_dict（用于奖励计算）
+        # Initialize ego's vehicle_data_dict (for reward calculation)
         self._ego_vehicle_data_dict = {
             ego_id: {
                 'reward': [],
@@ -1136,51 +1123,52 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def _get_gt_action(self, veh_id: int, t: int) -> Optional[Tuple[float, float]]:
         """
-        从 GT 轨迹数据中获取车辆在时间步 t 的动作
+        Get vehicle's action from GT trajectory data at time step t
         
-        参考: ctrl-sim policy_evaluator.py apply_gt_action()
+        See: ctrl-sim policy_evaluator.py apply_gt_action()
         
         Args:
-            veh_id: 车辆 ID
-            t: 时间步
+            veh_id: vehicle ID
+            t: time step
         
         Returns:
-            (acceleration, steering) 元组，如果数据不存在则返回 None
+            (acceleration, steering) tuple, if data does not exist, return None
         """
         if veh_id not in self._gt_data_dict:
             return None
         
         gt_traj = np.array(self._gt_data_dict[veh_id]['traj'])
         
-        # 检查时间步是否有效
+        # Check if time step is valid
         if t < 0 or t >= len(gt_traj) - 1:
             return (0.0, 0.0)
         
-        # 检查车辆在当前和下一时间步是否存在
+        # Check if vehicle exists in current and next time step
         veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
         if not veh_exists:
             return (0.0, 0.0)
         
-        # 计算加速度（速度差分）
+        # Calculate acceleration (speed difference)
         accel = (gt_traj[t + 1, 3] - gt_traj[t, 3]) / self.dt
         
-        # 计算转向率（航向差分）
+        # Calculate steering rate (heading difference)
         steer = (gt_traj[t + 1, 2] - gt_traj[t, 2]) / self.dt
         
         return (float(accel), float(steer))
     
     def _apply_student_action(self, action: np.ndarray):
         """
-        将学生动作应用到 ego 车辆
+        Apply student action to ego vehicle
         
         Args:
-            action: [acceleration, steering] 归一化到 [-1, 1]
+            action: [acceleration, steering] normalized to [-1, 1]
         """
         if self.ego_vehicle is None:
             return
         
-        # 将归一化动作转换为实际值
-        # TODO: based on ctrlsim or GPUDrive model？ ctrlsim: 10, 0.7
+        # Convert normalized action to actual values
+        # TODO: should be based on ctrlsim or GPUDrive model?  in ctrlsim: 10, 0.7
+
         accel = action[0] * 10.0  # max acc 10 m/s²
         steer = action[1] * 0.7  # max steer 0.7 rad
         
@@ -1196,65 +1184,65 @@ class NocturneCtrlSimAdversarial(gym.Env):
         ego_heading: float
     ) -> List[np.ndarray]:
         """
-        构建 Road Graph 观测（符合 gpudrive 格式）
+        Build Road Graph observation (in gpudrive)
         
-        Road Graph 特征 (13 维):
-        - pos_x, pos_y (2): 道路点相对于 ego 的位置
-        - length (1): 道路段长度
-        - scale_x, scale_y (2): 道路点尺度
-        - orientation (1): 道路方向
-        - type_onehot (7): 道路类型 one-hot编码
+        Road Graph features (13 dimensions):
+        - pos_x, pos_y (2): position of road point relative to ego
+        - length (1): length of road segment
+        - scale_x, scale_y (2): scale of road point
+        - orientation (1): road direction
+        - type_onehot (7): road type one-hot encoding
         
         Args:
-            ego_pos: ego 车辆位置
-            ego_heading: ego 车辆朝向
+            ego_pos: ego vehicle position
+            ego_heading: ego vehicle heading
         
         Returns:
-            road_graph_states: List of road point features (R 个 13 维向量)
+            road_graph_states: List of road point features (R 13-dimensional vectors)
         """
         if self._road_graph_cache is None or len(self._road_graph_cache) == 0:
-            # 没有道路数据，返回空的 road graph
+            # No road data, return empty road graph
             return [np.zeros(13, dtype=np.float32) for _ in range(self._top_k_road_points)]
         
-        # 提取道路点特征
+        # Extract road point features
         road_points = []
         
         for road_item in self._road_graph_cache:
             road_type = road_item['type']
             geometry = road_item['geometry']
             
-            # 处理不同类型的几何数据
+            # Process different types of geometry data
             if isinstance(geometry, list) and len(geometry) > 0:
-                # 道路线（多个点）
+                # Road line (multiple points)
                 for i, pt in enumerate(geometry):
-                    # 相对位置
+                    # Relative position
                     rel_x = pt['x'] - ego_pos.x
                     rel_y = pt['y'] - ego_pos.y
                     
-                    # 计算道路段长度
+                    # Calculate road segment length
                     if i < len(geometry) - 1:
                         next_pt = geometry[i + 1]
                         seg_length = np.sqrt(
                             (next_pt['x'] - pt['x'])**2 + 
                             (next_pt['y'] - pt['y'])**2
                         )
-                        # 方向：指向下一个点
+                        # Direction: points to next point
                         orientation = np.arctan2(
                             next_pt['y'] - pt['y'],
                             next_pt['x'] - pt['x']
                         )
                     else:
-                        seg_length = 1.0  # 默认值
+                        seg_length = 1.0  # Default value
                         orientation = 0.0
                     
-                    # 道路点尺度（默认值）
+                    # Road point scale (default value)
                     scale_x = 1.0
                     scale_y = 1.0
                     
-                    # 道路类型 one-hot (7 维)
+                    # Road type one-hot (7 dimensions)
                     # ctrl-sim: {none:0, lane:1, road_line:2, road_edge:3, stop_sign:4, crosswalk:5, speed_bump:6, other:7}
                     # gpudrive: {None:0, RoadLine:1, RoadEdge:2, RoadLane:3, CrossWalk:4, SpeedBump:5, StopSign:6}
-                    # 映射到 gpudrive 顺序
+                    # Map ctrlsim road type to gpudrive order
                     type_mapping = {
                         'none': 0,
                         'road_line': 1,
@@ -1263,13 +1251,13 @@ class NocturneCtrlSimAdversarial(gym.Env):
                         'crosswalk': 4,
                         'speed_bump': 5,
                         'stop_sign': 6,
-                        'other': 0,  # 映射到 None
+                        'other': 0, 
                     }
                     type_idx = type_mapping.get(road_type, 0)
                     type_onehot = np.zeros(7, dtype=np.float32)
                     type_onehot[type_idx] = 1.0
                     
-                    # 拼接特征 (13 维)
+                    # Concatenate features (13 dimensions)
                     road_feat = np.array([
                         rel_x,
                         rel_y,
@@ -1283,7 +1271,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
                     road_points.append((np.sqrt(rel_x**2 + rel_y**2), road_feat))
             
             elif isinstance(geometry, dict):
-                # 静态目标（如 stop_sign）
+                # Static object (e.g. stop_sign)
                 rel_x = geometry['x'] - ego_pos.x
                 rel_y = geometry['y'] - ego_pos.y
                 
@@ -1308,7 +1296,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 
                 road_points.append((np.sqrt(rel_x**2 + rel_y**2), road_feat))
         
-        # 按距离排序，选择最近的 top_k 个点
+        # Sort by distance, select top_k nearest points
         road_points.sort(key=lambda x: x[0])
         
         road_graph_states = []
@@ -1317,7 +1305,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         for i in range(num_valid_points):
             road_graph_states.append(road_points[i][1])
         
-        # 填充不足的道路点
+        # Fill missing road points
         for _ in range(self._top_k_road_points - num_valid_points):
             road_graph_states.append(np.zeros(13, dtype=np.float32))
         
@@ -1325,30 +1313,30 @@ class NocturneCtrlSimAdversarial(gym.Env):
 
     def _get_student_observation(self) -> np.ndarray:
         """
-        获取学生策略的观测（Late Fusion 格式，与 gpudrive 一致）
+        Get student policy observation (consistent with gpudrive)
         
-        观测向量结构：
-        - Ego 状态: [speed, length, width, rel_goal_x, rel_goal_y, collision_state] (6 维)
-        - Partners: K 辆车 × [speed, rel_pos_x, rel_pos_y, rel_orientation, length, width] (K×6 维)
-        - Road graph: R 个点 × [pos_x, pos_y, length, scale_x, scale_y, orientation, type_onehot(7)] (R×13 维)
+        Observation vector structure:
+        - Ego state: [speed, length, width, rel_goal_x, rel_goal_y, collision_state] (6 dimensions)
+        - Partners: K vehicles * [speed, rel_pos_x, rel_pos_y, rel_orientation, length, width] (K*6 dimensions)
+        - Road graph: R points * [pos_x, pos_y, length, scale_x, scale_y, orientation, type_onehot(7)] (R*13 dimensions)
         
         Returns:
-            观测向量，形状为 (obs_dim,)
+            Observation vector, shape (obs_dim,)
         """
         if self.ego_vehicle is None or self._ego_goal_dict is None:
             return np.zeros(self._obs_dim, dtype=np.float32)
         
-        # ========== Ego 状态 (6 维) ==========
+        # ========== Ego state (6 dimensions) ==========
         ego_pos = self.ego_vehicle.getPosition()
         ego_heading = self.ego_vehicle.getHeading()
         ego_speed = self.ego_vehicle.getSpeed()
         
-        # 相对目标位置（ego 坐标系）
+        # Relative target position (in ego coordinate system)
         goal_pos = self._ego_goal_dict['pos']
         rel_goal_x = goal_pos[0] - ego_pos.x
         rel_goal_y = goal_pos[1] - ego_pos.y
         
-        # 碰撞状态
+        # Collision state
         collision_state = 1.0 if self._collision_occurred else 0.0
         
         ego_state = np.array([
@@ -1360,25 +1348,25 @@ class NocturneCtrlSimAdversarial(gym.Env):
             collision_state,
         ], dtype=np.float32)
         
-        # ========== Partner 状态 (K×6 维) ==========
-        # 使用 args 配置的 num_neighbors，从 __init__ 获取
+        # ========== Partner state (K*6 dimensions) ==========
+        # Use num_neighbors configured in args, get from __init__
         max_neighbors = getattr(self, '_max_observable_agents', 16)
         partner_states = []
         
-        # 选择最近的 K 辆邻车
+        # Select nearest K neighboring vehicles
         num_neighbors = min(len(self.opponent_vehicles), max_neighbors)
         
         for i in range(num_neighbors):
             veh = self.opponent_vehicles[i]
             veh_pos = veh.getPosition()
             
-            # 相对于 ego 的位置
+            # Relative position to ego
             rel_pos_x = veh_pos.x - ego_pos.x
             rel_pos_y = veh_pos.y - ego_pos.y
             
-            # 相对朝向
+            # Relative orientation
             rel_orientation = veh.getHeading() - ego_heading
-            # 归一化到 [-pi, pi]
+            # Normalize to [-pi, pi]
             while rel_orientation > np.pi:
                 rel_orientation -= 2 * np.pi
             while rel_orientation < -np.pi:
@@ -1394,21 +1382,21 @@ class NocturneCtrlSimAdversarial(gym.Env):
             ], dtype=np.float32)
             partner_states.append(partner_state)
         
-        # 填充不足的邻车为零向量
+        # Fill missing neighbors with zero vector
         for _ in range(max_neighbors - num_neighbors):
             partner_states.append(np.zeros(6, dtype=np.float32))
         
-        # ========== Road Graph (R×13 维) ==========
+        # ========== Road Graph (R*13 dimensions) ==========
         road_graph_states = self._build_road_graph_obs(ego_pos, ego_heading)
         
-        # ========== 拼接所有观测 ==========
+        # ========== Concatenate all observations ==========
         obs_parts = [ego_state]
         obs_parts.extend(partner_states)
         obs_parts.extend(road_graph_states)
         
         obs_concat = np.concatenate(obs_parts)
         
-        # 填充或截断到 obs_dim
+        # Fill or truncate to obs_dim
         if len(obs_concat) < self._obs_dim:
             obs_final = np.zeros(self._obs_dim, dtype=np.float32)
             obs_final[:len(obs_concat)] = obs_concat
@@ -1417,17 +1405,17 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         return obs_final
     
-    def _compute_reward(self) -> float:
+    def _compute_reward(self) -> float:     
         """
-        计算学生奖励
+        Compute student reward
         
-        奖励组成（参考 ctrl-sim compute_reward）：
-        - 到达目标奖励（shaped_goal_distance）
-        - 碰撞惩罚
-        - 出界惩罚
+        Reward components (see ctrl-sim compute_reward):
+        - Goal achievement reward (shaped_goal_distance)
+        - Collision penalty
+        - Offroad penalty
         
         Returns:
-            标量奖励值
+            Scalar reward value
         """
         import nocturne
         
@@ -1437,7 +1425,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         reward = 0.0
         ego_id = self.ego_vehicle.getID()
         
-        # ========== 获取当前状态 ==========
+        # ========== Get current state ==========
         ego_pos = self.ego_vehicle.getPosition()
         ego_pos = np.array([ego_pos.x, ego_pos.y])
         ego_speed = self.ego_vehicle.getSpeed()
@@ -1447,9 +1435,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
         goal_speed = self._ego_goal_dict['speed']
         goal_heading = self._ego_goal_dict['heading']
         
-        # ========== 目标达成检测 ==========
+        # ========== Goal achievement detection ==========
         dist_to_goal = np.linalg.norm(goal_pos - ego_pos)
-        position_tolerance = 1.0  # 米
+        position_tolerance = 1.0  # meters
         speed_tolerance = 1.0  # m/s
         heading_tolerance = 0.3  # rad
         
@@ -1457,19 +1445,20 @@ class NocturneCtrlSimAdversarial(gym.Env):
         speed_achieved = abs(ego_speed - goal_speed) < speed_tolerance
         heading_achieved = abs(self._angle_diff(ego_heading, goal_heading)) < heading_tolerance
         
-        # 如果之前已经达到目标，保持达成状态
+        # If goal already achieved, keep achieved state
         if self._goal_reached:
             position_achieved = True
         elif position_achieved and speed_achieved and heading_achieved:
             self._goal_reached = True
         
         # ========== Shaped Goal Distance Reward ==========
-        # 越接近目标，奖励越高
+        # The closer to the goal, the higher the reward 
+        # in ctrlsim: 0.2
         goal_dist_scaling = 0.2
         reward_scaling = 1.0
         
         if self._ego_goal_dist_normalizer > 0:
-            # 归一化距离奖励：[0, 1]，越近越高
+            # Normalize distance reward: [0, 1], the closer the higher
             if self._goal_reached:
                 pos_goal_rew = goal_dist_scaling / reward_scaling
             else:
@@ -1480,12 +1469,12 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         reward += pos_goal_rew
         
-        # ========== 碰撞惩罚 ==========
+        # ========== Collision penalty ==========
         try:
             veh_veh_collision = self.ego_vehicle.collision_type_veh == nocturne.CollisionType.VEHICLE_VEHICLE
             veh_edge_collision = self.ego_vehicle.collision_type_edge == nocturne.CollisionType.VEHICLE_ROAD
         except AttributeError:
-            # 如果 nocturne 版本不支持，使用旧版 API
+            # If nocturne version does not support, use old API 
             try:
                 veh_veh_collision = self.ego_vehicle.collision_type == nocturne.CollisionType.VEHICLE_VEHICLE
                 veh_edge_collision = self.ego_vehicle.collision_type == nocturne.CollisionType.VEHICLE_ROAD
@@ -1499,10 +1488,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
             self._collision_occurred = True
         
         if veh_edge_collision:
-            reward += collision_penalty * 0.5  # 出界惩罚稍轻
+            reward += collision_penalty * 0.5  # Offroad penalty slightly lighter
             self._offroad_occurred = True
         
-        # ========== 更新 vehicle_data_dict（用于持续跟踪）==========
+        # ========== Update vehicle_data_dict (for continuous tracking) ==========
         if ego_id in self._ego_vehicle_data_dict:
             self._ego_vehicle_data_dict[ego_id]['reward'].append([
                 float(position_achieved),
@@ -1519,7 +1508,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         return reward
     
     def _angle_diff(self, a: float, b: float) -> float:
-        """计算两个角度之间的差值（处理 wraparound）"""
+        """Calculate the difference between two angles (handle wraparound)"""
         diff = a - b
         while diff > np.pi:
             diff -= 2 * np.pi
@@ -1529,38 +1518,38 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def _check_done(self) -> bool:
         """
-        检查 episode 是否结束
+        Check if episode is done
         
         终止条件：
-        1. 达到最大步数（超时）
-        2. 发生碰撞
-        3. 到达目标
-        4. 出界（offroad）
+        1. Max steps (timeout)
+        2. Collision
+        3. Goal reached
+        4. Offroad
         
         Returns:
-            是否终止
+            Whether to terminate
         """
-        # 达到最大步数
+        # Max steps (timeout)
         if self.current_step >= self.max_episode_steps:
             return True
         
-        # 发生碰撞（vehicle-vehicle）
+        # Collision (vehicle-vehicle)
         if self._collision_occurred:
             return True
         
-        # 到达目标
+        # Goal reached
         if self._goal_reached:
             return True
         
-        # 出界（offroad）- 可选，某些场景可能不需要立即终止
+        # Offroad - optional, some scenarios may not need immediate termination
         # if self._offroad_occurred:
         #     return True
         
         return False
     
     def _get_info(self) -> Dict[str, Any]:
-        """返回额外信息"""
-        # 计算 progress（到目标的距离进度）
+        """Return additional information"""
+        # Calculate progress (distance to goal)
         progress = 0.0
         if self.ego_vehicle is not None and self._ego_goal_dict is not None:
             ego_pos = self.ego_vehicle.getPosition()
@@ -1574,14 +1563,14 @@ class NocturneCtrlSimAdversarial(gym.Env):
         info = {
             'step': self.current_step,
             'episode_reward': self.episode_reward,
-            # 诊断信息（参考 ctrl-sim metrics）
+            # Diagnostic information (参考 ctrl-sim metrics)
             'collision': self._collision_occurred,
             'goal_reached': self._goal_reached,
             'offroad': self._offroad_occurred,
             'progress': progress,
         }
         
-        # 在 episode 结束时添加统计信息
+        # Add statistics when episode ends
         if self._check_done():
             info['episode'] = {
                 'r': self.episode_reward,
@@ -1592,7 +1581,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         return info
     
     def render(self, mode='human'):
-        """渲染环境（静态截图）"""
+        """Render environment (static screenshot)"""
         if mode not in ['human', 'rgb_array', 'level']:
             raise NotImplementedError
 
@@ -1722,16 +1711,15 @@ class NocturneCtrlSimAdversarial(gym.Env):
         fig.clear()
 
         return image
-    
+
+    # TODO: test recording function, fps / dpi no need to be set
     def start_recording(self, output_dir: str, video_name: str, fps: int = 10, dpi: int = 100):
-        """
-        开始录制视频
-        
+        """    
         Args:
-            output_dir: 输出目录
-            video_name: 视频文件名（不含扩展名）
-            fps: 帧率
-            dpi: 分辨率
+            output_dir: Output directory
+            video_name: Video file name (without extension)
+            fps: Frame rate
+            dpi: Resolution
         """
         if self.video_recorder is None:
             self.video_recorder = NocturneVideoRecorder(
@@ -1744,7 +1732,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.video_recorder.start_recording(video_name)
         self.recording_video = True
         
-        # 捕获第一帧（初始状态）
+        # Capture first frame (initial state)
         if self.scenario is not None and self.vehicles:
             self.video_recorder.capture_frame(
                 self.scenario,
@@ -1754,13 +1742,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def stop_recording(self, video_name: Optional[str] = None) -> Optional[str]:
         """
-        停止录制并保存视频
-        
         Args:
-            video_name: 视频文件名（如果与 start_recording 不同）
+            video_name: Video file name (if different from start_recording)
         
         Returns:
-            视频文件路径，如果没有录制则返回 None
+            Video file path, None if not recording
         """
         if not self.recording_video or self.video_recorder is None:
             return None
@@ -1769,7 +1755,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         try:
             if video_name is None:
-                # 使用默认名称
+                # Use default name
                 if self.current_level:
                     video_name = f"scenario_{self.current_level.scenario_id}"
                 else:
@@ -1782,17 +1768,17 @@ class NocturneCtrlSimAdversarial(gym.Env):
             return None
     
     def close(self):
-        """关闭环境"""
-        # 如果正在录制，先停止
+        """Close environment"""
+        # If recording, stop first
         if self.recording_video:
             self.stop_recording()
         
-        # 清理录制器
+        # Clean up recorder
         if self.video_recorder is not None:
             self.video_recorder.close()
             self.video_recorder = None
         
-        # 清理 Nocturne 资源
+        # Clean up Nocturne resources
         if self.sim is not None:
-            # TODO: 清理 Nocturne 资源
+            # TODO: Clean up Nocturne resources
             pass

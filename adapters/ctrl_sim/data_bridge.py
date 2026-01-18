@@ -27,24 +27,15 @@ class DataBridge:
     3. Identify moving vehicles
     4. Get road data
     
-    参考 ctrl-sim 的实现:
     - evaluators/evaluator.py: load_preprocessed_data()
-    - evaluators/policy_evaluator.py: 使用 test_filenames.pkl 索引场景
-    
-    Example:
-    ```python
-    bridge = DataBridge(cfg, preprocess_dir)
-    gt_data = bridge.get_ground_truth(scenario_path, filename)
-    preproc_data, exists = bridge.load_preprocessed_data(filename)
-    moving_ids = bridge.get_moving_vehicle_ids(scenario)
-    ```
+    - evaluators/policy_evaluator.py: load test_filenames.pkl to index scenarios
     """
     
     def __init__(self, cfg: Any, preprocess_dir: str):
         """
         Args:
-            cfg: Hydra 配置
-            preprocess_dir: 预处理数据目录路径
+            cfg: Hydra
+            preprocess_dir
         """
         self.cfg = cfg
         self.preprocess_dir = preprocess_dir
@@ -52,19 +43,17 @@ class DataBridge:
         self.steps = cfg.nocturne.steps
         self.cfg_dataset = cfg.dataset.waymo
         
-        # 预处理文件缓存
+        # Preprocessed files cache
         self._preprocessed_files_cache: Optional[Dict[str, str]] = None
         self._preproc_data_cache: Dict[str, Dict] = {}
     
     def _ensure_preprocessed_files_cache(self):
-        """延迟初始化预处理文件缓存，建立 scenario_id -> file_path 映射"""
+        """Lazy initialize preprocessed files cache, mapping scenario_id -> file_path"""
         if self._preprocessed_files_cache is None:
             self._preprocessed_files_cache = {}
-            # 扫描预处理目录中的所有 pkl 文件
+            # Scan all pkl files in the preprocess directory
             pkl_files = glob.glob(os.path.join(self.preprocess_dir, '*.pkl'))
             for filepath in pkl_files:
-                # 文件名格式: tfrecord-00011-of-00150_131_physics.pkl
-                # 对应场景 ID: tfrecord-00011-of-00150_131
                 basename = os.path.basename(filepath)
                 if basename.endswith('_physics.pkl'):
                     scenario_id = basename.replace('_physics.pkl', '')
@@ -164,28 +153,28 @@ class DataBridge:
         scenario_filename: str
     ) -> Tuple[Optional[Dict], bool]:
         """
-        加载预处理数据（包含 RTG 和道路信息）
+        Load preprocessed data (including RTG and road information)
         
-        参考 evaluators/evaluator.py 第 47-59 行 load_preprocessed_data()
-        和 datasets/rl_waymo/dataset_ctrl_sim.py 的 get_data() 方法
+        Refer to evaluators/evaluator.py lines 47-59 load_preprocessed_data()
+        and datasets/rl_waymo/dataset_ctrl_sim.py get_data() method
         
         Args:
-            scenario_filename: 场景文件名（不含扩展名，如 'tfrecord-00011-of-00150_131'）
+            scenario_filename: Scenario filename (without extension, e.g., 'tfrecord-00011-of-00150_131')
         
         Returns:
-            preproc_data: 预处理数据字典，包含:
-                - 'rtgs': shape (num_agents, steps+1, 3) - RTG 值
-                - 'road_points': 道路点信息
-                - 'road_types': 道路类型信息
-            file_exists: 文件是否存在
+            preproc_data: Preprocessed data dictionary, including:
+                - 'rtgs': shape (num_agents, steps+1, 3) - RTG values
+                - 'road_points': Road points information
+                - 'road_types': Road types information
+            file_exists: Whether the file exists
         """
         self._ensure_preprocessed_files_cache()
         
-        # 检查缓存
+        # Check cache
         if scenario_filename in self._preproc_data_cache:
             return self._preproc_data_cache[scenario_filename], True
         
-        # 查找预处理文件
+        # Look for preprocessed file
         if scenario_filename not in self._preprocessed_files_cache:
             return None, False
         
@@ -195,10 +184,10 @@ class DataBridge:
             with open(filepath, 'rb') as f:
                 raw_data = pickle.load(f)
             
-            # 处理数据，计算 RTG（参考 dataset_ctrl_sim.py get_data() mode='eval' 分支）
+            # process data, calculate RTG (refer to dataset_ctrl_sim.py get_data() mode='eval' branch)
             preproc_data = self._process_preprocessed_data(raw_data)
             
-            # 缓存结果
+            # cache results
             self._preproc_data_cache[scenario_filename] = preproc_data
             
             return preproc_data, True
@@ -209,9 +198,9 @@ class DataBridge:
     
     def _process_preprocessed_data(self, raw_data: Dict) -> Dict:
         """
-        处理原始预处理数据，计算 RTG
+        Process original preprocessed data, calculate RTG
         
-        参考 dataset_ctrl_sim.py 的 get_data() 方法（mode='eval' 分支）
+        Refer to dataset_ctrl_sim.py get_data() method (mode='eval' branch)
         """
         ag_data = raw_data['ag_data']
         ag_rewards = raw_data['ag_rewards']
@@ -220,13 +209,13 @@ class DataBridge:
         road_points = raw_data['road_points']
         road_types = raw_data['road_types']
         
-        # 计算综合奖励（参考 dataset.py compute_rewards）
+        # compute comprehensive rewards (refer to dataset.py compute_rewards)
         all_rewards = self._compute_rewards(
             ag_data, ag_rewards, 
             veh_edge_dist_rewards, veh_veh_dist_rewards
         )
         
-        # 计算 RTG (Return-To-Go): 累积未来奖励
+        # calculate RTG (Return-To-Go): accumulated future rewards
         # shape: (num_agents, steps+1, num_reward_components)
         rtgs = np.cumsum(all_rewards[:, ::-1], axis=1)[:, ::-1]
         
@@ -234,7 +223,7 @@ class DataBridge:
             'rtgs': rtgs,
             'road_points': road_points,
             'road_types': road_types,
-            # 保留原始数据以便需要时使用
+            # keep original data for later use
             'ag_data': ag_data,
             'ag_rewards': ag_rewards,
             'filtered_ag_ids': raw_data.get('filtered_ag_ids', []),
@@ -248,11 +237,11 @@ class DataBridge:
         veh_veh_dist_rewards: np.ndarray
     ) -> np.ndarray:
         """
-        计算综合奖励
+        Compute comprehensive rewards
         
-        参考 dataset.py 的 compute_rewards() 方法
+        Refer to dataset.py compute_rewards() method
         
-        奖励维度:
+        Reward dimensions:
         - 0: pos_target_achieved (0 or 1)
         - 1: heading_target_achieved (0 or 1)  
         - 2: speed_target_achieved (0 or 1)
@@ -263,24 +252,24 @@ class DataBridge:
         cfg = self.cfg_dataset
         
         # ag_rewards shape: (num_agents, steps+1, 6)
-        # 包含: pos_target, heading_target, speed_target, pos_shaped, speed_shaped, heading_shaped
+        # contains: pos_target, heading_target, speed_target, pos_shaped, speed_shaped, heading_shaped
         
-        # 构建完整奖励数组
+        # build complete reward array
         num_agents, num_steps, _ = ag_rewards.shape
         all_rewards = np.zeros((num_agents, num_steps, 6), dtype=np.float32)
         
-        # 复制基础奖励
+        # copy base rewards
         all_rewards[:, :, :3] = ag_rewards[:, :, :3]  # target achieved
         all_rewards[:, :, 3] = ag_rewards[:, :, 3]    # pos_goal_shaped
         
-        # 添加距离奖励（参考 dataset.py 第 267-280 行）
+        # add distance rewards (refer to dataset.py lines 267-280)
         all_rewards[:, :, 4] = veh_veh_dist_rewards * cfg.veh_veh_collision_rew_multiplier
         all_rewards[:, :, 5] = veh_edge_dist_rewards * cfg.veh_edge_collision_rew_multiplier
         
         return all_rewards
     
     def get_available_scenario_ids(self) -> List[str]:
-        """获取所有有预处理数据的场景 ID 列表"""
+        """Get the list of scenario IDs with preprocessed data"""
         self._ensure_preprocessed_files_cache()
         return list(self._preprocessed_files_cache.keys())
     
@@ -289,16 +278,16 @@ class DataBridge:
         scenario_filename: str
     ) -> Tuple[Optional[Dict], bool]:
         """
-        直接从文件加载预处理数据（不经过 dataset 对象）
+        Load preprocessed data directly from file (without dataset object)
         
         Args:
-            scenario_filename: 场景文件名（不含扩展名）
+            scenario_filename: Scenario filename (without extension)
         
         Returns:
-            preproc_data: 预处理数据
-            file_exists: 文件是否存在
+            preproc_data: Preprocessed data
+            file_exists: Whether the file exists
         """
-        # 使用新的 load_preprocessed_data 方法
+        # use new load_preprocessed_data method
         return self.load_preprocessed_data(scenario_filename)
     
     def get_moving_vehicle_ids(self, scenario) -> List[int]:
