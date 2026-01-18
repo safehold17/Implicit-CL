@@ -1,0 +1,64 @@
+name: dcd-ctrlsim
+channels:
+  - defaults
+  - pyg
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - jupyterlab
+  - swig
+  - box2d-py=2.3.8
+  - pip:
+      # ---- ctrl-sim (keep) ----
+      - hydra-core
+      - hydra-submitit-launcher
+      - ipdb
+      - seaborn
+      - imageio
+      - moviepy
+      - opencv-python
+      - wandb
+      - setproctitle
+      - tensorboardX
+      - pytest
+      - flake8
+      - pydocstyle
+      - pyvirtualdisplay
+      - ray
+      - dm-tree
+      - tabulate
+      - h5py
+      - matplotlib
+      - einops
+      - torch-ema
+      - pytorch-lightning
+      - torch_geometric
+
+      # ---- hard pins (match ctrl-sim anchors) ----
+      - torch==2.2.0
+      - torchvision==0.17.0
+      - torchaudio==2.2.0
+      - numpy==1.23.0
+      - scipy==1.12.0
+      - gym_minigrid==1.2.2
+      - geopandas==0.13.2
+      - PyYAML>=5.3.1
+
+      # ---- env API (unify) ----
+      - gym==0.26.2
+      - gymnasium==0.29.1
+      - shimmy==0.2.1
+      - pyglet==1.5.11
+
+      # ---- DCD migrated deps (no TensorFlow) ----
+      - cloudpickle==2.2.1
+      - networkx==2.8.8
+      - tqdm==4.66.1
+      - scikit-learn==1.1.1
+      - cma==2.7.0
+      - treelib==1.6.1
+      - pandas==1.5.3
+
+      # ---- RL stack replacement (optional but recommended) ----
+      - stable-baselines3==2.4.0
