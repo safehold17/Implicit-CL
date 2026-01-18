@@ -137,10 +137,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.scenario_data_dir = scenario_data_dir
         self.preprocess_dir = preprocess_dir
         
-        # ========== 数据桥接器（Milestone 2）==========
+        # ========== 数据桥接器==========
         self.data_bridge = DataBridge(cfg, preprocess_dir)
         
-        # ========== 对手策略适配器（Milestone 2）==========
+        # ========== 对手策略适配器==========
         self.opponent = CtrlSimOpponentAdapter(
             cfg=cfg,
             checkpoint_path=opponent_checkpoint,
@@ -1180,9 +1180,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
             return
         
         # 将归一化动作转换为实际值
-        # TODO: 根据实际动作范围调整
-        accel = action[0] * 5.0  # 假设最大加速度 5 m/s²
-        steer = action[1] * 0.5  # 假设最大转向角 0.5 rad
+        # TODO: based on ctrlsim or GPUDrive model？ ctrlsim: 10, 0.7
+        accel = action[0] * 10.0  # max acc 10 m/s²
+        steer = action[1] * 0.7  # max steer 0.7 rad
         
         if accel > 0:
             self.ego_vehicle.acceleration = accel
