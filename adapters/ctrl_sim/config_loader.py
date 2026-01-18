@@ -1,18 +1,17 @@
 """
-ctrl-sim 配置加载器
+ctrl-sim config loader
 
-加载和管理 ctrl-sim 的 Hydra 配置
+Load and manage Hydra configs for ctrl-sim
 
-设计参考 ctrl-sim/eval_sim.py 的实现方式:
-- 使用 @hydra.main 装饰器自动加载配置
-- 从 cfgs/dcd_config.py 获取 CONFIG_PATH
-- 配置通过 Hydra 的 defaults 机制组合
+Design reference:
+- get CONFIG_PATH from cfgs/dcd_config.py
+- configs are combined through Hydra's defaults mechanism
 
-参考:
-- third_party/ctrl-sim/eval_sim.py: 配置加载示例
-- third_party/ctrl-sim/cfgs/config.py: CONFIG_PATH 定义
-- cfgs/dcd_config.py: DCD 项目的 CONFIG_PATH
-- cfgs/data/ctrl_sim.yaml: 本地路径覆盖配置
+References:
+- third_party/ctrl-sim/eval_sim.py: config loading example
+- third_party/ctrl-sim/cfgs/config.py: CONFIG_PATH
+- cfgs/dcd_config.py: DCD project's CONFIG_PATH
+- cfgs/data/ctrl_sim.yaml: local path overrides
 """
 import os
 import sys
@@ -23,10 +22,10 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf, DictConfig
 
-# 从 DCD 配置模块导入 CONFIG_PATH（与 ctrl-sim 的模式一致）
+# import CONFIG_PATH from DCD config module (same as ctrl-sim's mode)
 from cfgs.dcd_config import CONFIG_PATH as DCD_CONFIG_PATH
 
-# ctrl-sim 配置路径
+# ctrl-sim config path
 CTRL_SIM_ROOT = os.path.join(os.path.dirname(__file__), '../../third_party/ctrl-sim')
 CTRL_SIM_CONFIG_PATH = os.path.join(CTRL_SIM_ROOT, 'cfgs')
 
@@ -37,7 +36,6 @@ def _load_dcd_config() -> DictConfig:
     加载 DCD 项目配置（带缓存）
     
     使用 DCD_CONFIG_PATH（从 cfgs/dcd_config.py 导入）加载配置，
-    与 ctrl-sim 的 eval_sim.py 使用相同的模式。
     
     Returns:
         DCD 项目配置对象（包含 dcd_config_path 等）
