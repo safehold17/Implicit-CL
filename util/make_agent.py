@@ -142,32 +142,26 @@ def model_for_nocturne_agent(
     recurrent_arch=None,
     random_teacher=False,
 ):
-    """
-    为 Nocturne 驾驶环境创建策略模型
-    
-    适用于 Nocturne + ctrl-sim 等驾驶场景。
-    - agent: Student 策略（Late Fusion，连续动作）
-    - adversary_env: Teacher 策略（关卡生成者，用于 PAIRED/Minimax）
-    
+    """    
     Args:
-        env: 环境实例（需提供 observation_space 和 action_space）
-        agent_type: 'agent' (student) 或 'adversary_env' (teacher)
-        input_dim: 各模态嵌入维度（Late Fusion 中间层）
-        hidden_dim: 融合后的隐藏层维度
-        num_neighbors: 邻车截断数量 K
-        top_k_road_points: 道路点截断数量 R
-        dropout: Dropout 概率
-        act_func: 激活函数 ("tanh" 或 "gelu")
-        recurrent: 是否使用循环网络（仅 Teacher，向后兼容）
-        recurrent_arch: RNN 架构类型 ('lstm' 或 'gru'，仅 Teacher）
-        random_teacher: 是否使用随机 Teacher（基线对比）
+        env: Environment instance (observation_space and action_space are required)
+        agent_type: 'agent' (student) or 'adversary_env' (teacher)
+        input_dim: Embedding dimension for each modality (Late Fusion intermediate layer)
+        hidden_dim: Hidden layer dimension after fusion
+        num_neighbors: Number of neighboring vehicles to consider (not K)
+        top_k_road_points: Number of road points to consider (R)
+        dropout: Dropout probability
+        act_func: Activation function ("tanh" or "gelu")
+        recurrent: Whether to use recurrent network (adversary env only, for enhancement)
+        recurrent_arch: RNN architecture type ('lstm' or 'gru', Teacher only)
+        random_teacher: Whether to use random Teacher (baseline comparison)
     
     Returns:
-        model: StudentPolicy 或 NocturneAdversaryPolicy 实例
+        model: StudentPolicy or NocturneAdversaryPolicy instance
     """
     from dcd_models import NocturneAdversaryPolicy
     
-    # Teacher 策略（关卡生成者）
+    # Teacher policy, level generation
     if 'adversary_env' in agent_type:
         obs_space = env.adversary_observation_space
         action_space = env.adversary_action_space
@@ -182,7 +176,7 @@ def model_for_nocturne_agent(
         )
         return model
     
-    # Student 策略（驾驶策略）
+    # Student policy, driving agent
     obs_shape = env.observation_space.shape
     action_space = env.action_space
     
@@ -215,14 +209,14 @@ def model_for_env_agent(
     use_goal=False,
     num_goal_bins=1,
     use_lstm=False,
-    # Nocturne Student 策略参数
+    # Nocturne Student parameters
     student_input_dim=64,
     student_hidden_dim=128,
     student_num_neighbors=16,
     student_top_k_road=64,
     student_dropout=0.0,
     student_act_func="tanh",
-    # Nocturne Teacher 策略参数
+    # Nocturne Teacher parameters
     random_teacher=False):
     assert agent_type in ['agent', 'adversary_agent', 'adversary_env']
         
@@ -252,7 +246,7 @@ def model_for_env_agent(
             recurrent_arch=recurrent_arch,
             use_lstm=use_lstm)
     elif env_name.startswith('Nocturne') or env_name.startswith('nocturne'):
-        # 对 Teacher 使用 recurrent_arch，对 Student 不使用
+        # teacher using recurrent_arch, student not
         is_teacher = 'adversary_env' in agent_type
         model = model_for_nocturne_agent(
             env=env,
@@ -314,14 +308,14 @@ def make_agent(name, env, args, device='cpu'):
         use_goal=vars(args).get('sparse_rewards', False),
         num_goal_bins=vars(args).get('num_goal_bins', 1),
         use_lstm=vars(args).get('use_lstm', False),
-        # Nocturne Student 参数
+        # Nocturne Student parameters
         student_input_dim=vars(args).get('student_input_dim', 64),
         student_hidden_dim=vars(args).get('student_hidden_dim', 128),
         student_num_neighbors=vars(args).get('student_num_neighbors', 16),
         student_top_k_road=vars(args).get('student_top_k_road', 64),
         student_dropout=vars(args).get('student_dropout', 0.0),
         student_act_func=vars(args).get('student_act_func', 'tanh'),
-        # Nocturne Teacher 参数
+        # Nocturne Teacher parameters
         random_teacher=vars(args).get('random_teacher', False))
 
     algo = None
