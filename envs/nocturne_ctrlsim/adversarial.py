@@ -12,7 +12,7 @@ import math
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Union
 
-from .level import ScenarioLevel
+from .level import ScenarioLevel, PER_VEHICLE_TILTING_LENGTH
 from .video_recorder import NocturneVideoRecorder
 from util.build_scenario_index import ScenarioIndex
 from adapters.ctrl_sim import (
@@ -78,6 +78,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # Dynamic scenario pool config
         dynamic_scenario_pool: bool = False,
         max_scenario_pool_size: int = 10000,
+        # Tilting mode
+        tilting_mode: str = 'global',
 
         obs_dim: int = DEFAULT_OBS_DIM,
         action_dim: int = DEFAULT_ACTION_DIM,
@@ -146,6 +148,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.opponent_k = opponent_k
         self.dt = cfg.nocturne.dt
         
+        # ========== Tilting config ==========
+        if tilting_mode not in ['global', 'per_vehicle']:
+            raise ValueError(f"tilting_mode must be 'global' or 'per_vehicle', got {tilting_mode}")
+        self.tilting_mode = tilting_mode
+        
         # ========== State variables ==========
         self.current_level: Optional[ScenarioLevel] = None
         self.current_step = 0
@@ -182,8 +189,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._episode_progress: float = 0.0  # Target progress [0, 1]
         
         # Level parameters vector (for adversary building)
-        # [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt]
-        self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
+        # [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt, per_vehicle_tilts...]
+        if self.tilting_mode == 'per_vehicle':
+            self.level_params_vec = list(DEFAULT_LEVEL_PARAMS) + [0] * PER_VEHICLE_TILTING_LENGTH
+        else:
+            self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
         
         # ========== Student observation config (from args) ==========
         # These parameters are used in make_agent, set default values here
@@ -215,8 +225,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
         )
         
         # ========== Adversary space definition ==========
-        # Adversary building environment needs 4 steps: scenario_id + 3 tilt parameters
-        self.adversary_max_steps = 4
+        # Adversary building steps: scenario_id + tilt parameters
+        if self.tilting_mode == 'per_vehicle':
+            self.adversary_max_steps = 1 + PER_VEHICLE_TILTING_LENGTH
+        else:
+            self.adversary_max_steps = 4
         self.random_z_dim = random_z_dim
         self.passable = True  # Driving scenario default passable
         
@@ -290,7 +303,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.adversary_step_count = 0
         
         # Reset level parameters to default values
-        self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
+        if self.tilting_mode == 'per_vehicle':
+            self.level_params_vec = list(DEFAULT_LEVEL_PARAMS) + [0] * PER_VEHICLE_TILTING_LENGTH
+        else:
+            self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
         
         # Generate new level seed
         self.level_seed = rand_int_seed()
@@ -308,9 +324,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """        
         Action mapping:
         - Step 0: action -> scenario_index (discretized to scenario pool size)
-        - Step 1: action -> goal_tilt ([-1,1] -> [-25,25])
-        - Step 2: action -> veh_veh_tilt ([-1,1] -> [-25,25])
-        - Step 3: action -> veh_edge_tilt ([-1,1] -> [-25,25])
+        - Step 1..: action -> tilt parameters ([-1,1] -> tilt_range)
         
         Args:
             action: continuous action [-1, 1]
@@ -335,12 +349,17 @@ class NocturneCtrlSimAdversarial(gym.Env):
             scenario_idx = np.clip(scenario_idx, 0, num_scenarios - 1)
             self.level_params_vec[0] = scenario_idx
         else:
-            # Step 1-3: set tilt parameters
+            # Step 1+: set tilt parameters
             # Map [-1, 1] to tilt_range
             tilt_scale = (self.tilt_range[1] - self.tilt_range[0]) / 2.0
             tilt_value = action * tilt_scale
             tilt_value = np.clip(tilt_value, self.tilt_range[0], self.tilt_range[1])
-            self.level_params_vec[self.adversary_step_count] = round(float(tilt_value))
+            if self.tilting_mode == 'per_vehicle':
+                per_idx = self.adversary_step_count - 1
+                if 0 <= per_idx < PER_VEHICLE_TILTING_LENGTH:
+                    self.level_params_vec[4 + per_idx] = round(float(tilt_value))
+            else:
+                self.level_params_vec[self.adversary_step_count] = round(float(tilt_value))
         
         self.adversary_step_count += 1
         
@@ -378,13 +397,26 @@ class NocturneCtrlSimAdversarial(gym.Env):
             )
         scenario_id = self.index_to_scenario_id.get(scenario_idx, self.scenario_ids[0])
         
-        self.current_level = ScenarioLevel(
-            scenario_id=scenario_id,
-            seed=self.level_seed,
-            goal_tilt=self.level_params_vec[1],
-            veh_veh_tilt=self.level_params_vec[2],
-            veh_edge_tilt=self.level_params_vec[3],
-        )
+        if self.tilting_mode == 'per_vehicle':
+            per_vehicle_tilting = tuple(
+                int(round(float(v))) for v in self.level_params_vec[4:4 + PER_VEHICLE_TILTING_LENGTH]
+            )
+            self.current_level = ScenarioLevel(
+                scenario_id=scenario_id,
+                seed=self.level_seed,
+                goal_tilt=0,
+                veh_veh_tilt=0,
+                veh_edge_tilt=0,
+                per_vehicle_tilting=per_vehicle_tilting,
+            )
+        else:
+            self.current_level = ScenarioLevel(
+                scenario_id=scenario_id,
+                seed=self.level_seed,
+                goal_tilt=self.level_params_vec[1],
+                veh_veh_tilt=self.level_params_vec[2],
+                veh_edge_tilt=self.level_params_vec[3],
+            )
         
         # Initialize simulation environment (but not return observation, wait for reset_agent to call) 
         self._initialize_simulation()
@@ -447,12 +479,33 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # Initialize ego vehicle's goal and reward related states
         self._initialize_ego_goal_state()
         
-        # Set opponent tilting
-        self.opponent.set_tilting(
-            level.goal_tilt, 
-            level.veh_veh_tilt, 
-            level.veh_edge_tilt
-        )
+        # Set opponent tilting based on tilting_mode
+        if self.tilting_mode == 'global':
+            # Global mode: all opponents share the same tilts
+            self.opponent.set_tilting(
+                level.goal_tilt, 
+                level.veh_veh_tilt, 
+                level.veh_edge_tilt
+            )
+        else:  # per_vehicle mode
+            # Per-vehicle mode: each opponent has independent tilts
+            # Sort opponent_vehicle_ids by veh_id (integer, numerical order)
+            sorted_opponent_ids = sorted(self.opponent_vehicle_ids)
+            
+            # Build per-vehicle mapping: veh_id -> (goal_tilt, veh_veh_tilt, veh_edge_tilt)
+            per_vehicle_mapping = {}
+            per = level.per_vehicle_tilting
+            for i, veh_id in enumerate(sorted_opponent_ids):
+                if i * 3 + 2 < len(per):
+                    base = 3 * i
+                    per_vehicle_mapping[veh_id] = (per[base], per[base+1], per[base+2])
+                else:
+                    # If insufficient tilts, use (0, 0, 0)
+                    per_vehicle_mapping[veh_id] = (0, 0, 0)
+            
+            # Set per-vehicle tilts via adapter
+            self.opponent.set_per_vehicle_tilting(per_vehicle_mapping)
+        
         self.opponent.reset(
             self.scenario,
             self.vehicles,
@@ -517,12 +570,21 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # Update level_params_vec to keep consistent
         scenario_idx = self.scenario_id_to_index.get(level.scenario_id, 0)
-        self.level_params_vec = [
-            scenario_idx,
-            level.goal_tilt,
-            level.veh_veh_tilt,
-            level.veh_edge_tilt,
-        ]
+        if self.tilting_mode == 'per_vehicle':
+            self.level_params_vec = [
+                scenario_idx,
+                0,
+                0,
+                0,
+                *level.per_vehicle_tilting,
+            ]
+        else:
+            self.level_params_vec = [
+                scenario_idx,
+                level.goal_tilt,
+                level.veh_veh_tilt,
+                level.veh_edge_tilt,
+            ]
         self.level_seed = level.seed
         
         # Initialize simulation
@@ -533,11 +595,22 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def _decode_string_encoding(self, encoding: np.ndarray) -> ScenarioLevel:
         """Decode string array encoding to ScenarioLevel"""
+        from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
+        
         # Check if the scenario pool mapping needs to be rebuilt
         if self._scenario_pool_dirty:
             self.rebuild_index_mappings()
         
-        # Format: [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt, seed]
+        # Handle backward compatibility: old format has length 5, new has length 26
+        if len(encoding) >= 5 + PER_VEHICLE_TILTING_LENGTH:
+            # New format: [scenario_idx, goal, veh_veh, veh_edge, per_vehicle(21), seed]
+            per_vehicle_tilting = tuple(int(round(float(encoding[i]))) for i in range(4, 4 + PER_VEHICLE_TILTING_LENGTH))
+            seed_idx = 4 + PER_VEHICLE_TILTING_LENGTH
+        else:
+            # Old format: [scenario_idx, goal, veh_veh, veh_edge, seed]
+            per_vehicle_tilting = ()
+            seed_idx = 4
+        
         scenario_idx = int(float(encoding[0]))
         
         # Check if the scenario ID exists, if not, warning
@@ -551,10 +624,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         return ScenarioLevel(
             scenario_id=scenario_id,
-            seed=int(float(encoding[4])),
+            seed=int(float(encoding[seed_idx])),
             goal_tilt=float(encoding[1]),
             veh_veh_tilt=float(encoding[2]),
             veh_edge_tilt=float(encoding[3]),
+            per_vehicle_tilting=per_vehicle_tilting,
         )
     
     def reset_agent(self) -> np.ndarray:
@@ -707,12 +781,14 @@ class NocturneCtrlSimAdversarial(gym.Env):
         Return current level encoding
         
         Compatible with BipedalWalker: string array
-        [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt, seed]
+        [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt, per_vehicle_tilts(21), seed]
         
         Used for PLR buffer storage (byte mode)
         """
+        from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
+        
         if self.current_level is None:
-            enc = DEFAULT_LEVEL_PARAMS + [self.level_seed]
+            enc = DEFAULT_LEVEL_PARAMS + [0] * PER_VEHICLE_TILTING_LENGTH + [self.level_seed]
         else:
             scenario_idx = self.scenario_id_to_index.get(
                 self.current_level.scenario_id, 0
@@ -722,6 +798,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 self.current_level.goal_tilt,
                 self.current_level.veh_veh_tilt,
                 self.current_level.veh_edge_tilt,
+                *self.current_level.per_vehicle_tilting,
                 self.current_level.seed,
             ]
         
@@ -793,9 +870,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
             'scenario_id': self.current_level.scenario_id,
             'seed': self.current_level.seed,
             'opponent_k': self.opponent_k,
-            'goal_tilt': self.current_level.goal_tilt,
-            'veh_veh_tilt': self.current_level.veh_veh_tilt,
-            'veh_edge_tilt': self.current_level.veh_edge_tilt,
             'scenario_pool_size': len(self.scenario_ids),
             
             # Episode statistics (for training monitoring)
@@ -806,6 +880,20 @@ class NocturneCtrlSimAdversarial(gym.Env):
             'episode_steps': self._episode_steps,
             'episode_reward': self.episode_reward,
         }
+
+        if self.tilting_mode == 'global':
+            info.update({
+                'goal_tilt': self.current_level.goal_tilt,
+                'veh_veh_tilt': self.current_level.veh_veh_tilt,
+                'veh_edge_tilt': self.current_level.veh_edge_tilt,
+            })
+        else:
+            per = self.current_level.per_vehicle_tilting
+            for i in range(self.opponent_k):
+                base = 3 * i
+                info[f'per_vehicle_goal_tilt_{i}'] = per[base]
+                info[f'per_vehicle_veh_tilt_{i}'] = per[base + 1]
+                info[f'per_vehicle_edge_tilt_{i}'] = per[base + 2]
         
         return info
     
@@ -813,13 +901,30 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def _sample_random_level(self) -> ScenarioLevel:
         """Randomly generate level"""
-        return ScenarioLevel(
-            scenario_id=np.random.choice(self.scenario_ids),
-            seed=rand_int_seed(),
-            goal_tilt=round(float(np.random.uniform(*self.tilt_range))),
-            veh_veh_tilt=round(float(np.random.uniform(*self.tilt_range))),
-            veh_edge_tilt=round(float(np.random.uniform(*self.tilt_range))),
-        )
+        from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
+        
+        if self.tilting_mode == 'global':
+            # Global mode: sample 3 global tilts, per-vehicle区段置0
+            per_vehicle_tilting = tuple([0] * PER_VEHICLE_TILTING_LENGTH)
+            return ScenarioLevel(
+                scenario_id=np.random.choice(self.scenario_ids),
+                seed=rand_int_seed(),
+                goal_tilt=round(float(np.random.uniform(*self.tilt_range))),
+                veh_veh_tilt=round(float(np.random.uniform(*self.tilt_range))),
+                veh_edge_tilt=round(float(np.random.uniform(*self.tilt_range))),
+                per_vehicle_tilting=per_vehicle_tilting,
+            )
+        else:  # per_vehicle mode
+            # Per-vehicle mode: global tilts置0, sample 21 per-vehicle tilts
+            per_vehicle_tilts = [round(float(np.random.uniform(*self.tilt_range))) for _ in range(PER_VEHICLE_TILTING_LENGTH)]
+            return ScenarioLevel(
+                scenario_id=np.random.choice(self.scenario_ids),
+                seed=rand_int_seed(),
+                goal_tilt=0,
+                veh_veh_tilt=0,
+                veh_edge_tilt=0,
+                per_vehicle_tilting=tuple(per_vehicle_tilts),
+            )
     
     def _mutate_level_internal(
         self,

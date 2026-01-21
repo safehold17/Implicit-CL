@@ -164,6 +164,7 @@ def _make_env(args):
             'preprocess_dir': getattr(args, 'preprocess_dir', 'data/preprocess'),
             'max_episode_steps': getattr(args, 'max_episode_steps', 90),
             'device': getattr(args, 'device', 'cuda'),
+            'tilting_mode': getattr(args, 'tilting_mode', 'global'),
         })
         return gym_make(args.env_name, **env_kwargs)
 
