@@ -40,9 +40,9 @@ class TiltConfig:
     - 正值: 更激进的行为
     - 负值: 更保守的行为
     """
-    goal_tilt: float = 0.0       # 目标导向程度
-    veh_veh_tilt: float = 0.0    # 车-车交互激进度
-    veh_edge_tilt: float = 0.0   # 车-边界交互激进度
+    goal_tilt: int = 0       # 目标导向程度
+    veh_veh_tilt: int = 0    # 车-车交互激进度
+    veh_edge_tilt: int = 0   # 车-边界交互激进度
     
     def __post_init__(self):
         """验证参数范围"""
@@ -51,7 +51,7 @@ class TiltConfig:
             ('veh_veh_tilt', self.veh_veh_tilt),
             ('veh_edge_tilt', self.veh_edge_tilt)
         ]:
-            if not (-25.0 <= val <= 25.0):
+            if not (-25 <= val <= 25):
                 raise ValueError(f"{name} must be in [-25, 25], got {val}")
     
     def to_dict(self) -> Dict:
@@ -64,7 +64,7 @@ class TiltConfig:
         }
     
     @classmethod
-    def from_tuple(cls, tilt_tuple: Tuple[float, float, float]) -> 'TiltConfig':
+    def from_tuple(cls, tilt_tuple: Tuple[int, int, int]) -> 'TiltConfig':
         """从元组创建"""
         return cls(
             goal_tilt=tilt_tuple[0],
@@ -85,7 +85,7 @@ class CtrlSimOpponentAdapter:
     使用示例:
     ```python
     adapter = CtrlSimOpponentAdapter(cfg, checkpoint_path)
-    adapter.set_tilting(goal_tilt=10.0, veh_veh_tilt=-5.0, veh_edge_tilt=0.0)
+    adapter.set_tilting(goal_tilt=10, veh_veh_tilt=-5, veh_edge_tilt=0)
     adapter.reset(scenario, vehicles, gt_data_dict, preproc_data, opponent_ids)
     
     for t in range(max_steps):
@@ -188,9 +188,9 @@ class CtrlSimOpponentAdapter:
     
     def set_tilting(
         self, 
-        goal_tilt: float, 
-        veh_veh_tilt: float, 
-        veh_edge_tilt: float
+        goal_tilt: int, 
+        veh_veh_tilt: int, 
+        veh_edge_tilt: int
     ):
         """
         设置 domain tilting 参数
@@ -216,7 +216,7 @@ class CtrlSimOpponentAdapter:
             self._policy.veh_veh_tilt = veh_veh_tilt
             self._policy.veh_edge_tilt = veh_edge_tilt
     
-    def set_tilting_from_tuple(self, tilt: Tuple[float, float, float]):
+    def set_tilting_from_tuple(self, tilt: Tuple[int, int, int]):
         """从元组设置 tilting（便捷接口）"""
         self.set_tilting(tilt[0], tilt[1], tilt[2])
     

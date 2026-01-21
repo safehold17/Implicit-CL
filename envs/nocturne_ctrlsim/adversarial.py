@@ -24,13 +24,13 @@ from adapters.ctrl_sim import (
 
 
 # ========== Level parameter ranges ==========
-DEFAULT_TILT_RANGE = [-25.0, 25.0]  # tilting parameter range
+DEFAULT_TILT_RANGE = [-25, 25]  # tilting parameter range
 DEFAULT_TILT_MUTATION_STD = 1.0  # perturbation amplitude when mutating (same as config.yaml)
 DEFAULT_OBS_DIM = 128  # observation dimension
 DEFAULT_ACTION_DIM = 2  # action dimension (accel, steer)
 
 # Default level parameter vector: [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt]
-DEFAULT_LEVEL_PARAMS = [0, 0.0, 0.0, 0.0]
+DEFAULT_LEVEL_PARAMS = [0, 0, 0, 0]
 
 
 def rand_int_seed():
@@ -81,7 +81,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
 
         obs_dim: int = DEFAULT_OBS_DIM,
         action_dim: int = DEFAULT_ACTION_DIM,
-        tilt_range: List[float] = None,
+        tilt_range: List[int] = None,
         tilt_mutation_std: float = DEFAULT_TILT_MUTATION_STD,
         **kwargs
     ):
@@ -340,7 +340,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             tilt_scale = (self.tilt_range[1] - self.tilt_range[0]) / 2.0
             tilt_value = action * tilt_scale
             tilt_value = np.clip(tilt_value, self.tilt_range[0], self.tilt_range[1])
-            self.level_params_vec[self.adversary_step_count] = round(float(tilt_value), 1)
+            self.level_params_vec[self.adversary_step_count] = round(float(tilt_value))
         
         self.adversary_step_count += 1
         
@@ -614,7 +614,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         4. Calculate reward and termination conditions
         5. If recording is enabled, capture current frame
         """
-        self.current_step += 1
+        self.current_step += 1  # use current step then +1
         # TODO： check the sequence of steps
         
         # 1. Opponent policy inference
@@ -816,9 +816,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
         return ScenarioLevel(
             scenario_id=np.random.choice(self.scenario_ids),
             seed=rand_int_seed(),
-            goal_tilt=round(float(np.random.uniform(*self.tilt_range)), 1),
-            veh_veh_tilt=round(float(np.random.uniform(*self.tilt_range)), 1),
-            veh_edge_tilt=round(float(np.random.uniform(*self.tilt_range)), 1),
+            goal_tilt=round(float(np.random.uniform(*self.tilt_range))),
+            veh_veh_tilt=round(float(np.random.uniform(*self.tilt_range))),
+            veh_edge_tilt=round(float(np.random.uniform(*self.tilt_range))),
         )
     
     def _mutate_level_internal(
@@ -848,7 +848,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             direction = np.random.randint(-1, 2)  # -1, 0, 1
             mutation = direction * np.random.uniform(0, self.tilt_mutation_std)
             new_val = np.clip(current_val + mutation, *self.tilt_range)
-            mutations[param] = round(float(new_val), 1)
+            mutations[param] = round(float(new_val))
         
         return replace(level, **mutations)
     
@@ -1168,7 +1168,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # Convert normalized action to actual values
         # TODO: should be based on ctrlsim or GPUDrive model?  in ctrlsim: 10, 0.7
-
+        # scaling depends on the simu
         accel = action[0] * 10.0  # max acc 10 m/s²
         steer = action[1] * 0.7  # max steer 0.7 rad
         
@@ -1582,7 +1582,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def render(self, mode='human'):
         """Render environment (static screenshot)"""
-        if mode not in ['human', 'rgb_array', 'level']:
+        if mode not in ['human', 'rgb_array', 'level']: # render is the gym standard parameter
             raise NotImplementedError
 
         if self.scenario is None or not self.vehicles:

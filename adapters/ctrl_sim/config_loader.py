@@ -197,9 +197,9 @@ def get_default_opponent_config() -> Dict[str, Any]:
             )
         
         # 确保 tilting 参数存在（默认为 0）
-        config.setdefault('goal_tilt', 0.0)
-        config.setdefault('veh_veh_tilt', 0.0)
-        config.setdefault('veh_edge_tilt', 0.0)
+        config.setdefault('goal_tilt', 0)
+        config.setdefault('veh_veh_tilt', 0)
+        config.setdefault('veh_edge_tilt', 0)
         
         return config
     
@@ -212,9 +212,9 @@ def get_default_opponent_config() -> Dict[str, Any]:
         'action_temperature': 1.0,
         'nucleus_sampling': False,
         'nucleus_threshold': 0.8,
-        'goal_tilt': 0.0,
-        'veh_veh_tilt': 0.0,
-        'veh_edge_tilt': 0.0,
+        'goal_tilt': 0,
+        'veh_veh_tilt': 0,
+        'veh_edge_tilt': 0,
         'model_path': os.path.join(
             os.path.dirname(__file__), '../../checkpoints/model.ckpt'
         ),
