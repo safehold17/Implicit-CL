@@ -18,6 +18,7 @@ import os
 import sys
 import numpy as np
 import torch
+import torch.nn.functional as F
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 
@@ -71,6 +72,81 @@ class TiltConfig:
             veh_veh_tilt=tilt_tuple[1],
             veh_edge_tilt=tilt_tuple[2]
         )
+
+
+class PerVehicleAutoregressivePolicy(AutoregressivePolicy):
+    """
+    Per-vehicle tilting policy subclass
+    
+    覆写 process_predicted_rtg 方法以支持每个车辆使用独立的 tilt
+    """
+    
+    def process_predicted_rtg(self, rtg_logits, token_index, veh_id, dset, vehicle_data_dict, 
+                            data, agent_idx_dict, is_tilted=False, device='cuda'):
+        """
+        处理预测的 RTG，应用 per-vehicle tilting
+        
+        参考: policies/autoregressive_policy.py process_predicted_rtg() 方法
+        
+        Args:
+            rtg_logits: RTG 预测 logits
+            token_index: token 索引
+            veh_id: 车辆 ID
+            dset: 数据集对象
+            vehicle_data_dict: 车辆数据字典
+            data: 数据
+            agent_idx_dict: agent 索引字典
+            is_tilted: 是否应用 tilting
+            device: 设备
+        """
+        idx = agent_idx_dict[self.veh_id_to_idx[veh_id]]
+        
+        next_rtg_logits = rtg_logits[0, idx, token_index].reshape(
+            self.cfg_rl_waymo.rtg_discretization, self.cfg_model.num_reward_components
+        )
+        next_rtg_goal_logits = next_rtg_logits[:, 0]
+        next_rtg_veh_logits = next_rtg_logits[:, 1]
+        next_rtg_road_logits = next_rtg_logits[:, 2]
+        
+        # 获取 per-vehicle mapping
+        per_vehicle_map = self.tilt_dict.get('per_vehicle', {})
+        
+        # is_tilted is whether we tilt the specific agent and self.tilt_dict['tilt'] is whether the model supports tilting
+        if is_tilted and self.tilt_dict.get('tilt', False):
+            if veh_id in per_vehicle_map:
+                g, v, e = per_vehicle_map[veh_id]
+            else:
+                g = getattr(self, 'goal_tilt', 0)
+                v = getattr(self, 'veh_veh_tilt', 0)
+                e = getattr(self, 'veh_edge_tilt', 0)
+            tilt_logits = torch.from_numpy(dset.get_tilt_logits(g, v, e)).to(device)
+        else:
+            tilt_logits = torch.from_numpy(dset.get_tilt_logits(0, 0, 0)).to(device)
+        
+        next_rtg_goal_dis = F.softmax(next_rtg_goal_logits + tilt_logits[:, 0], dim=0)
+        next_rtg_goal = torch.multinomial(next_rtg_goal_dis, 1)
+        next_rtg_veh_dis = F.softmax(next_rtg_veh_logits + tilt_logits[:, 1], dim=0)
+        next_rtg_veh = torch.multinomial(next_rtg_veh_dis, 1)
+        next_rtg_road_dis = F.softmax(next_rtg_road_logits + tilt_logits[:, 2], dim=0)
+        next_rtg_road = torch.multinomial(next_rtg_road_dis, 1)
+        
+        next_rtg = torch.cat(
+            [next_rtg_goal.reshape(1, 1, 1), next_rtg_veh.reshape(1, 1, 1), next_rtg_road.reshape(1, 1, 1)],
+            dim=2
+        )
+        next_rtg_continuous = dset.undiscretize_rtgs(next_rtg.cpu().numpy())
+        vehicle_data_dict[veh_id]['next_rtg_goal'] = next_rtg_continuous[0, 0, 0]
+        vehicle_data_dict[veh_id]['next_rtg_veh'] = next_rtg_continuous[0, 0, 1]
+        vehicle_data_dict[veh_id]['next_rtg_road'] = next_rtg_continuous[0, 0, 2]
+        
+        # append predicted RTG to data dictionary before making action prediction
+        data['agent'].rtgs[0, idx, token_index, 0] = next_rtg_goal
+        data['agent'].rtgs[0, idx, token_index, 1] = next_rtg_veh
+        data['agent'].rtgs[0, idx, token_index, 2] = next_rtg_road
+        
+        next_rtgs = [next_rtg_goal, next_rtg_veh, next_rtg_road]
+        
+        return vehicle_data_dict, data, next_rtgs
 
 
 class CtrlSimOpponentAdapter:
@@ -137,6 +213,9 @@ class CtrlSimOpponentAdapter:
         # 当前 tilting 配置
         self.current_tilt = TiltConfig()
         
+        # Per-vehicle tilting mapping: {veh_id: (goal_tilt, veh_veh_tilt, veh_edge_tilt)}
+        self.per_vehicle_tilting: Optional[Dict[int, Tuple[int, int, int]]] = None
+        
         # 内部策略实例（在 reset 时创建）
         self._policy: Optional[AutoregressivePolicy] = None
         
@@ -166,25 +245,57 @@ class CtrlSimOpponentAdapter:
             'rtgs': 'rtgs'
         }
         
-        return AutoregressivePolicy(
-            cfg=self.cfg,
-            model_path=self.checkpoint_path,
-            model=self.model,
-            use_rtg=True,
-            predict_rtgs=True,
-            discretize_rtgs=True,
-            real_time_rewards=True,
-            privileged_return=False,
-            max_return=False,
-            min_return=False,
-            key_dict=key_dict,
-            tilt_dict=self.current_tilt.to_dict(),
-            name='ctrl_sim',
-            action_temperature=self.action_temperature,
-            nucleus_sampling=self.nucleus_sampling,
-            nucleus_threshold=self.nucleus_threshold,
-            device=self.device
-        )
+        # 根据是否有 per_vehicle_tilting 决定使用哪个 policy 类
+        if self.per_vehicle_tilting is not None:
+            # 使用 per-vehicle policy
+            # 需要包含全局 tilt 参数作为默认值
+            tilt_dict = {
+                'tilt': True,
+                'goal_tilt': self.current_tilt.goal_tilt,
+                'veh_veh_tilt': self.current_tilt.veh_veh_tilt,
+                'veh_edge_tilt': self.current_tilt.veh_edge_tilt,
+                'per_vehicle': self.per_vehicle_tilting
+            }
+            return PerVehicleAutoregressivePolicy(
+                cfg=self.cfg,
+                model_path=self.checkpoint_path,
+                model=self.model,
+                use_rtg=True,
+                predict_rtgs=True,
+                discretize_rtgs=True,
+                real_time_rewards=True,
+                privileged_return=False,
+                max_return=False,
+                min_return=False,
+                key_dict=key_dict,
+                tilt_dict=tilt_dict,
+                name='ctrl_sim',
+                action_temperature=self.action_temperature,
+                nucleus_sampling=self.nucleus_sampling,
+                nucleus_threshold=self.nucleus_threshold,
+                device=self.device
+            )
+        else:
+            # 使用全局 tilting policy
+            return AutoregressivePolicy(
+                cfg=self.cfg,
+                model_path=self.checkpoint_path,
+                model=self.model,
+                use_rtg=True,
+                predict_rtgs=True,
+                discretize_rtgs=True,
+                real_time_rewards=True,
+                privileged_return=False,
+                max_return=False,
+                min_return=False,
+                key_dict=key_dict,
+                tilt_dict=self.current_tilt.to_dict(),
+                name='ctrl_sim',
+                action_temperature=self.action_temperature,
+                nucleus_sampling=self.nucleus_sampling,
+                nucleus_threshold=self.nucleus_threshold,
+                device=self.device
+            )
     
     def set_tilting(
         self, 
@@ -219,6 +330,28 @@ class CtrlSimOpponentAdapter:
     def set_tilting_from_tuple(self, tilt: Tuple[int, int, int]):
         """从元组设置 tilting（便捷接口）"""
         self.set_tilting(tilt[0], tilt[1], tilt[2])
+    
+    def set_per_vehicle_tilting(self, mapping: Dict[int, Tuple[int, int, int]]):
+        """
+        设置 per-vehicle tilting
+        
+        Args:
+            mapping: {veh_id: (goal_tilt, veh_veh_tilt, veh_edge_tilt)} 映射字典
+        """
+        self.per_vehicle_tilting = mapping
+        
+        # 如果策略已存在，更新其 tilt_dict
+        if self._policy is not None:
+            self._policy.tilt_dict = {
+                'tilt': True,
+                'goal_tilt': self.current_tilt.goal_tilt,
+                'veh_veh_tilt': self.current_tilt.veh_veh_tilt,
+                'veh_edge_tilt': self.current_tilt.veh_edge_tilt,
+                'per_vehicle': mapping
+            }
+            self._policy.goal_tilt = self.current_tilt.goal_tilt
+            self._policy.veh_veh_tilt = self.current_tilt.veh_veh_tilt
+            self._policy.veh_edge_tilt = self.current_tilt.veh_edge_tilt
     
     def reset(
         self,

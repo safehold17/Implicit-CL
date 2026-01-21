@@ -554,8 +554,7 @@ parser.add_argument(
     type=int, default=1,
     help="Number of goal bins when using sparse rewards for CarRacing.")
 
-# ============== Nocturne Student 策略参数 ==============
-# 适用于 Nocturne + ctrl-sim 驾驶环境
+# ============== Nocturne Student policy parameters ==============
 parser.add_argument(
     '--student_input_dim',
     type=int,
@@ -588,8 +587,13 @@ parser.add_argument(
     choices=['tanh', 'gelu', 'relu'],
     help='The activation function of the Student network')
 
-# ============== Nocturne 环境配置参数 ==============
-# 用于 Nocturne + ctrl-sim 驾驶环境
+# ============== Nocturne environment configuration parameter ==============
+parser.add_argument(
+    '--tilting_mode',
+    type=str,
+    default='per_vehicle',
+    choices=['global', 'per_vehicle'],
+    help='Tilting mode: global (all opponents share same tilts) or per_vehicle (each opponent has independent tilts)')
 parser.add_argument(
     '--scenario_index_path',
     type=str,
