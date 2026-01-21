@@ -28,29 +28,27 @@ class ScenarioLevel:
     seed: int
 
     # Domain tilting parameters in [-25, 25]
-    goal_tilt: float
-    veh_veh_tilt: float
-    veh_edge_tilt: float
+    goal_tilt: int
+    veh_veh_tilt: int
+    veh_edge_tilt: int
 
     def __post_init__(self):
         if self.seed < 0:
             raise ValueError(f"seed must be non-negative, got {self.seed}")
 
-        for name, val in [
-            ("goal_tilt", self.goal_tilt),
-            ("veh_veh_tilt", self.veh_veh_tilt),
-            ("veh_edge_tilt", self.veh_edge_tilt),
-        ]:
-            if not (-25.0 <= val <= 25.0):
+        for name in ["goal_tilt", "veh_veh_tilt", "veh_edge_tilt"]:
+            val = int(round(float(getattr(self, name))))
+            setattr(self, name, val)
+            if not (-25 <= val <= 25):
                 raise ValueError(f"{name} must be in [-25, 25], got {val}")
 
     def to_tuple(self) -> Tuple:
         return (
             self.scenario_id,
             self.seed,
-            round(self.goal_tilt, 1),
-            round(self.veh_veh_tilt, 1),
-            round(self.veh_edge_tilt, 1),
+            round(self.goal_tilt),
+            round(self.veh_veh_tilt),
+            round(self.veh_edge_tilt),
         )
 
     def to_level_string(self) -> str:
@@ -76,9 +74,9 @@ class ScenarioLevel:
         encoding = np.array(
             [
                 scenario_index,
-                round(self.goal_tilt, 1),
-                round(self.veh_veh_tilt, 1),
-                round(self.veh_edge_tilt, 1),
+                round(self.goal_tilt),
+                round(self.veh_veh_tilt),
+                round(self.veh_edge_tilt),
                 self.seed,
             ],
             dtype=np.float32,
@@ -97,9 +95,9 @@ class ScenarioLevel:
         return cls(
             scenario_id=scenario_id,
             seed=int(encoding[4]),
-            goal_tilt=round(float(encoding[1]), 1),
-            veh_veh_tilt=round(float(encoding[2]), 1),
-            veh_edge_tilt=round(float(encoding[3]), 1),
+            goal_tilt=round(float(encoding[1])),
+            veh_veh_tilt=round(float(encoding[2])),
+            veh_edge_tilt=round(float(encoding[3])),
         )
 
     def __eq__(self, other):
