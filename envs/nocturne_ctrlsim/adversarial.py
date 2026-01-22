@@ -650,7 +650,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         return self._get_student_observation()
     
-    def mutate_level(self, num_edits: int = 1) -> np.ndarray:
+    def mutate_level(self, num_edits: int = 1) -> np.ndarray: # TODO: not implemented for per_vehicle tilting yet
         """
         Mutate current level and reset
         
@@ -688,8 +688,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         4. Calculate reward and termination conditions
         5. If recording is enabled, capture current frame
         """
-        self.current_step += 1  # use current step then +1
-        # TODO： check the sequence of steps
+        self.current_step += 1  # TODO：use current step then +1
         
         # 1. Opponent policy inference
         opponent_actions = self.opponent.step(self.current_step - 1, self.vehicles)
@@ -1272,7 +1271,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
             return
         
         # Convert normalized action to actual values
-        # TODO: should be based on ctrlsim or GPUDrive model?  in ctrlsim: 10, 0.7
         # scaling depends on the simu
         accel = action[0] * 10.0  # max acc 10 m/s²
         steer = action[1] * 0.7  # max steer 0.7 rad
