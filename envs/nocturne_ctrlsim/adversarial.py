@@ -1762,6 +1762,24 @@ class NocturneCtrlSimAdversarial(gym.Env):
         if self.ego_vehicle is not None:
             highlight_ids.add(self.ego_vehicle.getID())
         opponent_ids = set(self.opponent_vehicle_ids) if self.opponent_vehicle_ids else set()
+        tilt_by_vehicle_id = {}
+        if self.current_level is not None and opponent_ids:
+            if self.tilting_mode == 'global':
+                tilt_tuple = (
+                    self.current_level.goal_tilt,
+                    self.current_level.veh_veh_tilt,
+                    self.current_level.veh_edge_tilt,
+                )
+                for veh_id in opponent_ids:
+                    tilt_by_vehicle_id[veh_id] = tilt_tuple
+            else:
+                per = self.current_level.per_vehicle_tilting
+                if per:
+                    sorted_opponent_ids = sorted(self.opponent_vehicle_ids)
+                    for i, veh_id in enumerate(sorted_opponent_ids):
+                        base = 3 * i
+                        if base + 2 < len(per):
+                            tilt_by_vehicle_id[veh_id] = (per[base], per[base + 1], per[base + 2])
 
         for veh in vehicle_data:
             is_highlight = veh['id'] in highlight_ids
@@ -1802,11 +1820,45 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 [veh['x'], line_end_x], [veh['y'], line_end_y],
                 color='black', zorder=6, alpha=0.25, linewidth=heading_lw
             )
+            if is_opponent and veh['id'] in tilt_by_vehicle_id:
+                tilt_vals = tilt_by_vehicle_id[veh['id']]
+                is_horizontal = abs(math.cos(veh['heading'])) >= abs(math.sin(veh['heading']))
+                if is_horizontal:
+                    text_x = veh['x']
+                    text_y = veh['y'] + width / 2 + width * 0.6
+                    ha, va = 'center', 'bottom'
+                else:
+                    text_x = veh['x'] - width / 2 - width * 0.6
+                    text_y = veh['y']
+                    ha, va = 'right', 'center'
+                ax.text(
+                    text_x,
+                    text_y,
+                    f"[{tilt_vals[0]}, {tilt_vals[1]}, {tilt_vals[2]}]",
+                    fontsize=6,
+                    color='black',
+                    ha=ha,
+                    va=va,
+                    zorder=7,
+                )
 
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
         ax.set_aspect('equal', adjustable='box')
         ax.tick_params(left=False, right=False, labelleft=False, labelbottom=False, bottom=False)
+
+        if self.current_level is not None:
+            ax.text(
+                0.01,
+                0.99,
+                f"scenario: {self.current_level.scenario_id}",
+                transform=ax.transAxes,
+                ha='left',
+                va='top',
+                fontsize=8,
+                color='black',
+                zorder=8,
+            )
 
         fig.tight_layout()
         canvas.draw()
