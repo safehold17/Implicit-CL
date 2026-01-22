@@ -592,7 +592,7 @@ parser.add_argument(
     '--tilting_mode',
     type=str,
     default='per_vehicle',
-    choices=['global', 'per_vehicle'],
+    choices=['global', 'per_vehicle', 'student'], # TODO: student mode not implemented yet
     help='Tilting mode: global (all opponents share same tilts) or per_vehicle (each opponent has independent tilts)')
 parser.add_argument(
     '--scenario_index_path',
