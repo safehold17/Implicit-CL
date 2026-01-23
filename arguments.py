@@ -619,3 +619,13 @@ parser.add_argument(
     type=int,
     default=90,
     help='The maximum number of steps in the Nocturne environment')
+
+# ============== render options ==============
+parser.add_argument(
+    '--show_tilting_params',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Show tilting parameter text for opponent vehicles in Nocturne render.')
+parser.add_argument(
+    '--show_vehicle_ids',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Show vehicle id text for ego/opponent vehicles in Nocturne render.')

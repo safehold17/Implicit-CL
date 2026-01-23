@@ -165,6 +165,8 @@ def _make_env(args):
             'max_episode_steps': getattr(args, 'max_episode_steps', 90),
             'device': getattr(args, 'device', 'cuda'),
             'tilting_mode': getattr(args, 'tilting_mode', 'global'),
+            'show_tilting_params': getattr(args, 'show_tilting_params', True),
+            'show_vehicle_ids': getattr(args, 'show_vehicle_ids', True),
         })
         return gym_make(args.env_name, **env_kwargs)
 

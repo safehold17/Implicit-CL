@@ -186,7 +186,9 @@ class Evaluator(object):
 					'scenario_data_dir',
 					'preprocess_dir',
 					'device',
-					'tilting_mode'
+					'tilting_mode',
+					'show_tilting_params',
+					'show_vehicle_ids'
 				]:
 					nocturne_kwargs[k] = v
 			# Set default tilting_mode if not provided
