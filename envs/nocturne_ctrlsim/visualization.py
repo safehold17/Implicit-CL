@@ -42,7 +42,7 @@ class VisualizationMixin:
         if not vehicle_data:
             return None
 
-        fig = Figure(figsize=(10, 10))
+        fig = Figure(figsize=(10, 10), dpi=200)
         canvas = FigureCanvas(fig)
         ax = fig.add_subplot(111)
 
@@ -89,8 +89,10 @@ class VisualizationMixin:
         if self.ego_vehicle is not None:
             highlight_ids.add(self.ego_vehicle.getID())
         opponent_ids = set(self.opponent_vehicle_ids) if self.opponent_vehicle_ids else set()
+        show_tilting_params = getattr(self, 'show_tilting_params', True)
+        show_vehicle_ids = getattr(self, 'show_vehicle_ids', True)
         tilt_by_vehicle_id = {}
-        if self.current_level is not None and opponent_ids:
+        if show_tilting_params and self.current_level is not None and opponent_ids:
             if self.tilting_mode == 'global':
                 tilt_tuple = (
                     self.current_level.goal_tilt,
@@ -108,6 +110,8 @@ class VisualizationMixin:
                         if base + 2 < len(per):
                             tilt_by_vehicle_id[veh_id] = (per[base], per[base + 1], per[base + 2])
 
+        vehicle_patches = {}
+        tilt_text_specs = []
         for veh in vehicle_data:
             is_highlight = veh['id'] in highlight_ids
             is_opponent = (not is_highlight) and veh['id'] in opponent_ids
@@ -139,6 +143,19 @@ class VisualizationMixin:
             ) + ax.transData
             rectangle.set_transform(tr)
             ax.add_patch(rectangle)
+            if is_highlight or is_opponent:
+                vehicle_patches[veh['id']] = rectangle
+            if show_vehicle_ids and (is_highlight or is_opponent):
+                ax.text(
+                    veh['x'],
+                    veh['y'],
+                    f"{veh['id']}",
+                    fontsize=5,
+                    color='black',
+                    ha='center',
+                    va='center',
+                    zorder=7,
+                )
 
             heading_length = length / 2 + 1.5
             line_end_x = veh['x'] + heading_length * math.cos(veh['heading'])
@@ -147,7 +164,7 @@ class VisualizationMixin:
                 [veh['x'], line_end_x], [veh['y'], line_end_y],
                 color='black', zorder=6, alpha=0.25, linewidth=heading_lw
             )
-            if is_opponent and veh['id'] in tilt_by_vehicle_id:
+            if show_tilting_params and is_opponent and veh['id'] in tilt_by_vehicle_id:
                 tilt_vals = tilt_by_vehicle_id[veh['id']]
                 is_horizontal = abs(math.cos(veh['heading'])) >= abs(math.sin(veh['heading']))
                 if is_horizontal:
@@ -158,7 +175,7 @@ class VisualizationMixin:
                     text_x = veh['x'] - width / 2 - width * 0.6
                     text_y = veh['y']
                     ha, va = 'right', 'center'
-                ax.text(
+                text_artist = ax.text(
                     text_x,
                     text_y,
                     f"[{tilt_vals[0]}, {tilt_vals[1]}, {tilt_vals[2]}]",
@@ -168,6 +185,13 @@ class VisualizationMixin:
                     va=va,
                     zorder=7,
                 )
+                tilt_text_specs.append({
+                    'veh_id': veh['id'],
+                    'veh': veh,
+                    'width': width,
+                    'is_horizontal': is_horizontal,
+                    'text_artist': text_artist,
+                })
 
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
@@ -187,8 +211,39 @@ class VisualizationMixin:
                 zorder=8,
             )
 
+        def _bboxes_overlap(bbox_a, bbox_b):
+            return (
+                bbox_a.x0 <= bbox_b.x1 and bbox_a.x1 >= bbox_b.x0
+                and bbox_a.y0 <= bbox_b.y1 and bbox_a.y1 >= bbox_b.y0
+            )
+
         fig.tight_layout()
         canvas.draw()
+        renderer = canvas.get_renderer()
+        if vehicle_patches and tilt_text_specs:
+            vehicle_bbox_by_id = {
+                veh_id: patch.get_window_extent(renderer)
+                for veh_id, patch in vehicle_patches.items()
+            }
+            for spec in tilt_text_specs:
+                veh_id = spec['veh_id']
+                text_artist = spec['text_artist']
+                text_bbox = text_artist.get_window_extent(renderer)
+                overlap = any(
+                    _bboxes_overlap(text_bbox, bbox)
+                    for other_id, bbox in vehicle_bbox_by_id.items()
+                    if other_id != veh_id
+                )
+                if overlap:
+                    veh = spec['veh']
+                    width = spec['width']
+                    if spec['is_horizontal']:
+                        text_artist.set_position((veh['x'], veh['y'] - width / 2 - width * 0.6))
+                        text_artist.set_va('top')
+                    else:
+                        text_artist.set_position((veh['x'] + width / 2 + width * 0.6, veh['y']))
+                        text_artist.set_ha('left')
+            canvas.draw()
         image = np.asarray(canvas.buffer_rgba())[:, :, :3].copy()
         fig.clear()
 

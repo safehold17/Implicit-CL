@@ -85,6 +85,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         max_scenario_pool_size: int = 10000,
         # Tilting mode
         tilting_mode: str = 'global',
+        show_tilting_params: bool = True,
+        show_vehicle_ids: bool = True,
 
         obs_dim: int = DEFAULT_OBS_DIM,
         action_dim: int = DEFAULT_ACTION_DIM,
@@ -168,6 +170,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         if tilting_mode not in ['global', 'per_vehicle']:
             raise ValueError(f"tilting_mode must be 'global' or 'per_vehicle', got {tilting_mode}")
         self.tilting_mode = tilting_mode
+        self.show_tilting_params = show_tilting_params
+        self.show_vehicle_ids = show_vehicle_ids
         
         # ========== State variables ==========
         self.current_level: Optional[ScenarioLevel] = None
