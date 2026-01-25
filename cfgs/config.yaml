@@ -19,7 +19,7 @@ nocturne_env:
   opponent_k: 7  # 对手车辆数量（选择距离 ego 最近的 K 个）
   
   # 环境参数
-  max_episode_steps: 90
+  max_episode_steps: 90  # must match cfg.nocturne.steps (ctrl-sim)
   device: "cuda"
   
   # Adversary 配置（用于 PAIRED/ACCEL）
@@ -36,3 +36,6 @@ nocturne_env:
   # Tilting 参数范围
   tilt_range: [-25.0, 25.0]
   tilt_mutation_std: 5.0
+
+defaults:
+  - _self_

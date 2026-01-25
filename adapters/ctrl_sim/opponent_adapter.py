@@ -26,7 +26,8 @@ from models.ctrl_sim import CtRLSim
 from policies.autoregressive_policy import AutoregressivePolicy
 from datasets.rl_waymo.dataset_ctrl_sim import RLWaymoDatasetCtRLSim
 from utils.sim import get_road_data, get_moving_vehicles, compute_reward
-from utils.data import get_object_type_str, compute_distance_to_road_edge
+from utils.data import get_object_type_str
+from nocturne.bicycle_model import BicycleModel
 
 
 @dataclass
@@ -446,18 +447,21 @@ class CtrlSimOpponentAdapter:
             t
         )
         
-        # 4. 提取动作（参考: autoregressive_policy.py 第 256-274 行 act()）
+        # 4. 提取动作（参考: policy_evaluator.py 的 warm-up 逻辑）
         actions = {}
         for veh in vehicles:
             veh_id = veh.getID()
             if veh_id in self._vehicles_to_control:
-                veh_exists = self._vehicle_data_dict[veh_id]['existence'][-1]
-                if veh_exists:
-                    accel = self._vehicle_data_dict[veh_id]['next_acceleration']
-                    steer = self._vehicle_data_dict[veh_id]['next_steering']
+                if t >= self.history_steps - 1:
+                    veh_exists = self._vehicle_data_dict[veh_id]['existence'][-1]
+                    if veh_exists:
+                        accel = self._vehicle_data_dict[veh_id]['next_acceleration']
+                        steer = self._vehicle_data_dict[veh_id]['next_steering']
+                    else:
+                        accel, steer = 0.0, 0.0
+                    actions[veh_id] = (accel, steer)
                 else:
-                    accel, steer = 0.0, 0.0
-                actions[veh_id] = (accel, steer)
+                    actions[veh_id] = self._get_gt_action(veh_id, t, veh)
         
         return actions
     
@@ -509,10 +513,10 @@ class CtrlSimOpponentAdapter:
                 action = controlled_actions[veh_id]
             else:
                 # 非控车辆使用 ground truth 动作
-                action = self._get_gt_action(veh_id, t)
+                action = self._get_gt_action(veh_id, t, veh)
             self.record_action(veh_id, action)
     
-    def _get_gt_action(self, veh_id: int, t: int) -> Tuple[float, float]:
+    def _get_gt_action(self, veh_id: int, t: int, veh=None) -> Tuple[float, float]:
         """
         获取 ground truth 动作
         
@@ -522,18 +526,36 @@ class CtrlSimOpponentAdapter:
             return (0.0, 0.0)
         
         gt_traj = np.array(self._gt_data_dict[veh_id]['traj'])
+        if t + 1 >= len(gt_traj):
+            return (0.0, 0.0)
         
-        # 计算加速度（速度差分）
-        if t < len(gt_traj) - 1:
-            accel = (gt_traj[t+1, 3] - gt_traj[t, 3]) / self.dt
-        else:
-            accel = 0.0
+        # action is only defined if state at next timestep is defined
+        veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
+        # once we encounter the first missing timestep, all future timesteps are also missing
+        if t > 0 and self._vehicle_data_dict.get(veh_id, {}).get("existence") and self._vehicle_data_dict[veh_id]["existence"][-1] == 0:
+            veh_exists = 0
         
-        # 计算转向（航向差分）
-        if t < len(gt_traj) - 1:
-            steer = (gt_traj[t+1, 2] - gt_traj[t, 2]) / self.dt
-        else:
-            steer = 0.0
+        if not veh_exists:
+            if veh is not None:
+                veh.setPosition(-1000000, -1000000)
+            return (0.0, 0.0)
+        
+        if veh is None:
+            return (0.0, 0.0)
+        
+        bike_model = BicycleModel(
+            x=gt_traj[t + 1, 0],
+            y=gt_traj[t + 1, 1],
+            theta=gt_traj[t + 1, 2],
+            vel=gt_traj[t + 1, 3],
+            L=gt_traj[t + 1, -1],
+            dt=self.dt,
+        )
+        accel, steer, _, _ = bike_model.backward(
+            prev_pos=np.array([veh.getPosition().x, veh.getPosition().y]),
+            prev_theta=veh.getHeading(),
+            prev_vel=veh.getSpeed(),
+        )
         
         return (float(accel), float(steer))
     
@@ -677,7 +699,7 @@ class CtrlSimOpponentAdapter:
                     # 选择 goal, veh_veh, veh_edge 三个维度
                     unnormalized_rtg = np.concatenate([
                         unnormalized_rtg[:1], 
-                        unnormalized_rtg[3:5]
+                        unnormalized_rtg[3:]
                     ], axis=-1)
                 else:
                     # 默认 RTG
@@ -703,9 +725,49 @@ class CtrlSimOpponentAdapter:
             )
             vehicle_data_dict[veh_id]["reward"].append(reward)
         
-        # 计算 dense reward（参考: policy_evaluator.py compute_dense_reward）
-        vehicle_data_dict = self._compute_dense_reward(t, vehicle_data_dict)
+        # 计算 dense reward / 最近距离（对齐 ctrl-sim）
+        if self._policy.real_time_rewards:
+            vehicle_data_dict = self._compute_dense_reward(t, vehicle_data_dict)
+        else:
+            vehicle_data_dict = self._compute_nearest_dist_all(t, vehicle_data_dict)
         
+        return vehicle_data_dict
+
+    def _compute_nearest_dist_all(self, t: int, vehicle_data_dict: Dict) -> Dict:
+        """
+        计算车-车最近距离（对齐 ctrl-sim evaluator.py compute_nearest_dist_all）
+        """
+        veh_ids = list(vehicle_data_dict.keys())
+        if not veh_ids:
+            return vehicle_data_dict
+
+        all_x = np.array([vehicle_data_dict[v]["position"][t]['x'] for v in veh_ids])
+        all_y = np.array([vehicle_data_dict[v]["position"][t]['y'] for v in veh_ids])
+        all_existence = np.array([vehicle_data_dict[v]["existence"][t] for v in veh_ids])
+        ag_data_xy_exist = np.concatenate([
+            all_x[:, np.newaxis],
+            all_y[:, np.newaxis],
+            all_existence[:, np.newaxis]
+        ], axis=1)[:, np.newaxis, :]
+        veh_veh_dist_rewards = self.dataset.compute_dist_to_nearest_vehicle_rewards(
+            ag_data_xy_exist, normalize=False
+        ) * all_existence[:, np.newaxis].astype(float)
+
+        all_gt_x = np.array([vehicle_data_dict[v]["gt_position"][t]['x'] for v in veh_ids])
+        all_gt_y = np.array([vehicle_data_dict[v]["gt_position"][t]['y'] for v in veh_ids])
+        gt_ag_data = np.concatenate([
+            all_gt_x[:, np.newaxis],
+            all_gt_y[:, np.newaxis],
+            all_existence[:, np.newaxis]
+        ], axis=1)[:, np.newaxis, :]
+        veh_veh_dist_rewards_gt = self.dataset.compute_dist_to_nearest_vehicle_rewards(
+            gt_ag_data, normalize=False
+        ) * all_existence[:, np.newaxis].astype(float)
+
+        for i, veh_id in enumerate(veh_ids):
+            vehicle_data_dict[veh_id]["nearest_dist"].append(veh_veh_dist_rewards[i, 0])
+            vehicle_data_dict[veh_id]["gt_nearest_dist"].append(veh_veh_dist_rewards_gt[i, 0])
+
         return vehicle_data_dict
     
     def _compute_dense_reward(
@@ -716,74 +778,82 @@ class CtrlSimOpponentAdapter:
         
         参考: evaluator.py 第 127-170 行 compute_dense_reward()
         """
-        # 获取所有车辆位置和存在状态
         veh_ids = list(vehicle_data_dict.keys())
-        num_vehicles = len(veh_ids)
-        
-        # 边界情况:没有车辆或只有一个车辆时,无法计算车-车距离
-        if num_vehicles == 0:
+        if not veh_ids:
             return vehicle_data_dict
         
         all_x = np.array([vehicle_data_dict[v]["position"][t]['x'] for v in veh_ids])
         all_y = np.array([vehicle_data_dict[v]["position"][t]['y'] for v in veh_ids])
         all_existence = np.array([vehicle_data_dict[v]["existence"][t] for v in veh_ids])
         
-        # 计算车-车距离 (只有多于一个车辆时才计算)
-        if num_vehicles > 1:
-            ag_data = np.concatenate([
-                all_x[:, np.newaxis], 
-                all_y[:, np.newaxis], 
-                all_existence[:, np.newaxis]
-            ], axis=1)[:, np.newaxis, :]
-            
-            veh_veh_dist = self.dataset.compute_dist_to_nearest_vehicle_rewards(
-                ag_data, normalize=False
-            ) * all_existence[:, np.newaxis].astype(float)
-        else:
-            # 只有一个车辆,距离设为0
-            veh_veh_dist = np.zeros((1, 1))
+        processed_rewards = np.array([vehicle_data_dict[v]['reward'] for v in veh_ids])
+        processed_rewards = processed_rewards * all_existence[:, np.newaxis, np.newaxis].astype(float)
         
-        # 计算车-边界距离
+        ag_data_xy = np.concatenate([all_x[:, np.newaxis], all_y[:, np.newaxis]], axis=1)[:, np.newaxis, :]
         if len(self._road_edge_polylines) > 0:
-            veh_edge_dist = compute_distance_to_road_edge(
-                all_x.reshape(1, -1),
-                all_y.reshape(1, -1),
-                self._road_edge_polylines
+            veh_edge_dist_rewards = self.dataset.compute_dist_to_nearest_road_edge_rewards(
+                ag_data_xy, self._road_edge_polylines
             )
+            veh_edge_dist_rewards = veh_edge_dist_rewards * all_existence[:, np.newaxis].astype(float)
         else:
-            veh_edge_dist = np.zeros(len(veh_ids))
+            veh_edge_dist_rewards = np.zeros((len(veh_ids), 1), dtype=float)
         
-        # 更新 dense_reward 和 nearest_dist
+        ag_data_xy_exist = np.concatenate([
+            all_x[:, np.newaxis],
+            all_y[:, np.newaxis],
+            all_existence[:, np.newaxis]
+        ], axis=1)[:, np.newaxis, :]
+        veh_veh_dist_rewards = self.dataset.compute_dist_to_nearest_vehicle_rewards(
+            ag_data_xy_exist, normalize=False
+        ) * all_existence[:, np.newaxis].astype(float)
+        
+        all_gt_x = np.array([vehicle_data_dict[v]["gt_position"][t]['x'] for v in veh_ids])
+        all_gt_y = np.array([vehicle_data_dict[v]["gt_position"][t]['y'] for v in veh_ids])
+        gt_ag_data = np.concatenate([
+            all_gt_x[:, np.newaxis],
+            all_gt_y[:, np.newaxis],
+            all_existence[:, np.newaxis]
+        ], axis=1)[:, np.newaxis, :]
+        veh_veh_dist_rewards_gt = self.dataset.compute_dist_to_nearest_vehicle_rewards(
+            gt_ag_data, normalize=False
+        ) * all_existence[:, np.newaxis].astype(float)
+        
         cfg_dataset = self.cfg.dataset.waymo
         for i, veh_id in enumerate(veh_ids):
-            # 计算归一化的 dense reward
-            veh_dist_normalized = np.clip(
-                veh_veh_dist[i, 0], 0, cfg_dataset.max_veh_veh_distance
-            ) / cfg_dataset.max_veh_veh_distance
-            
-            edge_dist_normalized = np.clip(
-                np.abs(veh_edge_dist[i]) * cfg_dataset.dist_to_road_edge_scaling_factor,
-                0, 5
-            ) / 5.0
-            
-            # dense_reward: [goal_reward, veh_veh_reward, veh_edge_reward]
-            reward = vehicle_data_dict[veh_id]["reward"][-1] if vehicle_data_dict[veh_id]["reward"] else [0]*8
-            
-            # Ensure reward has expected format for indexing below
-            # 0: goal, 6: veh_veh collision, 7: veh_edge collision
-            assert len(reward) >= 8, f"Reward vector length {len(reward)} < 8. Incompatible ctrl-sim version?"
-            
-            dense_reward = np.array([
-                reward[0] * cfg_dataset.pos_target_achieved_rew_multiplier,  # goal
-                veh_dist_normalized - reward[6] * cfg_dataset.veh_veh_collision_rew_multiplier,  # veh-veh
-                edge_dist_normalized - reward[7] * cfg_dataset.veh_edge_collision_rew_multiplier   # veh-edge
-            ])
-            
-            vehicle_data_dict[veh_id]["dense_reward"].append(dense_reward)
-            vehicle_data_dict[veh_id]["nearest_dist"].append(veh_veh_dist[i, 0])
-            vehicle_data_dict[veh_id]["gt_nearest_dist"].append(veh_veh_dist[i, 0])  # 简化：使用相同值
+            vehicle_data_dict[veh_id]["nearest_dist"].append(
+                veh_veh_dist_rewards[i, 0] * cfg_dataset.max_veh_veh_distance
+            )
+            vehicle_data_dict[veh_id]["gt_nearest_dist"].append(
+                veh_veh_dist_rewards_gt[i, 0] * cfg_dataset.max_veh_veh_distance
+            )
+        
+        veh_veh_dist_rewards_norm = np.clip(
+            veh_veh_dist_rewards, a_min=0.0, a_max=cfg_dataset.max_veh_veh_distance
+        )
+        veh_veh_dist_rewards_norm = veh_veh_dist_rewards_norm / cfg_dataset.max_veh_veh_distance
+        
+        all_rewards = self.dataset.compute_rewards(
+            ag_data_xy_exist, processed_rewards, veh_edge_dist_rewards, veh_veh_dist_rewards_norm
+        )
+        all_rewards = np.concatenate([all_rewards[:, :, :1], all_rewards[:, :, 3:]], axis=-1)
+        
+        for i, veh_id in enumerate(veh_ids):
+            vehicle_data_dict[veh_id]["dense_reward"].append(all_rewards[i, 0])
         
         return vehicle_data_dict
+
+    def finalize(self, vehicles: List) -> Dict:
+        """
+        在 episode 结束后调用，记录最终状态（对齐 policy_evaluator.py）
+        """
+        self._vehicle_data_dict = self._update_vehicle_data_dict(
+            self.steps, vehicles, self._vehicle_data_dict
+        )
+        for veh in vehicles:
+            veh_id = veh.getID()
+            self._vehicle_data_dict[veh_id]["acceleration"].append(0)
+            self._vehicle_data_dict[veh_id]["steering"].append(0)
+        return self._vehicle_data_dict
     
     @property
     def is_initialized(self) -> bool:

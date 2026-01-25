@@ -93,7 +93,9 @@ class BicycleModel:
         # w = (self.theta - theta) / dt
         w = angle_sub(theta, self.theta) / dt
         C = 2.0 * self.L * w / (self.vel + vel + 1e-10)
-        steer = np.arctan(2.0 * C / np.sqrt(4 - C**2))
+        # Match ctrl-sim default behavior: warn on invalid sqrt, then handle NaN via fallback.
+        with np.errstate(divide='warn', invalid='warn', over='warn', under='ignore'):
+            steer = np.arctan(2.0 * C / np.sqrt(4 - C**2))
         if np.isnan(steer):
             steer = 0.0
 

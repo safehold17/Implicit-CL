@@ -185,6 +185,7 @@ class Evaluator(object):
 					'opponent_checkpoint',
 					'scenario_data_dir',
 					'preprocess_dir',
+					'max_episode_steps',
 					'device',
 					'tilting_mode',
 					'show_tilting_params',
@@ -193,7 +194,7 @@ class Evaluator(object):
 					nocturne_kwargs[k] = v
 			# Set default tilting_mode if not provided
 			if 'tilting_mode' not in nocturne_kwargs:
-				nocturne_kwargs['tilting_mode'] = 'global'
+				nocturne_kwargs['tilting_mode'] = 'per_vehicle'
 			env = NocturneCtrlSimAdversarial(**nocturne_kwargs)
 		else:
 			env = gym_make(env_name)
