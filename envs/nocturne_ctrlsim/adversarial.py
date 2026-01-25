@@ -14,6 +14,8 @@ import gym
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Union
 
+from nocturne.bicycle_model import BicycleModel
+
 from .level import ScenarioLevel, PER_VEHICLE_TILTING_LENGTH
 from .vehicle_selection import VehicleSelectionMixin
 from .video_recorder import NocturneVideoRecorder
@@ -84,7 +86,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         dynamic_scenario_pool: bool = False,
         max_scenario_pool_size: int = 10000,
         # Tilting mode
-        tilting_mode: str = 'global',
+        tilting_mode: str = 'per_vehicle',
         show_tilting_params: bool = True,
         show_vehicle_ids: bool = True,
 
@@ -161,7 +163,13 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         )
         
         # ========== Environment config ==========
-        self.max_episode_steps = max_episode_steps
+        if max_episode_steps != cfg.nocturne.steps:
+            import warnings
+            warnings.warn(
+                f"max_episode_steps ({max_episode_steps}) != cfg.nocturne.steps "
+                f"({cfg.nocturne.steps}); overriding to match ctrl-sim."
+            )
+        self.max_episode_steps = cfg.nocturne.steps
         self.device = device
         self.opponent_k = opponent_k
         self.dt = cfg.nocturne.dt
@@ -742,7 +750,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         for veh in self.vehicles:
             veh_id = veh.getID()
             if veh_id not in controlled_ids:
-                gt_action = self._get_gt_action(veh_id, self.current_step - 1)
+                gt_action = self._get_gt_action(veh_id, self.current_step - 1, veh)
                 if gt_action is not None:
                     self.opponent.apply_action(veh, gt_action)
         
@@ -785,6 +793,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             self._episode_progress = max(0.0, 1.0 - current_dist / self._ego_goal_dist_normalizer)
         
         done = self._check_done()
+        if done:
+            self.opponent.finalize(self.vehicles)
         info = self._get_info()
         
         return obs, reward, done, info
@@ -1128,7 +1138,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             }
         }
     
-    def _get_gt_action(self, veh_id: int, t: int) -> Optional[Tuple[float, float]]:
+    def _get_gt_action(self, veh_id: int, t: int, veh=None) -> Optional[Tuple[float, float]]:
         """
         Get vehicle's action from GT trajectory data at time step t
         
@@ -1152,14 +1162,32 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         # Check if vehicle exists in current and next time step
         veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
+        # Once missing, remain missing (align ctrl-sim evaluator)
+        ego_data = self.opponent.get_vehicle_data(veh_id) if self.opponent else None
+        if t > 0 and ego_data and ego_data["existence"][-1] == 0:
+            veh_exists = 0
         if not veh_exists:
+            if veh is not None:
+                veh.setPosition(-1000000, -1000000)
             return (0.0, 0.0)
         
-        # Calculate acceleration (speed difference)
-        accel = (gt_traj[t + 1, 3] - gt_traj[t, 3]) / self.dt
+        if veh is None:
+            return (0.0, 0.0)
         
-        # Calculate steering rate (heading difference)
-        steer = (gt_traj[t + 1, 2] - gt_traj[t, 2]) / self.dt
+        bike_model = BicycleModel(
+            x=gt_traj[t + 1, 0],
+            y=gt_traj[t + 1, 1],
+            theta=gt_traj[t + 1, 2],
+            vel=gt_traj[t + 1, 3],
+            L=gt_traj[t + 1, -1],
+            dt=self.dt
+        )
+        
+        accel, steer, _, _ = bike_model.backward(
+            prev_pos=np.array([veh.getPosition().x, veh.getPosition().y]),
+            prev_theta=veh.getHeading(),
+            prev_vel=veh.getSpeed()
+        )
         
         return (float(accel), float(steer))
     
@@ -1528,9 +1556,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         终止条件：
         1. Max steps (timeout)
-        2. Collision
-        3. Goal reached
-        4. Offroad
         
         Returns:
             Whether to terminate
@@ -1538,18 +1563,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # Max steps (timeout)
         if self.current_step >= self.max_episode_steps:
             return True
-        
-        # Collision (vehicle-vehicle)
-        if self._collision_occurred:
-            return True
-        
-        # Goal reached
-        if self._goal_reached:
-            return True
-        
-        # Offroad - optional, some scenarios may not need immediate termination
-        # if self._offroad_occurred:
-        #     return True
         
         return False
     

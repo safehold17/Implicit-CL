@@ -157,14 +157,18 @@ def _make_env(args):
     
     # Nocturne environment configuration
     if args.env_name.startswith('Nocturne'):
+        # Prefer the Nocturne-specific flag; fall back for compatibility
+        max_episode_steps = getattr(args, 'nocturne_max_episode_steps', None)
+        if max_episode_steps is None:
+            max_episode_steps = getattr(args, 'max_episode_steps', 90)
         env_kwargs.update({
             'scenario_index_path': getattr(args, 'scenario_index_path', 'data/scenarios_index.json'),
             'opponent_checkpoint': getattr(args, 'opponent_checkpoint', 'checkpoints/model.ckpt'),
             'scenario_data_dir': getattr(args, 'scenario_data_dir', 'data/nocturne_waymo/formatted_json_v2_no_tl_train'),
             'preprocess_dir': getattr(args, 'preprocess_dir', 'data/preprocess'),
-            'max_episode_steps': getattr(args, 'max_episode_steps', 90),
+            'max_episode_steps': max_episode_steps,
             'device': getattr(args, 'device', 'cuda'),
-            'tilting_mode': getattr(args, 'tilting_mode', 'global'),
+            'tilting_mode': getattr(args, 'tilting_mode', 'per_vehicle'),
             'show_tilting_params': getattr(args, 'show_tilting_params', True),
             'show_vehicle_ids': getattr(args, 'show_vehicle_ids', True),
         })

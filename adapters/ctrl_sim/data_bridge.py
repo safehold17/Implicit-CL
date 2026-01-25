@@ -15,6 +15,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
 from utils.sim import get_ground_truth_states, get_road_data, get_moving_vehicles, get_sim
+from datasets.rl_waymo.dataset_ctrl_sim import RLWaymoDatasetCtRLSim
 
 
 class DataBridge:
@@ -42,6 +43,21 @@ class DataBridge:
         self.dt = cfg.nocturne.dt
         self.steps = cfg.nocturne.steps
         self.cfg_dataset = cfg.dataset.waymo
+
+        # ctrl-sim preprocessed dataset (align evaluator behavior)
+        self._preprocess_split = 'test'
+        self._preprocess_root: Optional[str] = None
+        self.preprocessed_dset: Optional[RLWaymoDatasetCtRLSim] = None
+        if preprocess_dir:
+            preprocess_root = preprocess_dir
+            if os.path.basename(os.path.normpath(preprocess_dir)) == self._preprocess_split:
+                preprocess_root = os.path.dirname(preprocess_dir)
+            self._preprocess_root = preprocess_root
+            try:
+                self.cfg.dataset.waymo.preprocess_dir = preprocess_root
+            except Exception:
+                pass
+            self.preprocessed_dset = RLWaymoDatasetCtRLSim(cfg, split_name=self._preprocess_split, mode='eval')
         
         # Preprocessed files cache
         self._preprocessed_files_cache: Optional[Dict[str, str]] = None
@@ -51,9 +67,9 @@ class DataBridge:
         """Lazy initialize preprocessed files cache, mapping scenario_id -> file_path"""
         if self._preprocessed_files_cache is None:
             self._preprocessed_files_cache = {}
-            # Scan all pkl files in the preprocess directory
-            pkl_files = glob.glob(os.path.join(self.preprocess_dir, '*.pkl'))
-            for filepath in pkl_files:
+            if self.preprocessed_dset is None:
+                return
+            for filepath in self.preprocessed_dset.files:
                 basename = os.path.basename(filepath)
                 if basename.endswith('_physics.pkl'):
                     scenario_id = basename.replace('_physics.pkl', '')
@@ -163,37 +179,39 @@ class DataBridge:
         
         Returns:
             preproc_data: Preprocessed data dictionary, including:
-                - 'rtgs': shape (num_agents, steps+1, 3) - RTG values
+                - 'rtgs': shape (num_agents, steps+1, 5) - RTG values
                 - 'road_points': Road points information
                 - 'road_types': Road types information
             file_exists: Whether the file exists
         """
+        if self.preprocessed_dset is None or self._preprocess_root is None:
+            return None, False
+        
+        scenario_id = os.path.splitext(scenario_filename)[0]
         self._ensure_preprocessed_files_cache()
         
         # Check cache
-        if scenario_filename in self._preproc_data_cache:
-            return self._preproc_data_cache[scenario_filename], True
+        if scenario_id in self._preproc_data_cache:
+            return self._preproc_data_cache[scenario_id], True
         
         # Look for preprocessed file
-        if scenario_filename not in self._preprocessed_files_cache:
+        if scenario_id not in self._preprocessed_files_cache:
             return None, False
         
-        filepath = self._preprocessed_files_cache[scenario_filename]
+        filepath = self._preprocessed_files_cache[scenario_id]
         
         try:
-            with open(filepath, 'rb') as f:
-                raw_data = pickle.load(f)
-            
-            # process data, calculate RTG (refer to dataset_ctrl_sim.py get_data() mode='eval' branch)
-            preproc_data = self._process_preprocessed_data(raw_data)
+            # align with ctrl-sim evaluator: use dataset indexing to load preprocessed data
+            idx = self.preprocessed_dset.files.index(filepath)
+            preproc_data = self.preprocessed_dset[idx]
             
             # cache results
-            self._preproc_data_cache[scenario_filename] = preproc_data
+            self._preproc_data_cache[scenario_id] = preproc_data
             
             return preproc_data, True
             
         except Exception as e:
-            print(f"Warning: Failed to load preprocessed data for {scenario_filename}: {e}")
+            print(f"Warning: Failed to load preprocessed data for {scenario_id}: {e}")
             return None, False
     
     def _process_preprocessed_data(self, raw_data: Dict) -> Dict:

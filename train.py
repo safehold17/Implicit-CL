@@ -165,20 +165,21 @@ if __name__ == '__main__':
     # === Set up Evaluator ===
     evaluator = None
     if args.test_env_names:
-        evaluator = Evaluator(
-            args.test_env_names.split(','), 
-            num_processes=args.test_num_processes, 
-            num_episodes=args.test_num_episodes,
-            frame_stack=args.frame_stack,
-            grayscale=args.grayscale,
-            num_action_repeat=args.num_action_repeat,
-            use_global_critic=args.use_global_critic,
-            use_global_policy=args.use_global_policy,
-            device=device,
-            scenario_index_path=args.scenario_index_path,
-            opponent_checkpoint=args.opponent_checkpoint,
-            scenario_data_dir=args.scenario_data_dir,
-            preprocess_dir=args.preprocess_dir)
+            evaluator = Evaluator(
+                args.test_env_names.split(','), 
+                num_processes=args.test_num_processes, 
+                num_episodes=args.test_num_episodes,
+                frame_stack=args.frame_stack,
+                grayscale=args.grayscale,
+                num_action_repeat=args.num_action_repeat,
+                use_global_critic=args.use_global_critic,
+                use_global_policy=args.use_global_policy,
+                device=device,
+                scenario_index_path=args.scenario_index_path,
+                opponent_checkpoint=args.opponent_checkpoint,
+                scenario_data_dir=args.scenario_data_dir,
+                preprocess_dir=args.preprocess_dir,
+                max_episode_steps=args.nocturne_max_episode_steps)
 
     # === Train === 
     last_checkpoint_idx = getattr(train_runner, args.checkpoint_basis)
