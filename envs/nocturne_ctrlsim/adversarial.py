@@ -114,7 +114,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             max_scenario_pool_size: dynamic scenario pool maximum size
         """
         super().__init__()
-        
+
         self.seed_value = seed
         self.fixed_environment = fixed_environment
         np.random.seed(seed)
@@ -310,6 +310,12 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         # ========== Random seed ==========
         self.seed_value = seed
+
+        # ========== Metrics tracking ==========
+        self.episode_reward = 0.0
+        self.collision_count = 0
+        self.goal_reached = False
+        self.reset_metrics()
     
     # ========== Basic environment interface ==========
     
@@ -350,10 +356,16 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         return obs
     
     def step_adversary(self, action) -> Tuple[Dict, float, bool, Dict]:
+
+        # step adversary is only necessary in PAIRED algo
+        # PLR could use reset_random()
+
         """        
         Action mapping:
         - Step 0: action -> scenario_index (discretized to scenario pool size)
         - Step 1..: action -> tilt parameters ([-1,1] -> tilt_range)
+
+        always start with choosing a scenario, then choosing tilting parameters
         
         Args:
             action: continuous action [-1, 1]
@@ -367,13 +379,13 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         """
         import torch
         if torch.is_tensor(action):
-            action = action.item()
+            action = action.item()  # convert tensor into flat
         
         # Set parameters according to current step
         if self.adversary_step_count == 0:
             # Step 0: select scenario
-            # Map [-1, 1] to [0, num_scenarios-1]
             num_scenarios = len(self.scenario_ids)
+            # Map [-1, 1] to [0, num_scenarios-1]
             scenario_idx = int((action + 1) / 2 * num_scenarios)
             scenario_idx = np.clip(scenario_idx, 0, num_scenarios - 1)
             self.level_params_vec[0] = scenario_idx
@@ -384,6 +396,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             tilt_value = action * tilt_scale
             tilt_value = np.clip(tilt_value, self.tilt_range[0], self.tilt_range[1])
             if self.tilting_mode == 'per_vehicle':
+                # step 0 is for choosing scenario id
+                # start with step 1
                 per_idx = self.adversary_step_count - 1
                 if 0 <= per_idx < PER_VEHICLE_TILTING_LENGTH:
                     self.level_params_vec[4 + per_idx] = round(float(tilt_value))
@@ -430,6 +444,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             per_vehicle_tilting = tuple(
                 int(round(float(v))) for v in self.level_params_vec[4:4 + PER_VEHICLE_TILTING_LENGTH]
             )
+            # TODO: no need to convert V anymore, already set tilting parameters as integer
             self.current_level = ScenarioLevel(
                 scenario_id=scenario_id,
                 seed=self.level_seed,
@@ -474,9 +489,10 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # Set random seed
         np.random.seed(level.seed)
         
-        # ⚠️ Important: must get GT data first, then load main scenario
+        # Important: must get GT data first, then load main scenario
         # Reason: get_ground_truth() internally creates a temporary Simulation and steps,
-        # this will destroy the global state of Nocturne, causing the vehicle objects in the subsequent Simulation to become invalid (segmentation fault when setting attributes).
+        # this will destroy the global state of Nocturne, causing the vehicle objects in the subsequent Simulation
+        # to become invalid (segmentation fault when setting attributes).
         # Solution: get GT data first (let the temporary Simulation complete and destroy),
         # then load main scenario.
         
@@ -894,7 +910,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self.episode_reward = 0.0
         self.collision_count = 0
         self.goal_reached = False
-    
+
     def get_complexity_info(self) -> Dict[str, Any]:
         """
         Return current level complexity information and episode statistics (for logging and analysis)
@@ -985,7 +1001,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
         
         if self.tilting_mode == 'global':
-            # Global mode: sample 3 global tilts, per-vehicle区段置0
+            # Global mode: sample 3 global tilts, per-vehicle tilting to 0
             per_vehicle_tilting = tuple([0] * PER_VEHICLE_TILTING_LENGTH)
             return ScenarioLevel(
                 scenario_id=np.random.choice(self.scenario_ids),
@@ -996,7 +1012,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 per_vehicle_tilting=per_vehicle_tilting,
             )
         else:  # per_vehicle mode
-            # Per-vehicle mode: global tilts置0, sample 21 per-vehicle tilts
+            # Per-vehicle mode: global tilts to 0, sample 21 per-vehicle tilts
             per_vehicle_tilts = [round(float(np.random.uniform(*self.tilt_range))) for _ in range(PER_VEHICLE_TILTING_LENGTH)]
             return ScenarioLevel(
                 scenario_id=np.random.choice(self.scenario_ids),
