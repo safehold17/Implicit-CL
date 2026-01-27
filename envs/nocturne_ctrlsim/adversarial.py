@@ -73,7 +73,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         opponent_checkpoint: str,
         scenario_data_dir: str,
         preprocess_dir: str,
-        ego_vehicle_map_path: str = "data/ego_vehicle_valid.json",
+        vehicle_map_path: str = "data/vehicle_map_valid.json",
         opponent_k: int = 7,
         max_episode_steps: int = 90,
         device: str = 'cuda',
@@ -89,6 +89,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         tilting_mode: str = 'per_vehicle',
         show_tilting_params: bool = True,
         show_vehicle_ids: bool = True,
+        show_ego_vehicle_selection: bool = True,
 
         obs_dim: int = DEFAULT_OBS_DIM,
         action_dim: int = DEFAULT_ACTION_DIM,
@@ -102,7 +103,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             opponent_checkpoint
             scenario_data_dir: Nocturne scenario data directory
             preprocess_dir: ctrl-sim preprocessed data directory
-            ego_vehicle_map_path: ego vehicle map JSON path (absolute path recommended)
+            vehicle_map_path: vehicle map JSON path (contains ego + opponent IDs per scenario)
             opponent_k: number of opponent vehicles (select the nearest K to ego)
             max_episode_steps: maximum number of steps (default 90, same as ctrl-sim)
             device
@@ -141,16 +142,19 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self.cfg = cfg
         self.scenario_data_dir = scenario_data_dir
         self.preprocess_dir = preprocess_dir
-        if ego_vehicle_map_path:
-            if os.path.isabs(ego_vehicle_map_path):
-                self.ego_vehicle_map_path = ego_vehicle_map_path
+        
+        # Vehicle map path (for loading pre-computed ego/opponent IDs)
+        if vehicle_map_path:
+            if os.path.isabs(vehicle_map_path):
+                self.vehicle_map_path = vehicle_map_path
             else:
                 project_root = os.path.abspath(
                     os.path.join(os.path.dirname(__file__), "..", "..")
                 )
-                self.ego_vehicle_map_path = os.path.join(project_root, ego_vehicle_map_path)
+                self.vehicle_map_path = os.path.join(project_root, vehicle_map_path)
         else:
-            self.ego_vehicle_map_path = ego_vehicle_map_path
+            self.vehicle_map_path = None
+        self._vehicle_map_cache = None
         
         # ========== Data bridge ==========
         self.data_bridge = DataBridge(cfg, preprocess_dir)
@@ -180,6 +184,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self.tilting_mode = tilting_mode
         self.show_tilting_params = show_tilting_params
         self.show_vehicle_ids = show_vehicle_ids
+        self.show_ego_vehicle_selection = show_ego_vehicle_selection
         
         # ========== State variables ==========
         self.current_level: Optional[ScenarioLevel] = None
@@ -194,11 +199,11 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self.ego_vehicle = None
         self.opponent_vehicles: List = []
         self.opponent_vehicle_ids: List[int] = []
+        self.ego_selection_mode: str = "unknown"
         
         # Ground truth and preprocessed data
         self._gt_data_dict: Dict = {}
         self._preproc_data: Optional[Dict] = None
-        self._ego_vehicle_map_cache: Optional[Dict[str, Any]] = None
         
         # Ego vehicle's goal and reward related state (for _compute_reward)
         self._ego_goal_dict: Optional[Dict] = None
@@ -505,18 +510,17 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # Load Nocturne scenario (must after getting GT data)
         self._load_scenario(level.scenario_id)
         
-        # Select ego vehicle by scenario->vehicle map
-        ego_vehicle_id = self._get_ego_vehicle_id_from_map(level.scenario_id)
-        self.ego_vehicle = (
-            self._get_vehicle_by_id(ego_vehicle_id)
-            if ego_vehicle_id is not None
-            else None
-        )
-        if self.ego_vehicle is None:
-            print(
-                f"Warning: ego vehicle not found for scenario {level.scenario_id} "
-                f"(id={ego_vehicle_id})."
-            )
+        # Load vehicle IDs from map (with fallback to dynamic selection)
+        ego_id, opponent_ids, ego_selection_mode = self._load_vehicle_ids_for_scenario(level.scenario_id)
+        
+        if ego_id is not None:
+            # Use pre-computed ego vehicle ID
+            self.ego_vehicle = self._get_vehicle_by_id(ego_id)
+            self.ego_selection_mode = ego_selection_mode
+        else:
+            # Fallback to dynamic selection
+            self.ego_vehicle = self._select_ego_vehicle()
+            self.ego_selection_mode = "unknown"
         
         # Load preprocessed data (with check)
         self._preproc_data, file_exists = self.data_bridge.load_preprocessed_data(
@@ -528,8 +532,17 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 f"Check preprocess_dir: {self.data_bridge.preprocess_dir}"
             )
         
-        # Select opponent controlled vehicles (select the nearest k from moving vehicles)
-        self._select_opponent_vehicles(k=self.opponent_k)
+        # Select opponent vehicles
+        if opponent_ids is not None and len(opponent_ids) > 0:
+            # Use pre-computed opponent vehicle IDs
+            self.opponent_vehicle_ids = opponent_ids
+            self.opponent_vehicles = [
+                self._get_vehicle_by_id(vid) for vid in opponent_ids
+            ]
+            self.opponent_vehicles = [v for v in self.opponent_vehicles if v is not None]
+        else:
+            # Fallback to dynamic selection
+            self._select_opponent_vehicles(k=self.opponent_k)
         
         # Initialize ego vehicle's goal and reward related states
         self._initialize_ego_goal_state()
@@ -954,48 +967,75 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         return info
     
     # ========== Internal helper methods ==========
-
-    def _load_ego_vehicle_map(self) -> Optional[Dict[str, Any]]:
-        if self._ego_vehicle_map_cache is not None:
-            return self._ego_vehicle_map_cache
-
-        map_path = self.ego_vehicle_map_path
-        if not map_path:
-            print("Warning: ego vehicle map path not set.")
-            self._ego_vehicle_map_cache = {}
-            return self._ego_vehicle_map_cache
-        if not os.path.exists(map_path):
-            print(f"Warning: ego vehicle map not found: {map_path}")
-            self._ego_vehicle_map_cache = {}
-            return self._ego_vehicle_map_cache
-
-        try:
-            with open(map_path, "r") as f:
-                data = json.load(f)
-        except Exception as exc:
-            print(f"Warning: failed to load ego vehicle map {map_path}: {exc}")
-            data = None
-
-        if not isinstance(data, dict):
-            print(f"Warning: ego vehicle map is not a dict: {map_path}")
-            data = {}
-
-        self._ego_vehicle_map_cache = data
-        return data
-
-    def _get_ego_vehicle_id_from_map(self, scenario_id: str) -> Optional[int]:
-        ego_map = self._load_ego_vehicle_map()
-        if not ego_map:
-            print(f"Warning: ego vehicle map unavailable for scenario {scenario_id}.")
-            return None
-
-        ego_vehicle_id = ego_map.get(scenario_id)
-        if ego_vehicle_id is None:
-            print(f"Warning: ego vehicle id not found for scenario {scenario_id}.")
-            return None
-
-        return int(ego_vehicle_id)
     
+    def _load_vehicle_map(self) -> Optional[Dict]:
+        """Load vehicle map JSON file (cached)."""
+        if self._vehicle_map_cache is not None:
+            return self._vehicle_map_cache
+        
+        if not self.vehicle_map_path or not os.path.exists(self.vehicle_map_path):
+            return None
+        
+        try:
+            with open(self.vehicle_map_path, "r") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self._vehicle_map_cache = data
+                return data
+        except Exception as e:
+            print(f"Warning: Failed to load vehicle map {self.vehicle_map_path}: {e}")
+        
+        return None
+    
+    def _load_vehicle_ids_for_scenario(
+        self, scenario_id: str
+    ) -> Tuple[Optional[int], Optional[List[int]], str]:
+        """
+        Load ego vehicle ID and opponent vehicle IDs for a scenario.
+        
+        First tries to load from vehicle map JSON. If the scenario is not found
+        in the map, returns (None, None) to trigger fallback to dynamic selection.
+        
+        Args:
+            scenario_id: The scenario ID to look up
+            
+        Returns:
+            (ego_vehicle_id, opponent_vehicle_ids, ego_selection_mode) tuple:
+            - If found in map: (int, List[int], str)
+            - If not found: (None, None, "unknown") -> triggers fallback
+        """
+        vehicle_map = self._load_vehicle_map()
+        
+        if vehicle_map is None:
+            # No vehicle map loaded, use fallback
+            return None, None, "unknown"
+        
+        scenario_data = vehicle_map.get(scenario_id)
+        
+        if scenario_data is None or not isinstance(scenario_data, dict):
+            # Scenario not in map, use fallback
+            print(
+                f"Warning: Scenario '{scenario_id}' not found in vehicle map. "
+                f"Using dynamic vehicle selection."
+            )
+            return None, None, "unknown"
+        
+        ego_id = scenario_data.get("ego_vehicle_id")
+        opponent_ids = scenario_data.get("opponent_vehicle_ids", [])
+        ego_selection_mode = scenario_data.get("ego_selection_mode", "unknown")
+        if ego_selection_mode not in ("interesting", "dense"):
+            ego_selection_mode = "unknown"
+        
+        # Validate ego_id
+        if ego_id is None:
+            print(
+                f"Warning: ego_vehicle_id not found for scenario '{scenario_id}'. "
+                f"Using dynamic vehicle selection."
+            )
+            return None, None, "unknown"
+        
+        return int(ego_id), list(opponent_ids) if opponent_ids else [], ego_selection_mode
+
     def _sample_random_level(self) -> ScenarioLevel:
         """Randomly generate level"""
         from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
