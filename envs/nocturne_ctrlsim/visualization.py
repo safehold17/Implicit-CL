@@ -91,6 +91,7 @@ class VisualizationMixin:
         opponent_ids = set(self.opponent_vehicle_ids) if self.opponent_vehicle_ids else set()
         show_tilting_params = getattr(self, 'show_tilting_params', True)
         show_vehicle_ids = getattr(self, 'show_vehicle_ids', True)
+        show_ego_vehicle_selection = getattr(self, 'show_ego_vehicle_selection', True)
         tilt_by_vehicle_id = {}
         if show_tilting_params and self.current_level is not None and opponent_ids:
             if self.tilting_mode == 'global':
@@ -210,6 +211,25 @@ class VisualizationMixin:
                 color='black',
                 zorder=8,
             )
+            if show_ego_vehicle_selection:
+                selection_mode = getattr(self, 'ego_selection_mode', 'unknown')
+                if selection_mode == 'interesting':
+                    selection_text = 'interesting vehicle'
+                elif selection_mode == 'dense':
+                    selection_text = 'dense vehicle'
+                else:
+                    selection_text = 'unknown'
+                ax.text(
+                    0.01,
+                    0.965,
+                    selection_text,
+                    transform=ax.transAxes,
+                    ha='left',
+                    va='top',
+                    fontsize=8,
+                    color='black',
+                    zorder=8,
+                )
 
         def _bboxes_overlap(bbox_a, bbox_b):
             return (

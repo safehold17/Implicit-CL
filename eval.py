@@ -189,7 +189,8 @@ class Evaluator(object):
 					'device',
 					'tilting_mode',
 					'show_tilting_params',
-					'show_vehicle_ids'
+					'show_vehicle_ids',
+					'show_ego_vehicle_selection'
 				]:
 					nocturne_kwargs[k] = v
 			# Set default tilting_mode if not provided

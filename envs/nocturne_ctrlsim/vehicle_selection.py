@@ -9,29 +9,12 @@ import numpy as np
 
 
 class VehicleSelectionMixin:
-    def _load_ego_vehicle_map(self) -> Optional[dict]:
-        if hasattr(self, "_ego_vehicle_map_cache"):
-            return self._ego_vehicle_map_cache
-
-        project_root = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..")
-        )
-        map_path = os.path.join(project_root, "data", "ego_vehicle.json")
-        if not os.path.exists(map_path):
-            self._ego_vehicle_map_cache = None
-            return None
-
-        try:
-            with open(map_path, "r") as f:
-                data = json.load(f)
-        except Exception:
-            data = None
-
-        if not isinstance(data, dict):
-            data = None
-
-        self._ego_vehicle_map_cache = data
-        return data
+    """Mixin providing vehicle selection logic (dynamic fallback only).
+    
+    Note: JSON-based vehicle ID loading is handled in adversarial.py's 
+    _load_vehicle_ids_for_scenario() method. This mixin only provides
+    the dynamic selection fallback logic.
+    """
 
     def _get_moving_vehicle_ids(self) -> List[int]:
         """
@@ -51,7 +34,8 @@ class VehicleSelectionMixin:
         - Trajectory is long enough (>=60 steps)
         
         Returns:
-            (veh_id_1, veh_id_2) tuple, if no interesting pair is found, use first moving vehicle as ego
+            (veh_id_1, veh_id_2) tuple. If no interesting pair is found, caller
+            should fall back to dense vehicle selection.
         """
         # Configuration thresholds (see ctrl-sim cfg.eval)
         goal_dist_threshold = 10.0  # meters
@@ -122,14 +106,66 @@ class VehicleSelectionMixin:
         pair_idx = valid_pairs[0]
         return (veh_ids[pair_idx[0]], veh_ids[pair_idx[1]])
     
+    def _select_dense_vehicle(
+        self,
+        moving_veh_ids: List[int],
+        k_neighbors: int = 7,
+        traj_len_threshold: int = 30,
+    ) -> Optional[int]:
+        """Select vehicle with the smallest average distance to its nearest neighbors."""
+        history_steps = getattr(self.cfg.nocturne, 'history_steps', 10)
+        positions = {}
+        for veh_id in moving_veh_ids:
+            veh = self._get_vehicle_by_id(veh_id)
+            if veh is None:
+                continue
+            if veh_id not in self._gt_data_dict:
+                continue
+            gt_traj = np.array(self._gt_data_dict[veh_id]['traj'])
+            existence_mask = gt_traj[:, 4]
+            has_valid_traj = existence_mask[history_steps:].sum() >= traj_len_threshold
+            if not has_valid_traj:
+                continue
+            pos = veh.getPosition()
+            positions[veh_id] = np.array([pos.x, pos.y], dtype=np.float32)
+
+        if len(positions) == 0:
+            return None
+        if len(positions) == 1:
+            return next(iter(positions.keys()))
+
+        best_vid = None
+        best_avg = None
+        for vid, pos in positions.items():
+            dists = []
+            for other_id, other_pos in positions.items():
+                if other_id == vid:
+                    continue
+                dists.append(np.linalg.norm(pos - other_pos))
+            if len(dists) == 0:
+                continue
+            dists.sort()
+            k = min(k_neighbors, len(dists))
+            avg_dist = float(np.mean(dists[:k]))
+            if best_avg is None or avg_dist < best_avg or (avg_dist == best_avg and vid < best_vid):
+                best_avg = avg_dist
+                best_vid = vid
+
+        return best_vid
+
     def _select_ego_vehicle(self):
         """
-        Select ego vehicle (student controlled)
+        Select ego vehicle using dynamic fallback logic.
         
         Use find_interesting_pair logic to select two interesting vehicles,
         then deterministically select the vehicle with smaller veh_id as ego.
         
-        If no interesting pair is found, use first moving vehicle as ego.
+        If no interesting pair is found, select the dense vehicle (smallest
+        average distance to neighbors). If dense selection fails, fall back
+        to the first moving vehicle.
+        
+        Note: This is the fallback method. Primary vehicle ID loading from JSON
+        is handled in adversarial.py's _load_vehicle_ids_for_scenario().
         """
         # 1. Get moving vehicles
         moving_veh_ids = self._get_moving_vehicle_ids()
@@ -139,46 +175,44 @@ class VehicleSelectionMixin:
                 f"No moving vehicles found in scenario {self.current_level.scenario_id}. "
                 "Scenario will be skipped."
             )
-
-        ego_vehicle_map = self._load_ego_vehicle_map()
-        if ego_vehicle_map is not None:
-            ego_veh_id = ego_vehicle_map.get(self.current_level.scenario_id)
-            if ego_veh_id is not None:
-                return self._get_vehicle_by_id(ego_veh_id)
         
         # 2. Find interesting pair
         interesting_pair = self._find_interesting_pair(moving_veh_ids)
         
         if interesting_pair is None:
-            # If no interesting pair is found, downgrade to select first moving vehicle as ego
+            # If no interesting pair is found, downgrade to dense vehicle selection
             print(
                 f"Warning: No interesting vehicle pair found in scenario {self.current_level.scenario_id}. "
-                f"Using first moving vehicle as ego."
+                f"Using dense vehicle selection for ego."
             )
-            if len(moving_veh_ids) > 0:
+            ego_veh_id = self._select_dense_vehicle(moving_veh_ids)
+            if ego_veh_id is None:
                 ego_veh_id = moving_veh_ids[0]
-            else:
-                raise ValueError(
-                    f"No moving vehicles found in scenario {self.current_level.scenario_id}."
-                )
         else:
             # 3. Deterministic selection: select vehicle with smaller veh_id as ego
             ego_veh_id = min(interesting_pair)
         
         return self._get_vehicle_by_id(ego_veh_id)
     
-    def _select_opponent_vehicles(self, k: int = 7):
+    def _select_opponent_vehicles(self, k: int = 7, traj_len_threshold: int = 10):
         """
-        Select opponent vehicles (k nearest moving vehicles to ego)
+        Select opponent vehicles using dynamic fallback logic.
         
-        See: ctrl-sim distance calculation
+        Selects k nearest moving vehicles to ego with valid trajectory length.
+        
+        Note: This is the fallback method. Primary vehicle ID loading from JSON
+        is handled in adversarial.py's _load_vehicle_ids_for_scenario().
+        
+        Args:
+            k: Maximum number of opponent vehicles to select
+            traj_len_threshold: Minimum trajectory length (default 10 steps)
         """
         if self.ego_vehicle is None:
             self.opponent_vehicles = []
             self.opponent_vehicle_ids = []
             return
         
-        # 1. Get moving vehicles (excluding ego)
+        # Dynamic selection: get moving vehicles (excluding ego)
         moving_veh_ids = self._get_moving_vehicle_ids()
         ego_id = self.ego_vehicle.getID()
         candidate_ids = [vid for vid in moving_veh_ids if vid != ego_id]
@@ -188,15 +222,26 @@ class VehicleSelectionMixin:
             self.opponent_vehicle_ids = []
             return
         
-        # 2. Calculate distance to ego
+        # 2. Calculate distance to ego, with trajectory length filter
         ego_pos = self.ego_vehicle.getPosition()
         ego_pos = np.array([ego_pos.x, ego_pos.y])
+        history_steps = getattr(self.cfg.nocturne, 'history_steps', 10)
         
         distances = []
         for veh_id in candidate_ids:
             veh = self._get_vehicle_by_id(veh_id)
             if veh is None:
                 continue
+            
+            # Check trajectory length constraint
+            if veh_id not in self._gt_data_dict:
+                continue
+            gt_traj = np.array(self._gt_data_dict[veh_id]['traj'])
+            existence_mask = gt_traj[:, 4]
+            has_valid_traj = existence_mask[history_steps:].sum() >= traj_len_threshold
+            if not has_valid_traj:
+                continue
+            
             pos = veh.getPosition()
             dist = np.linalg.norm(np.array([pos.x, pos.y]) - ego_pos)
             distances.append((dist, veh_id, veh))

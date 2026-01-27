@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-Build ego vehicle map for scenarios listed in scenarios_index.json.
+Build vehicle map for scenarios listed in scenarios_index.json.
 
 Output format:
     {
-        "scenario_id": ego_vehicle_id_or_null,
+        "scenario_id": {
+            "ego_vehicle_id": int or null,
+            "ego_selection_mode": "interesting" | "dense" | "unknown",
+            "opponent_vehicle_ids": [int, ...] or []
+        },
         ...
     }
 """
@@ -123,7 +127,7 @@ def _select_dense_vehicle(
     gt_data_dict: Dict,
     history_steps: int,
     k_neighbors: int = 7,
-    traj_len_threshold: int = 60,
+    traj_len_threshold: int = 30,
 ) -> Optional[int]:
     """Select vehicle with the smallest average distance to its nearest neighbors.
     
@@ -179,12 +183,12 @@ def _select_ego_vehicle_id(
     vehicles: List,
     max_episode_steps: int,
     history_steps: int,
-) -> Optional[int]:
+) -> Tuple[Optional[int], str]:
     """Select ego vehicle id using interesting pair or dense fallback."""
     if len(moving_veh_ids) == 0:
-        return None
+        return None, "unknown"
     if len(moving_veh_ids) == 1:
-        return moving_veh_ids[0]
+        return moving_veh_ids[0], "dense"
 
     interesting_pair = _find_interesting_pair(
         moving_veh_ids,
@@ -194,19 +198,90 @@ def _select_ego_vehicle_id(
         history_steps,
     )
     if interesting_pair is not None:
-        return min(interesting_pair)
+        return min(interesting_pair), "interesting"
 
-    return _select_dense_vehicle(
+    ego_id = _select_dense_vehicle(
         moving_veh_ids,
         vehicles,
         gt_data_dict,
         history_steps,
         k_neighbors=7,
     )
+    if ego_id is None:
+        return None, "unknown"
+    return ego_id, "dense"
+
+
+def _select_opponent_vehicle_ids(
+    moving_veh_ids: List[int],
+    vehicles: List,
+    gt_data_dict: Dict,
+    ego_id: Optional[int],
+    history_steps: int,
+    k: int = 7,
+    traj_len_threshold: int = 30,
+) -> List[int]:
+    """Select opponent vehicle ids (k nearest moving vehicles to ego).
+    
+    Only considers vehicles with valid trajectory length >= traj_len_threshold.
+    
+    Args:
+        moving_veh_ids: List of moving vehicle IDs
+        vehicles: List of vehicle objects
+        gt_data_dict: Ground truth data dictionary
+        ego_id: Ego vehicle ID (to exclude from selection)
+        history_steps: Number of history steps
+        k: Maximum number of opponents to select
+        traj_len_threshold: Minimum trajectory length (default 10)
+        
+    Returns:
+        List of selected opponent vehicle IDs, sorted by distance to ego
+    """
+    if ego_id is None:
+        return []
+    
+    veh_dict = {v.getID(): v for v in vehicles}
+    ego_veh = veh_dict.get(ego_id)
+    if ego_veh is None:
+        return []
+    
+    ego_pos = ego_veh.getPosition()
+    ego_pos = np.array([ego_pos.x, ego_pos.y], dtype=np.float32)
+    
+    # Filter candidates (excluding ego)
+    candidate_ids = [vid for vid in moving_veh_ids if vid != ego_id]
+    
+    if len(candidate_ids) == 0:
+        return []
+    
+    distances = []
+    for veh_id in candidate_ids:
+        veh = veh_dict.get(veh_id)
+        if veh is None:
+            continue
+        
+        # Check trajectory length constraint
+        if veh_id not in gt_data_dict:
+            continue
+        gt_traj = np.array(gt_data_dict[veh_id]["traj"])
+        existence_mask = gt_traj[:, 4]
+        has_valid_traj = existence_mask[history_steps:].sum() >= traj_len_threshold
+        if not has_valid_traj:
+            continue
+        
+        pos = veh.getPosition()
+        dist = np.linalg.norm(np.array([pos.x, pos.y]) - ego_pos)
+        distances.append((dist, veh_id))
+    
+    # Sort by distance, select k nearest
+    distances.sort(key=lambda x: x[0])
+    selected = distances[:k]
+    
+    return [item[1] for item in selected]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build ego vehicle map for scenarios")
+    parser = argparse.ArgumentParser(description="Build vehicle map for scenarios")
     parser.add_argument(
         "--scenario_index_json",
         type=str,
@@ -224,6 +299,12 @@ def main() -> None:
         type=str,
         default="/home/chen/workspace/dcd-ctrlsim/data/nocturne_waymo/formatted_json_v2_no_tl_valid",
         help="Scenario directory (overrides config.yaml)",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output file path (default: data/vehicle_map_valid.json or vehicle_map_train.json)",
     )
     args = parser.parse_args()
 
@@ -250,41 +331,75 @@ def main() -> None:
     history_steps = int(getattr(cfg.nocturne, "history_steps", 10))
     max_episode_steps = 90
 
-    ego_map: Dict[str, Optional[int]] = {}
+    vehicle_map: Dict[str, Dict] = {}
     for scenario_id in scenario_ids:
         scenario_filename = f"{scenario_id}.json"
         scenario_path = os.path.join(args.scenario_dir, scenario_filename)
         if not os.path.exists(scenario_path):
             print(f"Warning: scenario not found: {scenario_path}")
-            ego_map[scenario_id] = None
+            vehicle_map[scenario_id] = {
+                "ego_vehicle_id": None,
+                "ego_selection_mode": "unknown",
+                "opponent_vehicle_ids": [],
+            }
             continue
 
         try:
             gt_data_dict = data_bridge.get_ground_truth(args.scenario_dir, scenario_filename)
-            sim = data_br_get_ego_vehicle_id_from_mapidge.create_simulation(args.scenario_dir, scenario_filename)
+            sim = data_bridge.create_simulation(args.scenario_dir, scenario_filename)
             scenario = sim.getScenario()
             vehicles = list(scenario.vehicles())
             moving_veh_ids = [v.getID() for v in scenario.getObjectsThatMoved()]
 
-            ego_id = _select_ego_vehicle_id(
+            ego_id, ego_selection_mode = _select_ego_vehicle_id(
                 moving_veh_ids,
                 gt_data_dict,
                 vehicles,
                 max_episode_steps,
                 history_steps,
             )
-            ego_map[scenario_id] = ego_id
+            
+            opponent_ids = _select_opponent_vehicle_ids(
+                moving_veh_ids,
+                vehicles,
+                gt_data_dict,
+                ego_id,
+                history_steps,
+                k=7,
+                traj_len_threshold=10,
+            )
+            
+            vehicle_map[scenario_id] = {
+                "ego_vehicle_id": ego_id,
+                "ego_selection_mode": ego_selection_mode,
+                "opponent_vehicle_ids": opponent_ids,
+            }
             sim.reset()
         except Exception as e:
             print(f"Warning: failed to process {scenario_id}: {e}")
-            ego_map[scenario_id] = None
+            vehicle_map[scenario_id] = {
+                "ego_vehicle_id": None,
+                "ego_selection_mode": "unknown",
+                "opponent_vehicle_ids": [],
+            }
 
-    output_path = os.path.join("data", "ego_vehicle.json")
+    # Determine output path
+    if args.output:
+        output_path = args.output
+    else:
+        # Auto-detect based on input filename
+        if "valid" in args.scenario_index_json:
+            output_path = os.path.join("data", "vehicle_map_valid.json")
+        elif "train" in args.scenario_index_json:
+            output_path = os.path.join("data", "vehicle_map_train.json")
+        else:
+            output_path = os.path.join("data", "vehicle_map.json")
+    
     if not os.path.isdir("data"):
         raise FileNotFoundError("data directory not found for output")
     with open(output_path, "w") as f:
-        json.dump(ego_map, f, indent=2)
-    print(f"Saved ego vehicle map to: {output_path}")
+        json.dump(vehicle_map, f, indent=2)
+    print(f"Saved vehicle map to: {output_path}")
 
 
 if __name__ == "__main__":

@@ -629,3 +629,7 @@ parser.add_argument(
     '--show_vehicle_ids',
     type=str2bool, nargs='?', const=True, default=True,
     help='Show vehicle id text for ego/opponent vehicles in Nocturne render.')
+parser.add_argument(
+    '--show_ego_vehicle_selection',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Show ego vehicle selection mode text in Nocturne render.')

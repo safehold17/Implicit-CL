@@ -161,16 +161,29 @@ def _make_env(args):
         max_episode_steps = getattr(args, 'nocturne_max_episode_steps', None)
         if max_episode_steps is None:
             max_episode_steps = getattr(args, 'max_episode_steps', 90)
+        
+        # Auto-detect vehicle map based on scenario_index_path or scenario_data_dir
+        scenario_index_path = getattr(args, 'scenario_index_path', 'data/scenarios_index.json')
+        scenario_data_dir = getattr(args, 'scenario_data_dir', 'data/nocturne_waymo/formatted_json_v2_no_tl_train')
+        
+        # Determine which vehicle map to use based on paths
+        if 'valid' in scenario_index_path or 'valid' in scenario_data_dir:
+            vehicle_map_path = 'data/vehicle_map_valid.json'
+        else:
+            vehicle_map_path = 'data/vehicle_map_train.json'
+        
         env_kwargs.update({
-            'scenario_index_path': getattr(args, 'scenario_index_path', 'data/scenarios_index.json'),
+            'scenario_index_path': scenario_index_path,
             'opponent_checkpoint': getattr(args, 'opponent_checkpoint', 'checkpoints/model.ckpt'),
-            'scenario_data_dir': getattr(args, 'scenario_data_dir', 'data/nocturne_waymo/formatted_json_v2_no_tl_train'),
+            'scenario_data_dir': scenario_data_dir,
             'preprocess_dir': getattr(args, 'preprocess_dir', 'data/preprocess'),
+            'vehicle_map_path': vehicle_map_path,
             'max_episode_steps': max_episode_steps,
             'device': getattr(args, 'device', 'cuda'),
             'tilting_mode': getattr(args, 'tilting_mode', 'per_vehicle'),
             'show_tilting_params': getattr(args, 'show_tilting_params', True),
             'show_vehicle_ids': getattr(args, 'show_vehicle_ids', True),
+            'show_ego_vehicle_selection': getattr(args, 'show_ego_vehicle_selection', True),
         })
         return gym_make(args.env_name, **env_kwargs)
 
