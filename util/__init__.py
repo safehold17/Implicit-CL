@@ -160,7 +160,9 @@ def _make_env(args):
         # Prefer the Nocturne-specific flag; fall back for compatibility
         max_episode_steps = getattr(args, 'nocturne_max_episode_steps', None)
         if max_episode_steps is None:
-            max_episode_steps = getattr(args, 'max_episode_steps', 90)
+            max_episode_steps = getattr(args, 'num_steps', None)
+            if max_episode_steps is None:
+                max_episode_steps = getattr(args, 'max_episode_steps', 90)
         
         # Auto-detect vehicle map based on scenario_index_path or scenario_data_dir
         scenario_index_path = getattr(args, 'scenario_index_path', 'data/scenarios_index.json')
@@ -184,6 +186,8 @@ def _make_env(args):
             'show_tilting_params': getattr(args, 'show_tilting_params', True),
             'show_vehicle_ids': getattr(args, 'show_vehicle_ids', True),
             'show_ego_vehicle_selection': getattr(args, 'show_ego_vehicle_selection', True),
+            'veh_veh_collision_rew_multiplier': getattr(args, 'veh_veh_collision_rew_multiplier', 10.0),
+            'veh_edge_collision_rew_multiplier': getattr(args, 'veh_edge_collision_rew_multiplier', 10.0),
         })
         return gym_make(args.env_name, **env_kwargs)
 

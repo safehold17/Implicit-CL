@@ -845,14 +845,16 @@ class CtrlSimOpponentAdapter:
     def finalize(self, vehicles: List) -> Dict:
         """
         在 episode 结束后调用，记录最终状态（对齐 policy_evaluator.py）
+        
+        注意：最后一次step时数据已经更新过，这里不需要再调用_update_vehicle_data_dict
         """
-        self._vehicle_data_dict = self._update_vehicle_data_dict(
-            self.steps, vehicles, self._vehicle_data_dict
-        )
+        # 只添加最终的加速度和转向（这些不会在step中被记录）
         for veh in vehicles:
             veh_id = veh.getID()
-            self._vehicle_data_dict[veh_id]["acceleration"].append(0)
-            self._vehicle_data_dict[veh_id]["steering"].append(0)
+            # 检查vehicle_data_dict中是否有这个车辆的数据
+            if veh_id in self._vehicle_data_dict:
+                self._vehicle_data_dict[veh_id]["acceleration"].append(0)
+                self._vehicle_data_dict[veh_id]["steering"].append(0)
         return self._vehicle_data_dict
     
     @property

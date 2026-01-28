@@ -617,8 +617,18 @@ parser.add_argument(
 parser.add_argument(
     '--nocturne_max_episode_steps',
     type=int,
-    default=90,
-    help='The maximum number of steps in the Nocturne environment')
+    default=None,
+    help='The maximum number of steps in the Nocturne environment (None uses num_steps).')
+parser.add_argument(
+    '--veh_veh_collision_rew_multiplier',
+    type=float,
+    default=10.0,
+    help='Collision penalty multiplier for vehicle-vehicle collisions (ctrl-sim default).')
+parser.add_argument(
+    '--veh_edge_collision_rew_multiplier',
+    type=float,
+    default=10.0,
+    help='Collision penalty multiplier for vehicle-road-edge collisions (ctrl-sim default).')
 
 # ============== render options ==============
 parser.add_argument(
