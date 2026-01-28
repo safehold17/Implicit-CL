@@ -413,10 +413,19 @@ class AdversarialRunner(object):
                     counts[k] += 1
         
         # Calculate averages
+        # For binary indicators (*_occurred), convert to rates
+        # to indicate they represent aggregated rates across parallel environments
         stats = {}
         for k, v in sums.items():
             if counts[k] > 0:
-                stats['scenario_' + k] = sums[k] / counts[k]
+                avg_value = sums[k] / counts[k]
+                # Convert '*_occurred' to '*_rate' for binary occurrence indicators
+                if k.endswith('_occurred'):
+                    # Remove '_occurred' suffix and add '_rate' suffix
+                    base_name = k[:-9]  # Remove '_occurred'
+                    stats['scenario_' + base_name + '_rate'] = avg_value
+                else:
+                    stats['scenario_' + k] = avg_value
         
         # Extract additional statistics from agent_info (if available)
         if 'episode_return' in agent_info:
