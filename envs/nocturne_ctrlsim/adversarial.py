@@ -224,6 +224,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self._episode_steps: int = 0
         self._episode_progress: float = 0.0  # Target progress [0, 1]
         
+        # Cache for last completed episode (for get_complexity_info)
+        self._last_completed_episode_info: Optional[Dict] = None
+        
         # Level parameters vector (for adversary building)
         # [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt, per_vehicle_tilts...]
         if self.tilting_mode == 'per_vehicle':
@@ -932,6 +935,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         """
         Return current level complexity information and episode statistics (for logging and analysis)
         
+        Prioritizes returning cached data from the last completed episode to avoid
+        returning zeros when called immediately after reset.
+        
         Returns:
             Dictionary containing level parameters and episode statistics
         """
@@ -944,15 +950,22 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             'seed': self.current_level.seed,
             'opponent_k': self.opponent_k,
             'scenario_pool_size': len(self.scenario_ids),
-            
-            # Episode statistics (for training monitoring)
-            'collision_rate': 1.0 if self._episode_collision_occurred else 0.0,
-            'goal_reached_rate': 1.0 if self._episode_goal_reached else 0.0,
-            'offroad_rate': 1.0 if self._episode_offroad_occurred else 0.0,
-            'avg_progress': self._episode_progress,
-            'episode_steps': self._episode_steps,
-            'episode_reward': self.episode_reward,
         }
+        
+        # Episode statistics: prioritize cached completed episode data
+        if self._last_completed_episode_info is not None:
+            # Use cached data from last completed episode
+            info.update(self._last_completed_episode_info)
+        else:
+            # No cached data yet, use current episode data (may be zeros)
+            info.update({
+                'collision_occurred': 1.0 if self._episode_collision_occurred else 0.0,
+                'goal_reached_occurred': 1.0 if self._episode_goal_reached else 0.0,
+                'offroad_occurred': 1.0 if self._episode_offroad_occurred else 0.0,
+                'avg_progress': self._episode_progress,
+                'episode_steps': self._episode_steps,
+                'episode_reward': self.episode_reward,
+            })
 
         if self.tilting_mode == 'global':
             info.update({
@@ -1664,18 +1677,33 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             'progress': progress,
         }
         
-        # Add statistics when episode ends
+        # Always add complexity info (real-time data)
+        info.update(self.get_complexity_info())
+        
+        # Add episode summary when episode ends
         if self._check_done():
+            # Cache completed episode statistics for get_complexity_info()
+            self._last_completed_episode_info = {
+                'collision_occurred': 1.0 if self._episode_collision_occurred else 0.0,
+                'goal_reached_occurred': 1.0 if self._episode_goal_reached else 0.0,
+                'offroad_occurred': 1.0 if self._episode_offroad_occurred else 0.0,
+                'avg_progress': self._episode_progress,
+                'episode_steps': self._episode_steps,
+                'episode_reward': self.episode_reward,
+            }
+            
             info['episode'] = {
                 'r': self.episode_reward,
                 'l': self.current_step,
             }
-            info.update(self.get_complexity_info())
         
         return info
     
     def close(self):
         """Close environment"""
+        # Clear cached episode statistics
+        self._last_completed_episode_info = None
+        
         # If recording, stop first
         if self.recording_video:
             self.stop_recording()
