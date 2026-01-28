@@ -167,13 +167,15 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         )
         
         # ========== Environment config ==========
+        if max_episode_steps is None:
+            max_episode_steps = cfg.nocturne.steps
         if max_episode_steps != cfg.nocturne.steps:
             import warnings
             warnings.warn(
                 f"max_episode_steps ({max_episode_steps}) != cfg.nocturne.steps "
-                f"({cfg.nocturne.steps}); overriding to match ctrl-sim."
+                f"({cfg.nocturne.steps}); using the passed max_episode_steps for termination."
             )
-        self.max_episode_steps = cfg.nocturne.steps
+        self.max_episode_steps = max_episode_steps
         self.device = device
         self.opponent_k = opponent_k
         self.dt = cfg.nocturne.dt
@@ -233,6 +235,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # These parameters are used in make_agent, set default values here
         self._max_observable_agents = kwargs.get('student_num_neighbors', 16)
         self._top_k_road_points = kwargs.get('student_top_k_road', 64)
+        self.veh_veh_collision_rew_multiplier = kwargs.get('veh_veh_collision_rew_multiplier', 10.0)
+        self.veh_edge_collision_rew_multiplier = kwargs.get('veh_edge_collision_rew_multiplier', 10.0)
         
         # Cache road data (filled after _initialize_simulation)
         self._road_graph_cache: Optional[List[Dict]] = None
@@ -1501,6 +1505,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         Reward components (see ctrl-sim compute_reward):
         - Goal achievement reward (shaped_goal_distance)
+        - Speed/heading shaped rewards
         - Collision penalty
         - Offroad penalty
         
@@ -1548,16 +1553,26 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         reward_scaling = 1.0
         
         if self._ego_goal_dist_normalizer > 0:
-            # Normalize distance reward: [0, 1], the closer the higher
+            # Normalize distance reward: [0, 1], the closer, the higher
             if self._goal_reached:
                 pos_goal_rew = goal_dist_scaling / reward_scaling
             else:
                 pos_goal_rew = goal_dist_scaling * (1 - dist_to_goal / self._ego_goal_dist_normalizer) / reward_scaling
-                pos_goal_rew = max(0.0, pos_goal_rew)  # 确保非负
+                pos_goal_rew = max(0.0, pos_goal_rew)  # non-negative
         else:
             pos_goal_rew = 0.0
         
         reward += pos_goal_rew
+
+        # ========== Speed & Heading Shaped Rewards ==========
+        speed_goal_rew = 0.0
+        heading_goal_rew = 0.0
+        if self._ego_goal_dist_normalizer > 0:
+            speed_goal_rew = goal_dist_scaling * (1 - abs(ego_speed - goal_speed) / 40.0) / reward_scaling
+            heading_goal_rew = goal_dist_scaling * (1 - abs(self._angle_diff(ego_heading, goal_heading)) / (2 * np.pi)) / reward_scaling
+
+        reward += speed_goal_rew
+        reward += heading_goal_rew
         
         # ========== Collision penalty ==========
         try:
@@ -1574,11 +1589,11 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         collision_penalty = -1.0
         if veh_veh_collision:
-            reward += collision_penalty
+            reward += collision_penalty * self.veh_veh_collision_rew_multiplier
             self._collision_occurred = True
-        
+
         if veh_edge_collision:
-            reward += collision_penalty * 0.5  # Offroad penalty slightly lighter
+            reward += collision_penalty * self.veh_edge_collision_rew_multiplier
             self._offroad_occurred = True
         
         # ========== Update vehicle_data_dict (for continuous tracking) ==========
@@ -1588,8 +1603,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 float(heading_achieved),
                 float(speed_achieved),
                 pos_goal_rew,
-                0.0,  # speed_goal_rew
-                0.0,  # heading_goal_rew
+                speed_goal_rew,
+                heading_goal_rew,
                 float(veh_veh_collision),
                 float(veh_edge_collision),
             ])
@@ -1618,6 +1633,10 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         """
         # Max steps (timeout)
         if self.current_step >= self.max_episode_steps:
+            return True
+
+        # Goal reached (success)
+        if self._goal_reached:
             return True
         
         return False
