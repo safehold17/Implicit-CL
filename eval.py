@@ -409,17 +409,7 @@ class Evaluator(object):
 						if pbar:
 							pbar.update(1)
 						if show_progress and env_name.startswith('Nocturne'):
-							try:
-								max_steps = venv.max_episode_steps()
-							except Exception:
-								max_steps = None
-							print(
-								f"[Nocturne eval] episode_len={info['episode']['l']} "
-								f"goal_reached={info.get('goal_reached')} "
-								f"step={info.get('step')} "
-								f"max_episode_steps={max_steps}",
-								flush=True,
-							)
+							pass
 
 						# zero hidden states
 						if agent.is_recurrent:
@@ -653,8 +643,8 @@ if __name__ == '__main__':
 	for k,_ in stats.items():
 		results = env_results[k]
 		output_results[k] = f'{np.mean(results):.2f} +/- {np.std(results):.2f}'
-		q1 = np.percentile(results, 25, interpolation='midpoint')
-		q3 = np.percentile(results, 75, interpolation='midpoint')
+		q1 = np.percentile(results, 25, method='midpoint')
+		q3 = np.percentile(results, 75, method='midpoint')
 		median = np.median(results)
 		output_results[f'iq_{k}'] = f'{q1:.2f}--{median:.2f}--{q3:.2f}'
 		print(f"{k}: {output_results[k]}")

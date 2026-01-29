@@ -70,6 +70,8 @@ class NocturneVideoRecorder:
         self.frames_dir = os.path.join(self.output_dir, name)
         self.all_positions = []
         self._debug_invalid_logged = False
+        # Always write debug log to videos/nocturne_video_debug.log (user request)
+        os.makedirs(self.output_dir, exist_ok=True)
         
         # 创建帧目录
         if os.path.exists(self.frames_dir):
@@ -98,7 +100,6 @@ class NocturneVideoRecorder:
         
         # 提取车辆数据
         vehicle_data = []
-        invalid_positions = []
         for veh in vehicles:
             pos = veh.getPosition()
             heading = veh.getHeading()
@@ -107,8 +108,6 @@ class NocturneVideoRecorder:
 
             x = pos.x
             y = pos.y
-            if (not np.isfinite(x) or not np.isfinite(y)) or (x == -10000 and y == -10000):
-                invalid_positions.append((veh.getID(), x, y))
 
             vehicle_data.append({
                 'id': veh.getID(),
@@ -120,37 +119,10 @@ class NocturneVideoRecorder:
             })
             
             # 记录位置用于计算视图范围
-            self.all_positions.append([x, y])
+            # Filter extreme positions before adding to history (prevents view range explosion)
+            if np.isfinite(x) and np.isfinite(y) and abs(x) <= 1e5 and abs(y) <= 1e5:
+                self.all_positions.append([x, y])
 
-        if not self._debug_invalid_logged:
-            if len(vehicle_data) == 0 or len(invalid_positions) > 0:
-                valid_positions = [
-                    [v['x'], v['y']]
-                    for v in vehicle_data
-                    if np.isfinite(v['x']) and np.isfinite(v['y'])
-                    and not (v['x'] == -10000 and v['y'] == -10000)
-                ]
-                if valid_positions:
-                    positions_np = np.array(valid_positions)
-                    x_min = np.min(positions_np[:, 0])
-                    x_max = np.max(positions_np[:, 0])
-                    y_min = np.min(positions_np[:, 1])
-                    y_max = np.max(positions_np[:, 1])
-                    bounds = f"x=[{x_min:.2f},{x_max:.2f}] y=[{y_min:.2f},{y_max:.2f}]"
-                else:
-                    bounds = "no_valid_positions"
-                sample = invalid_positions[0] if invalid_positions else None
-                print(
-                    "[NocturneVideoRecorder] "
-                    f"frame={self.frame_count} "
-                    f"vehicles={len(vehicle_data)} "
-                    f"invalid_positions={len(invalid_positions)} "
-                    f"bounds={bounds} "
-                    f"sample_invalid={sample}",
-                    flush=True,
-                )
-                self._debug_invalid_logged = True
-        
         # 保存帧
         self._save_frame(
             vehicle_data,
