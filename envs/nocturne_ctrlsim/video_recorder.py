@@ -54,9 +54,10 @@ class NocturneVideoRecorder:
         
         self.frame_count = 0
         self.frames_dir = None
-        
+
         # 保存场景数据用于计算视图范围
         self.all_positions = []
+        self._debug_invalid_logged = False
         
     def start_recording(self, name: str):
         """
@@ -68,6 +69,7 @@ class NocturneVideoRecorder:
         self.frame_count = 0
         self.frames_dir = os.path.join(self.output_dir, name)
         self.all_positions = []
+        self._debug_invalid_logged = False
         
         # 创建帧目录
         if os.path.exists(self.frames_dir):
@@ -80,6 +82,7 @@ class NocturneVideoRecorder:
         vehicles: List,
         roads_data: Optional[List] = None,
         highlight_vehicle_ids: Optional[List[int]] = None,
+        opponent_vehicle_ids: Optional[List[int]] = None,
     ):
         """
         捕获当前帧
@@ -95,26 +98,66 @@ class NocturneVideoRecorder:
         
         # 提取车辆数据
         vehicle_data = []
+        invalid_positions = []
         for veh in vehicles:
             pos = veh.getPosition()
             heading = veh.getHeading()
             length = veh.getLength()
             width = veh.getWidth()
-            
+
+            x = pos.x
+            y = pos.y
+            if (not np.isfinite(x) or not np.isfinite(y)) or (x == -10000 and y == -10000):
+                invalid_positions.append((veh.getID(), x, y))
+
             vehicle_data.append({
                 'id': veh.getID(),
-                'x': pos.x,
-                'y': pos.y,
+                'x': x,
+                'y': y,
                 'heading': heading,
                 'length': length,
                 'width': width,
             })
             
             # 记录位置用于计算视图范围
-            self.all_positions.append([pos.x, pos.y])
+            self.all_positions.append([x, y])
+
+        if not self._debug_invalid_logged:
+            if len(vehicle_data) == 0 or len(invalid_positions) > 0:
+                valid_positions = [
+                    [v['x'], v['y']]
+                    for v in vehicle_data
+                    if np.isfinite(v['x']) and np.isfinite(v['y'])
+                    and not (v['x'] == -10000 and v['y'] == -10000)
+                ]
+                if valid_positions:
+                    positions_np = np.array(valid_positions)
+                    x_min = np.min(positions_np[:, 0])
+                    x_max = np.max(positions_np[:, 0])
+                    y_min = np.min(positions_np[:, 1])
+                    y_max = np.max(positions_np[:, 1])
+                    bounds = f"x=[{x_min:.2f},{x_max:.2f}] y=[{y_min:.2f},{y_max:.2f}]"
+                else:
+                    bounds = "no_valid_positions"
+                sample = invalid_positions[0] if invalid_positions else None
+                print(
+                    "[NocturneVideoRecorder] "
+                    f"frame={self.frame_count} "
+                    f"vehicles={len(vehicle_data)} "
+                    f"invalid_positions={len(invalid_positions)} "
+                    f"bounds={bounds} "
+                    f"sample_invalid={sample}",
+                    flush=True,
+                )
+                self._debug_invalid_logged = True
         
         # 保存帧
-        self._save_frame(vehicle_data, roads_data, highlight_vehicle_ids)
+        self._save_frame(
+            vehicle_data,
+            roads_data,
+            highlight_vehicle_ids,
+            opponent_vehicle_ids,
+        )
         self.frame_count += 1
     
     def _save_frame(
@@ -122,6 +165,7 @@ class NocturneVideoRecorder:
         vehicle_data: List[Dict],
         roads_data: Optional[List],
         highlight_vehicle_ids: Optional[List[int]],
+        opponent_vehicle_ids: Optional[List[int]],
     ):
         """绘制并保存单帧"""
         plt.figure(figsize=(10, 10))
@@ -154,12 +198,14 @@ class NocturneVideoRecorder:
             self._draw_roads(roads_data)
         
         # 绘制车辆
+        opponent_ids = set(opponent_vehicle_ids) if opponent_vehicle_ids else set()
         for veh in vehicle_data:
             is_highlight = (
-                highlight_vehicle_ids is not None 
+                highlight_vehicle_ids is not None
                 and veh['id'] in highlight_vehicle_ids
             )
-            self._draw_vehicle(veh, is_highlight)
+            is_opponent = (not is_highlight) and (veh['id'] in opponent_ids)
+            self._draw_vehicle(veh, is_highlight, is_opponent)
         
         # 设置视图
         plt.xlim(x_min, x_max)
@@ -205,7 +251,12 @@ class NocturneVideoRecorder:
                 
                 plt.plot(x_coords, y_coords, color=color, linewidth=linewidth, zorder=1)
     
-    def _draw_vehicle(self, veh: Dict, is_highlight: bool = False):
+    def _draw_vehicle(
+        self,
+        veh: Dict,
+        is_highlight: bool = False,
+        is_opponent: bool = False,
+    ):
         """绘制单个车辆"""
         x, y = veh['x'], veh['y']
         heading = veh['heading']
@@ -215,6 +266,9 @@ class NocturneVideoRecorder:
         # 设置颜色
         if is_highlight:
             color = '#ff6b6b'  # 红色高亮
+            alpha = 0.8
+        elif is_opponent:
+            color = '#4aa3ff'  # 对手车辆蓝色
             alpha = 0.8
         else:
             color = '#ffde8b'  # 默认黄色
@@ -343,8 +397,15 @@ def create_video_from_episode(
         vehicles = frame_data.get('vehicles', [])
         roads_data = frame_data.get('roads_data')
         highlight_ids = frame_data.get('highlight_vehicle_ids')
-        
-        recorder.capture_frame(scenario, vehicles, roads_data, highlight_ids)
+        opponent_ids = frame_data.get('opponent_vehicle_ids')
+
+        recorder.capture_frame(
+            scenario,
+            vehicles,
+            roads_data,
+            highlight_ids,
+            opponent_ids,
+        )
     
     video_path = recorder.save_video(video_name)
     recorder.close()

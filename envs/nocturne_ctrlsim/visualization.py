@@ -298,7 +298,9 @@ class VisualizationMixin:
             self.video_recorder.capture_frame(
                 self.scenario,
                 self.vehicles,
-                highlight_vehicle_ids=[self.ego_vehicle.getID()] if self.ego_vehicle else None
+                roads_data=self._road_graph_cache,
+                highlight_vehicle_ids=[self.ego_vehicle.getID()] if self.ego_vehicle else None,
+                opponent_vehicle_ids=self.opponent_vehicle_ids,
             )
     
     def stop_recording(self, video_name: Optional[str] = None) -> Optional[str]:

@@ -83,3 +83,30 @@ class VecMonitor(VecEnvWrapper):
                 newinfos[i] = info
 
         return obs, rews, dones, newinfos
+
+    def step_env(self, actions, reset_random=False):
+        obs, rews, dones, infos = self.venv.step_env(actions, reset_random=reset_random)
+        self.eprets += rews
+        self.eplens += 1
+
+        newinfos = list(infos[:])
+        for i in range(len(dones)):
+            if dones[i]:
+                info = infos[i].copy()
+                ret = self.eprets[i]
+                eplen = self.eplens[i]
+                epinfo = {'r': ret, 'l': eplen, 't': round(time.time() - self.tstart, 6)}
+                for k in self.info_keywords:
+                    epinfo[k] = info[k]
+                info['episode'] = epinfo
+                if self.keep_buf:
+                    self.epret_buf.append(ret)
+                    self.eplen_buf.append(eplen)
+                self.epcount += 1
+                self.eprets[i] = 0
+                self.eplens[i] = 0
+                if self.results_writer:
+                    self.results_writer.write_row(epinfo)
+                newinfos[i] = info
+
+        return obs, rews, dones, newinfos

@@ -239,12 +239,22 @@ class Evaluator(object):
 						self.observation_space = original_env.observation_space
 						self.action_space = original_env.action_space
 
+					def _episode_name(self):
+						return f"episode_{self.episode_count:04d}"
+
 					def _start_if_needed(self):
 						if self.recording_started:
 							return
-						name = f"episode_{self.episode_count:04d}"
-						self.env.start_recording(self.video_dir, name, fps=10, dpi=100)
+						self.env.start_recording(self.video_dir, self._episode_name(), fps=10, dpi=100)
 						self.recording_started = True
+
+					def _stop_if_recording(self):
+						if not self.recording_started:
+							return
+						if getattr(self.env, 'recording_video', False):
+							self.env.stop_recording(self._episode_name())
+						self.episode_count += 1
+						self.recording_started = False
 					
 					def reset(self, **kw):
 						# in nocturne env, using reset_random()
@@ -259,14 +269,24 @@ class Evaluator(object):
 						obs = self.env.reset_random(**kw)
 						self._start_if_needed()
 						return obs
+
+					def reset_agent(self, **kw):
+						if kw:
+							obs = self.env.reset_agent(**kw)
+						else:
+							obs = self.env.reset_agent()
+						self._start_if_needed()
+						return obs
 					
 					def step(self, action):
-						return self.env.step(action)
+						self._start_if_needed()
+						obs, reward, done, info = self.env.step(action)
+						if done:
+							self._stop_if_recording()
+						return obs, reward, done, info
 					
 					def close(self):
-						if self.env.recording_video:
-							self.env.stop_recording()
-							self.episode_count += 1
+						self._stop_if_recording()
 						self.env.close()
 					
 					def __getattr__(self, name):
@@ -371,7 +391,10 @@ class Evaluator(object):
 				action = action.cpu().numpy()
 				if not self.is_discrete_actions:
 					action = agent.process_action(action)
-				obs, reward, done, infos = venv.step(action)
+				if env_name.startswith('Nocturne'):
+					obs, reward, done, infos = venv.step_env(action, reset_random=True)
+				else:
+					obs, reward, done, infos = venv.step(action)
 
 				masks = torch.tensor(
 					[[0.0] if done_ else [1.0] for done_ in done],
@@ -385,6 +408,18 @@ class Evaluator(object):
 							solved_episodes += 1
 						if pbar:
 							pbar.update(1)
+						if show_progress and env_name.startswith('Nocturne'):
+							try:
+								max_steps = venv.max_episode_steps()
+							except Exception:
+								max_steps = None
+							print(
+								f"[Nocturne eval] episode_len={info['episode']['l']} "
+								f"goal_reached={info.get('goal_reached')} "
+								f"step={info.get('step')} "
+								f"max_episode_steps={max_steps}",
+								flush=True,
+							)
 
 						# zero hidden states
 						if agent.is_recurrent:
