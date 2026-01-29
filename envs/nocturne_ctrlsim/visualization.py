@@ -10,6 +10,10 @@ from .video_recorder import NocturneVideoRecorder
 
 
 class VisualizationMixin:
+    def __init__(self):
+        self.recording_video = None
+        self.video_recorder = None
+
     def render(self, mode='human'):
         """Render environment (static screenshot)"""
         if mode not in ['human', 'rgb_array', 'level']: # render is the gym standard parameter

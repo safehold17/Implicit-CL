@@ -103,7 +103,7 @@ def parse_args():
 	parser.add_argument(
 		'--num_processes',
 		type=int,
-		default=2,
+		default=1,
 		help='Number of CPU processes to use.')
 	parser.add_argument(
 		'--max_num_processes',
@@ -152,7 +152,7 @@ class Evaluator(object):
 		num_processes, 
 		num_episodes=10, 
 		record_video=False, 
-		device='cpu', 
+		device='cuda',
 		**kwargs):
 		self.kwargs = kwargs # kwargs for env wrappers
 		self._init_parallel_envs(
@@ -235,8 +235,16 @@ class Evaluator(object):
 						self.env = original_env
 						self.video_dir = video_dir
 						self.episode_count = 0
+						self.recording_started = False
 						self.observation_space = original_env.observation_space
 						self.action_space = original_env.action_space
+
+					def _start_if_needed(self):
+						if self.recording_started:
+							return
+						name = f"episode_{self.episode_count:04d}"
+						self.env.start_recording(self.video_dir, name, fps=10, dpi=100)
+						self.recording_started = True
 					
 					def reset(self, **kw):
 						# in nocturne env, using reset_random()
@@ -244,8 +252,12 @@ class Evaluator(object):
 							obs = self.env.reset_random()
 						else:
 							obs = self.env.reset(**kw)
-						name = f"episode_{self.episode_count:04d}"
-						self.env.start_recording(self.video_dir, name, fps=10, dpi=100)
+						self._start_if_needed()
+						return obs
+
+					def reset_random(self, **kw):
+						obs = self.env.reset_random(**kw)
+						self._start_if_needed()
 						return obs
 					
 					def step(self, action):
@@ -271,7 +283,7 @@ class Evaluator(object):
 		return env
 
 	@staticmethod
-	def wrap_venv(venv, env_name, device='cpu'):
+	def wrap_venv(venv, env_name, device='cuda'):
 		is_multigrid = env_name.startswith('MultiGrid') or env_name.startswith('MiniGrid')
 		is_car_racing = env_name.startswith('CarRacing')
 		is_bipedal = env_name.startswith('BipedalWalker')
@@ -406,6 +418,22 @@ class Evaluator(object):
 		return stats
 
 
+def _collect_nocturne_required_args(flags, cli_args):
+	keys = [
+		"scenario_index_path",
+		"opponent_checkpoint",
+		"scenario_data_dir",
+		"preprocess_dir",
+	]
+	required = {}
+	for key in keys:
+		if key in flags:
+			required[key] = flags[key]
+		elif key in cli_args:
+			required[key] = cli_args[key]
+	return required
+
+
 def _get_f1_env_names():
 	env_names = [f'CarRacingF1-{name}-v0' for name, cls in formula1.__dict__.items() if isinstance(cls, RaceTrack)]
 	env_names.remove('CarRacingF1-LagunaSeca-v0')
@@ -460,7 +488,7 @@ if __name__ == '__main__':
 	args.num_processes = min(args.num_processes, args.num_episodes)
 
 	# === Determine device ====
-	device = 'cpu'
+	device = 'cuda'
 
 	# === Load checkpoint ===
 	# Load meta.json into flags object
@@ -528,8 +556,10 @@ if __name__ == '__main__':
 		if os.path.exists(checkpoint_path):
 			meta_json_file = open(meta_json_path)       
 			xpid_flags = DotDict(json.load(meta_json_file)['args'])
+			xpid_flags_meta = DotDict(dict(xpid_flags))
 
-			make_fn = [lambda: Evaluator.make_env(env_names[0])]
+			nocturne_required = _collect_nocturne_required_args(xpid_flags_meta, args)
+			make_fn = [lambda: Evaluator._make_env(env_names[0], **nocturne_required)]
 			dummy_venv = ParallelAdversarialVecEnv(make_fn, adversary=False, is_eval=True)
 			dummy_venv = Evaluator.wrap_venv(dummy_venv, env_name=env_names[0], device=device)
 
@@ -557,6 +587,7 @@ if __name__ == '__main__':
 				# Evaluate the model
 				xpid_flags.update(args)
 				xpid_flags.update({"use_skip": False})
+				nocturne_required = _collect_nocturne_required_args(xpid_flags_meta, args)
 
 				evaluator = Evaluator(env_names_, 
 					num_processes=args.num_processes, 
@@ -564,6 +595,7 @@ if __name__ == '__main__':
 					frame_stack=xpid_flags.frame_stack,
 					grayscale=xpid_flags.grayscale,
 					use_global_critic=xpid_flags.use_global_critic,
+					**nocturne_required,
 					record_video=args.record_video)
 
 				stats = evaluator.evaluate(agent, 
@@ -591,7 +623,8 @@ if __name__ == '__main__':
 		median = np.median(results)
 		output_results[f'iq_{k}'] = f'{q1:.2f}--{median:.2f}--{q3:.2f}'
 		print(f"{k}: {output_results[k]}")
-	HumanOutputFormat(sys.stdout).writekvs(output_results)
+	key_excluded = {k: () for k in output_results.keys()}
+	HumanOutputFormat(sys.stdout).write(output_results, key_excluded=key_excluded, step=0)
 
 	if args.accumulator:
 		csvwriter.writerow(['metric',] + [x for x in range(num_seeds)])
