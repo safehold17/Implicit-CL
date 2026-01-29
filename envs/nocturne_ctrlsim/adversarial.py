@@ -553,6 +553,21 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         # Initialize ego vehicle's goal and reward related states
         self._initialize_ego_goal_state()
+
+        # If in per-vehicle tilting mode, zero out tilts for non-existent opponents
+        if self.tilting_mode == 'per_vehicle' and self.current_level is not None:
+            actual_n = len(self.opponent_vehicle_ids)
+            per = list(self.current_level.per_vehicle_tilting)
+            cutoff = actual_n * 3
+            if cutoff < len(per):
+                for i in range(cutoff, len(per)):
+                    per[i] = 0
+                self.current_level.per_vehicle_tilting = tuple(per)
+                # Keep level_params_vec in sync if present
+                from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
+                if len(self.level_params_vec) >= 4 + PER_VEHICLE_TILTING_LENGTH:
+                    for i in range(PER_VEHICLE_TILTING_LENGTH):
+                        self.level_params_vec[4 + i] = per[i]
         
         # Set opponent tilting based on tilting_mode
         if self.tilting_mode == 'global':
