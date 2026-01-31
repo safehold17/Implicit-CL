@@ -301,6 +301,7 @@ class VisualizationMixin:
                 roads_data=self._road_graph_cache,
                 highlight_vehicle_ids=[self.ego_vehicle.getID()] if self.ego_vehicle else None,
                 opponent_vehicle_ids=self.opponent_vehicle_ids,
+                goal_points_by_id=getattr(self, "_goal_points_by_id", None),
             )
     
     def stop_recording(self, video_name: Optional[str] = None) -> Optional[str]:

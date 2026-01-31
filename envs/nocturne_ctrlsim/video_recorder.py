@@ -85,6 +85,7 @@ class NocturneVideoRecorder:
         roads_data: Optional[List] = None,
         highlight_vehicle_ids: Optional[List[int]] = None,
         opponent_vehicle_ids: Optional[List[int]] = None,
+        goal_points_by_id: Optional[Dict[int, np.ndarray]] = None,
     ):
         """
         捕获当前帧
@@ -129,6 +130,7 @@ class NocturneVideoRecorder:
             roads_data,
             highlight_vehicle_ids,
             opponent_vehicle_ids,
+            goal_points_by_id,
         )
         self.frame_count += 1
     
@@ -138,6 +140,7 @@ class NocturneVideoRecorder:
         roads_data: Optional[List],
         highlight_vehicle_ids: Optional[List[int]],
         opponent_vehicle_ids: Optional[List[int]],
+        goal_points_by_id: Optional[Dict[int, np.ndarray]],
     ):
         """绘制并保存单帧"""
         plt.figure(figsize=(10, 10))
@@ -170,14 +173,27 @@ class NocturneVideoRecorder:
             self._draw_roads(roads_data)
         
         # 绘制车辆
+        highlight_ids = set(highlight_vehicle_ids) if highlight_vehicle_ids else set()
         opponent_ids = set(opponent_vehicle_ids) if opponent_vehicle_ids else set()
         for veh in vehicle_data:
             is_highlight = (
-                highlight_vehicle_ids is not None
-                and veh['id'] in highlight_vehicle_ids
+                highlight_ids
+                and veh['id'] in highlight_ids
             )
             is_opponent = (not is_highlight) and (veh['id'] in opponent_ids)
             self._draw_vehicle(veh, is_highlight, is_opponent)
+
+        if goal_points_by_id:
+            for veh_id, goal_pos in goal_points_by_id.items():
+                if goal_pos is None or len(goal_pos) < 2:
+                    continue
+                x = float(goal_pos[0])
+                y = float(goal_pos[1])
+                if not np.isfinite(x) or not np.isfinite(y):
+                    continue
+                is_highlight = veh_id in highlight_ids
+                is_opponent = (not is_highlight) and (veh_id in opponent_ids)
+                self._draw_goal_point(x, y, is_highlight, is_opponent)
         
         # 设置视图
         plt.xlim(x_min, x_max)
@@ -278,6 +294,47 @@ class NocturneVideoRecorder:
             color='black', zorder=6,
             alpha=0.25, linewidth=0.25
         )
+
+    def _draw_goal_point(
+        self,
+        x: float,
+        y: float,
+        is_highlight: bool = False,
+        is_opponent: bool = False,
+    ):
+        if is_highlight:
+            color = '#ff6b6b'
+            alpha = 0.8
+        elif is_opponent:
+            color = '#4aa3ff'
+            alpha = 0.8
+        else:
+            color = '#ffde8b'
+            alpha = 0.5
+
+        inner_radius = 0.6
+        outer_radius = 1.6
+
+        inner = mpatches.Circle(
+            (x, y),
+            radius=inner_radius,
+            ec='none',
+            fc=color,
+            alpha=alpha,
+            zorder=5,
+        )
+        outer = mpatches.Circle(
+            (x, y),
+            radius=outer_radius,
+            fill=False,
+            ec=color,
+            linewidth=0.35,
+            linestyle=(0, (2, 2)),
+            alpha=alpha,
+            zorder=5,
+        )
+        plt.gca().add_patch(inner)
+        plt.gca().add_patch(outer)
     
     def save_video(self, video_name: str) -> str:
         """
