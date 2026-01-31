@@ -20,6 +20,7 @@ from .level import ScenarioLevel, PER_VEHICLE_TILTING_LENGTH
 from .vehicle_selection import VehicleSelectionMixin
 from .video_recorder import NocturneVideoRecorder
 from .visualization import VisualizationMixin
+from .local_frame import angle_of_rotation, angle_sub, to_local
 from tools.build_scenario_index import ScenarioIndex
 from adapters.ctrl_sim import (
     CtrlSimOpponentAdapter,
@@ -1365,6 +1366,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             # No road data, return empty road graph
             return [np.zeros(13, dtype=np.float32) for _ in range(self._top_k_road_points)]
         
+        angle = angle_of_rotation(ego_heading)
+
         # Extract road point features
         road_points = []
         
@@ -1377,8 +1380,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 # Road line (multiple points)
                 for i, pt in enumerate(geometry):
                     # Relative position
-                    rel_x = pt['x'] - ego_pos.x
-                    rel_y = pt['y'] - ego_pos.y
+                    dx = pt['x'] - ego_pos.x
+                    dy = pt['y'] - ego_pos.y
+                    rel_x, rel_y = to_local(dx, dy, angle)
                     
                     # Calculate road segment length
                     if i < len(geometry) - 1:
@@ -1395,6 +1399,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                     else:
                         seg_length = 1.0  # Default value
                         orientation = 0.0
+                    orientation = angle_sub(orientation, -angle)
                     
                     # Road point scale (default value)
                     scale_x = 1.0
@@ -1433,8 +1438,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             
             elif isinstance(geometry, dict):
                 # Static object (e.g. stop_sign)
-                rel_x = geometry['x'] - ego_pos.x
-                rel_y = geometry['y'] - ego_pos.y
+                dx = geometry['x'] - ego_pos.x
+                dy = geometry['y'] - ego_pos.y
+                rel_x, rel_y = to_local(dx, dy, angle)
                 
                 type_mapping = {
                     'stop_sign': 6,
@@ -1494,8 +1500,12 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         # Relative target position (in ego coordinate system)
         goal_pos = self._ego_goal_dict['pos']
-        rel_goal_x = goal_pos[0] - ego_pos.x
-        rel_goal_y = goal_pos[1] - ego_pos.y
+        angle = angle_of_rotation(ego_heading)
+        rel_goal_x, rel_goal_y = to_local(
+            goal_pos[0] - ego_pos.x,
+            goal_pos[1] - ego_pos.y,
+            angle,
+        )
         
         # Collision state
         collision_state = 1.0 if self._collision_occurred else 0.0
@@ -1522,16 +1532,14 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             veh_pos = veh.getPosition()
             
             # Relative position to ego
-            rel_pos_x = veh_pos.x - ego_pos.x
-            rel_pos_y = veh_pos.y - ego_pos.y
+            rel_pos_x, rel_pos_y = to_local(
+                veh_pos.x - ego_pos.x,
+                veh_pos.y - ego_pos.y,
+                angle,
+            )
             
             # Relative orientation
-            rel_orientation = veh.getHeading() - ego_heading
-            # Normalize to [-pi, pi]
-            while rel_orientation > np.pi:
-                rel_orientation -= 2 * np.pi
-            while rel_orientation < -np.pi:
-                rel_orientation += 2 * np.pi
+            rel_orientation = angle_sub(veh.getHeading(), -angle)
             
             partner_state = np.array([
                 veh.getSpeed(),
