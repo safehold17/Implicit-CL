@@ -15,14 +15,75 @@ class VehicleSelectionMixin:
     _load_vehicle_ids_for_scenario() method. This mixin only provides
     the dynamic selection fallback logic.
     """
+    
+    def _get_preproc_vehicle_ids(self) -> Optional[List[int]]:
+        """
+        Get vehicle IDs from preprocessed data
+        
+        Returns:
+            List of vehicle IDs that have RTG data, or None if cannot determine
+        """
+        if not hasattr(self, '_preproc_data') or self._preproc_data is None:
+            return None
+        
+        preproc = self._preproc_data
+        
+        # 尝试从 filtered_ag_ids 获取
+        filtered_ids = None
+        if isinstance(preproc, dict):
+            filtered_ids = preproc.get('filtered_ag_ids')
+        else:
+            filtered_ids = getattr(preproc, 'filtered_ag_ids', None)
+        
+        if filtered_ids is not None:
+            return list(filtered_ids)
+        
+        # 如果没有 filtered_ag_ids，尝试从 GT data 推断
+        # 假设预处理数据的顺序与 GT data 的某个子集一致
+        if hasattr(self, '_gt_data_dict') and self._gt_data_dict:
+            # 获取 RTG 数组大小
+            rtgs = None
+            if isinstance(preproc, dict):
+                rtgs = preproc.get('rtgs')
+            else:
+                rtgs = getattr(preproc, 'rtgs', None)
+            
+            if rtgs is not None:
+                import torch
+                if isinstance(rtgs, torch.Tensor):
+                    rtgs = rtgs.cpu().numpy()
+                
+                num_agents_in_rtg = rtgs.shape[0] if len(rtgs.shape) >= 3 else 0
+                
+                # 取 GT data 中前 num_agents_in_rtg 个车辆的 ID
+                # 注意：这是一个启发式方法，可能不准确
+                all_veh_ids = sorted(list(self._gt_data_dict.keys()))
+                return all_veh_ids[:num_agents_in_rtg]
+        
+        return None
 
-    def _get_moving_vehicle_ids(self) -> List[int]:
+    def _get_moving_vehicle_ids(self, filter_by_preproc: bool = True) -> List[int]:
         """
         Get all moving vehicles IDs in the scenario
         
         See: ctrl-sim utils/sim.py get_moving_vehicles() function
+        
+        Args:
+            filter_by_preproc: If True, only return vehicles that exist in preprocessed data
         """
-        return [v.getID() for v in self.scenario.getObjectsThatMoved()]
+        moving_ids = [v.getID() for v in self.scenario.getObjectsThatMoved()]
+        
+        if filter_by_preproc and hasattr(self, '_preproc_data') and self._preproc_data is not None:
+            # 获取预处理数据中的车辆ID列表
+            preproc_veh_ids = self._get_preproc_vehicle_ids()
+            if preproc_veh_ids is not None:
+                # 只返回同时在 moving 和 preproc 中的车辆
+                moving_ids = [vid for vid in moving_ids if vid in preproc_veh_ids]
+                if len(moving_ids) < len([v.getID() for v in self.scenario.getObjectsThatMoved()]):
+                    filtered_count = len([v.getID() for v in self.scenario.getObjectsThatMoved()]) - len(moving_ids)
+                    print(f"Info: Filtered out {filtered_count} vehicles not in preprocessed data")
+        
+        return moving_ids
     
     def _find_interesting_pair(self, moving_veh_ids: List[int]) -> Optional[Tuple[int, int]]:
         """
@@ -167,14 +228,19 @@ class VehicleSelectionMixin:
         Note: This is the fallback method. Primary vehicle ID loading from JSON
         is handled in adversarial.py's _load_vehicle_ids_for_scenario().
         """
-        # 1. Get moving vehicles
-        moving_veh_ids = self._get_moving_vehicle_ids()
+        # 1. Get moving vehicles (filtered by preprocessed data)
+        moving_veh_ids = self._get_moving_vehicle_ids(filter_by_preproc=True)
         
         if len(moving_veh_ids) == 0:
-            raise ValueError(
-                f"No moving vehicles found in scenario {self.current_level.scenario_id}. "
-                "Scenario will be skipped."
-            )
+            # 如果预处理数据过滤后没有车辆，尝试不过滤
+            print(f"Warning: No vehicles in preprocessed data for scenario {self.current_level.scenario_id}. "
+                  "Using all moving vehicles.")
+            moving_veh_ids = self._get_moving_vehicle_ids(filter_by_preproc=False)
+            if len(moving_veh_ids) == 0:
+                raise ValueError(
+                    f"No moving vehicles found in scenario {self.current_level.scenario_id}. "
+                    "Scenario will be skipped."
+                )
         
         # 2. Find interesting pair
         interesting_pair = self._find_interesting_pair(moving_veh_ids)
@@ -212,10 +278,17 @@ class VehicleSelectionMixin:
             self.opponent_vehicle_ids = []
             return
         
-        # Dynamic selection: get moving vehicles (excluding ego)
-        moving_veh_ids = self._get_moving_vehicle_ids()
+        # Dynamic selection: get moving vehicles (excluding ego, filtered by preprocessed data)
+        moving_veh_ids = self._get_moving_vehicle_ids(filter_by_preproc=True)
         ego_id = self.ego_vehicle.getID()
         candidate_ids = [vid for vid in moving_veh_ids if vid != ego_id]
+        
+        # 如果预处理数据过滤后没有候选车辆，尝试不过滤
+        if len(candidate_ids) == 0:
+            print(f"Warning: No opponent candidates in preprocessed data for scenario {self.current_level.scenario_id}. "
+                  "Using all moving vehicles.")
+            moving_veh_ids = self._get_moving_vehicle_ids(filter_by_preproc=False)
+            candidate_ids = [vid for vid in moving_veh_ids if vid != ego_id]
         
         if len(candidate_ids) == 0:
             self.opponent_vehicles = []

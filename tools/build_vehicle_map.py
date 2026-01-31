@@ -177,6 +177,55 @@ def _select_dense_vehicle(
     return best_vid
 
 
+def _get_preproc_vehicle_ids(preproc_data, gt_data_dict: Dict) -> Optional[List[int]]:
+    """
+    从预处理数据中获取车辆ID列表
+    
+    Args:
+        preproc_data: 预处理数据（dict 或对象）
+        gt_data_dict: Ground truth 数据字典，用于推断车辆ID
+        
+    Returns:
+        车辆ID列表，如果无法确定则返回None
+    """
+    if preproc_data is None:
+        return None
+    
+    # 方法1: 尝试从 filtered_ag_ids 获取（最准确）
+    filtered_ids = None
+    if isinstance(preproc_data, dict):
+        filtered_ids = preproc_data.get('filtered_ag_ids')
+    else:
+        filtered_ids = getattr(preproc_data, 'filtered_ag_ids', None)
+    
+    if filtered_ids is not None and len(filtered_ids) > 0:
+        return list(filtered_ids)
+    
+    # 方法2: 从 RTG shape 推断 + 使用 gt_data_dict 获取实际ID
+    rtgs = None
+    if isinstance(preproc_data, dict):
+        rtgs = preproc_data.get('rtgs')
+    else:
+        rtgs = getattr(preproc_data, 'rtgs', None)
+    
+    if rtgs is not None and gt_data_dict:
+        import torch
+        if isinstance(rtgs, torch.Tensor):
+            rtgs = rtgs.cpu().numpy()
+        
+        # RTG shape: (num_agents, steps, reward_components)
+        if hasattr(rtgs, 'shape') and len(rtgs.shape) >= 1:
+            num_agents_in_rtg = rtgs.shape[0]
+            
+            # 从 gt_data_dict 获取所有车辆ID，取前 num_agents_in_rtg 个
+            # 假设预处理数据按照 ID 顺序排列
+            all_veh_ids = sorted(list(gt_data_dict.keys()))
+            if len(all_veh_ids) >= num_agents_in_rtg:
+                return all_veh_ids[:num_agents_in_rtg]
+    
+    return None
+
+
 def _select_ego_vehicle_id(
     moving_veh_ids: List[int],
     gt_data_dict: Dict,
@@ -301,6 +350,12 @@ def main() -> None:
         help="Scenario directory (overrides config.yaml)",
     )
     parser.add_argument(
+        "--preprocess_dir",
+        type=str,
+        default=None,
+        help="Preprocessed data directory (required to filter vehicles by preprocessed data)",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default=None,
@@ -325,14 +380,20 @@ def main() -> None:
     cfg = create_minimal_config(
         checkpoint_path="",
         scenario_dir=args.scenario_dir,
-        preprocess_dir=None,
+        preprocess_dir=args.preprocess_dir,
     )
-    data_bridge = DataBridge(cfg, preprocess_dir="")
+    data_bridge = DataBridge(cfg, preprocess_dir=args.preprocess_dir or "")
     history_steps = int(getattr(cfg.nocturne, "history_steps", 10))
     max_episode_steps = 90
 
+    # 统计信息
+    total_scenarios = 0
+    scenarios_with_preproc = 0
+    scenarios_filtered = 0
+    
     vehicle_map: Dict[str, Dict] = {}
     for scenario_id in scenario_ids:
+        total_scenarios += 1
         scenario_filename = f"{scenario_id}.json"
         scenario_path = os.path.join(args.scenario_dir, scenario_filename)
         if not os.path.exists(scenario_path):
@@ -350,6 +411,32 @@ def main() -> None:
             scenario = sim.getScenario()
             vehicles = list(scenario.vehicles())
             moving_veh_ids = [v.getID() for v in scenario.getObjectsThatMoved()]
+            
+            # 加载预处理数据并过滤车辆
+            preproc_data = None
+            preproc_veh_ids = None
+            if args.preprocess_dir:
+                try:
+                    preproc_data, file_exists = data_bridge.load_preprocessed_data(scenario_id)
+                    if file_exists and preproc_data is not None:
+                        scenarios_with_preproc += 1
+                        preproc_veh_ids = _get_preproc_vehicle_ids(preproc_data, gt_data_dict)
+                        if preproc_veh_ids is not None and len(preproc_veh_ids) > 0:
+                            # 只保留预处理数据中存在的车辆
+                            original_count = len(moving_veh_ids)
+                            moving_veh_ids = [vid for vid in moving_veh_ids if vid in preproc_veh_ids]
+                            if len(moving_veh_ids) < original_count:
+                                scenarios_filtered += 1
+                                filtered_count = original_count - len(moving_veh_ids)
+                                print(f"  {scenario_id}: Filtered {filtered_count} vehicles (from {original_count} to {len(moving_veh_ids)}), preproc has {len(preproc_veh_ids)} agents")
+                            elif len(moving_veh_ids) == 0:
+                                print(f"  {scenario_id}: Warning - All vehicles filtered out! Preproc has {len(preproc_veh_ids)} agents: {preproc_veh_ids}")
+                        else:
+                            print(f"  {scenario_id}: Warning - Cannot extract vehicle IDs from preprocessed data, using all moving vehicles")
+                except Exception as e:
+                    print(f"  {scenario_id}: Warning - Failed to load preprocessed data: {e}")
+                    import traceback
+                    traceback.print_exc()
 
             ego_id, ego_selection_mode = _select_ego_vehicle_id(
                 moving_veh_ids,
@@ -399,7 +486,18 @@ def main() -> None:
         raise FileNotFoundError("data directory not found for output")
     with open(output_path, "w") as f:
         json.dump(vehicle_map, f, indent=2)
+    
+    print(f"\n{'='*60}")
     print(f"Saved vehicle map to: {output_path}")
+    print(f"\nStatistics:")
+    print(f"  Total scenarios: {total_scenarios}")
+    if args.preprocess_dir:
+        print(f"  Scenarios with preprocessed data: {scenarios_with_preproc}")
+        print(f"  Scenarios with filtered vehicles: {scenarios_filtered}")
+        print(f"  Coverage: {scenarios_with_preproc}/{total_scenarios} = {100*scenarios_with_preproc/total_scenarios:.1f}%")
+    else:
+        print(f"  Note: No preprocess_dir provided, no vehicle filtering applied")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
