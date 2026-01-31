@@ -28,6 +28,7 @@ from datasets.rl_waymo.dataset_ctrl_sim import RLWaymoDatasetCtRLSim
 from utils.sim import get_road_data, get_moving_vehicles, compute_reward
 from utils.data import get_object_type_str
 from nocturne.bicycle_model import BicycleModel
+from .existence import sim_position_exists
 
 
 @dataclass
@@ -228,6 +229,7 @@ class CtrlSimOpponentAdapter:
         self._road_edge_polylines: List = []
         self._goal_dict: Dict = {}
         self._goal_dist_normalizer: Dict = {}
+        self._ego_id: Optional[int] = None
         
         # 从配置中获取时间相关参数
         self.dt = cfg.nocturne.dt
@@ -361,6 +363,7 @@ class CtrlSimOpponentAdapter:
         gt_data_dict: Dict,
         preproc_data: Dict,
         vehicles_to_control: List[int],
+        ego_id: Optional[int] = None,
     ):
         """
         在每个 episode 开始时调用，初始化策略状态
@@ -381,6 +384,7 @@ class CtrlSimOpponentAdapter:
         self._gt_data_dict = gt_data_dict
         self._preproc_data = preproc_data
         self._vehicles_to_control = vehicles_to_control
+        self._ego_id = ego_id
         
         # 提取道路数据（参考: policy_evaluator.py 第 496-497 行）
         road_data = get_road_data(scenario)
@@ -530,12 +534,22 @@ class CtrlSimOpponentAdapter:
             return (0.0, 0.0)
         
         # action is only defined if state at next timestep is defined
-        veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
+        protected = (veh_id == self._ego_id) or (veh_id in self._vehicles_to_control)
+        if protected:
+            if veh is not None:
+                pos = veh.getPosition()
+                veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
+            else:
+                veh_exists = 0
+        else:
+            veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
         # once we encounter the first missing timestep, all future timesteps are also missing
         if t > 0 and self._vehicle_data_dict.get(veh_id, {}).get("existence") and self._vehicle_data_dict[veh_id]["existence"][-1] == 0:
             veh_exists = 0
         
         if not veh_exists:
+            if veh is not None and protected:
+                return (0.0, 0.0)
             if veh is not None:
                 veh.setPosition(-1000000, -1000000)
             return (0.0, 0.0)
@@ -617,8 +631,8 @@ class CtrlSimOpponentAdapter:
             "heading": [],
             "nearest_dist": [],
             "existence": [],
-            "acceleration": [],
-            "steering": [],
+            "acceleration": [0.0],  # 初始化为0，避免 t=0 时访问 [-1] 出错
+            "steering": [0.0],      # 初始化为0，避免 t=0 时访问 [-1] 出错
             "reward": [],
             "dense_reward": [],
             "goal_position": {'x': goal_dict['pos'][0], 'y': goal_dict['pos'][1]},
@@ -686,24 +700,41 @@ class CtrlSimOpponentAdapter:
             vehicle_data_dict[veh_id]["timestep"].append(t)
             
             # 更新存在状态
-            veh_exists = gt_traj_data[t, 4]
+            protected = (veh_id == self._ego_id) or (veh_id in self._vehicles_to_control)
+            if protected:
+                pos = veh.getPosition()
+                veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
+            else:
+                veh_exists = gt_traj_data[t, 4]
             if t > 0 and vehicle_data_dict[veh_id]["existence"][-1] == 0:
                 veh_exists = 0
             vehicle_data_dict[veh_id]["existence"].append(veh_exists)
             
             # 初始化/更新 RTG（参考: policy_evaluator.py 第 121-143 行）
             if t == 0:
-                # 从预处理数据获取初始 RTG
+                # 从预处理数据获取初始 RTG（添加边界检查）
+                unnormalized_rtg = None
                 if self._preproc_data is not None and 'rtgs' in self._preproc_data:
-                    unnormalized_rtg = self._preproc_data['rtgs'][veh_idx, t]
-                    # 选择 goal, veh_veh, veh_edge 三个维度
-                    unnormalized_rtg = np.concatenate([
-                        unnormalized_rtg[:1], 
-                        unnormalized_rtg[3:]
-                    ], axis=-1)
-                else:
-                    # 默认 RTG
-                    unnormalized_rtg = np.array([10, 90, 90])
+                    rtgs_array = self._preproc_data['rtgs']
+                    # 检查索引是否在范围内
+                    if hasattr(rtgs_array, 'shape'):
+                        num_agents_in_rtg = rtgs_array.shape[0]
+                        if veh_idx < num_agents_in_rtg:
+                            try:
+                                unnormalized_rtg = rtgs_array[veh_idx, t]
+                                # 选择 goal, veh_veh, veh_edge 三个维度
+                                unnormalized_rtg = np.concatenate([
+                                    unnormalized_rtg[:1], 
+                                    unnormalized_rtg[3:]
+                                ], axis=-1)
+                            except (IndexError, KeyError) as e:
+                                print(f"Warning: Failed to get RTG for veh_idx={veh_idx}, veh_id={veh_id}: {e}")
+                                unnormalized_rtg = None
+                
+                # 使用默认 RTG（如果获取失败或索引越界）
+                if unnormalized_rtg is None:
+                    unnormalized_rtg = np.array([10.0, 90.0, 90.0], dtype=np.float32)
+                
                 vehicle_data_dict[veh_id]["rtgs"].append(unnormalized_rtg)
             else:
                 # 计算 dense reward 并更新 RTG

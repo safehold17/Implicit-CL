@@ -211,6 +211,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self._ego_goal_dict: Optional[Dict] = None
         self._ego_goal_dist_normalizer: float = 1.0
         self._ego_vehicle_data_dict: Dict = {}  # Track ego's historical data
+        self._goal_points_by_id: Dict[int, np.ndarray] = {}
         
         # Termination condition
         self._collision_occurred: bool = False
@@ -553,6 +554,13 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         # Initialize ego vehicle's goal and reward related states
         self._initialize_ego_goal_state()
+        self._goal_points_by_id = {}
+        if self.ego_vehicle is not None and self._ego_goal_dict is not None:
+            self._goal_points_by_id[self.ego_vehicle.getID()] = self._ego_goal_dict['pos']
+        for veh_id in self.opponent_vehicle_ids:
+            goal_pos = self._get_goal_point_for_vehicle(veh_id)
+            if goal_pos is not None:
+                self._goal_points_by_id[veh_id] = goal_pos
 
         # If in per-vehicle tilting mode, zero out tilts for non-existent opponents
         if self.tilting_mode == 'per_vehicle' and self.current_level is not None:
@@ -602,6 +610,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             self._gt_data_dict,
             self._preproc_data,
             self.opponent_vehicle_ids,
+            ego_id=self.ego_vehicle.getID() if self.ego_vehicle else None,
         )
         
         # Cache road data (for Student observation)
@@ -823,6 +832,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 roads_data=self._road_graph_cache,
                 highlight_vehicle_ids=[self.ego_vehicle.getID()] if self.ego_vehicle else None,
                 opponent_vehicle_ids=self.opponent_vehicle_ids,
+                goal_points_by_id=self._goal_points_by_id,
             )
         
         # 8. Calculate reward and termination conditions
@@ -1227,6 +1237,28 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 'speed': [],
             }
         }
+
+    def _get_goal_point_for_vehicle(self, veh_id: int) -> Optional[np.ndarray]:
+        veh = self._get_vehicle_by_id(veh_id)
+        if veh is None:
+            return None
+        if veh_id not in self._gt_data_dict:
+            return None
+
+        gt_traj_data = np.array(self._gt_data_dict[veh_id]['traj'])
+        goal_pos = np.array([veh.target_position.x, veh.target_position.y])
+
+        existence_mask = gt_traj_data[:, 4]
+        idx_disappear = np.where(existence_mask == 0)[0]
+        if len(idx_disappear) > 0:
+            idx_goal = idx_disappear[0] - 1
+            if idx_goal >= 0 and np.linalg.norm(gt_traj_data[idx_goal, :2] - goal_pos) > 0.0:
+                goal_pos = gt_traj_data[idx_goal, :2]
+
+        if not np.isfinite(goal_pos).all():
+            return None
+
+        return goal_pos
     
     def _get_gt_action(self, veh_id: int, t: int, veh=None) -> Optional[Tuple[float, float]]:
         """
@@ -1251,12 +1283,17 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             return (0.0, 0.0)
         
         # Check if vehicle exists in current and next time step
+        protected = (
+            self.ego_vehicle is not None and veh_id == self.ego_vehicle.getID()
+        ) or (veh_id in self.opponent_vehicle_ids)
         veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
         # Once missing, remain missing (align ctrl-sim evaluator)
         ego_data = self.opponent.get_vehicle_data(veh_id) if self.opponent else None
         if t > 0 and ego_data and ego_data["existence"][-1] == 0:
             veh_exists = 0
         if not veh_exists:
+            if veh is not None and protected:
+                return (0.0, 0.0)
             if veh is not None:
                 veh.setPosition(-1000000, -1000000)
             return (0.0, 0.0)
