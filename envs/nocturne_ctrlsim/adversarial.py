@@ -1576,116 +1576,86 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
     
     def _compute_reward(self) -> float:     
         """
-        Compute student reward
+        Compute student reward using CtrlSim's compute_reward function
         
-        Reward components (see ctrl-sim compute_reward):
-        - Goal achievement reward (shaped_goal_distance)
-        - Speed/heading shaped rewards
-        - Collision penalty
-        - Offroad penalty
+        Uses the exact same reward calculation as CtrlSim opponents to ensure consistency.
+        Returns a scalar reward by summing the shaped reward components and applying 
+        collision penalties.
         
         Returns:
-            Scalar reward value
+            Scalar reward value for PPO training
         """
-        import nocturne
-        
         if self.ego_vehicle is None or self._ego_goal_dict is None:
             return 0.0
         
-        reward = 0.0
         ego_id = self.ego_vehicle.getID()
         
-        # ========== Get current state ==========
-        ego_pos = self.ego_vehicle.getPosition()
-        ego_pos = np.array([ego_pos.x, ego_pos.y])
-        ego_speed = self.ego_vehicle.getSpeed()
-        ego_heading = self.ego_vehicle.getHeading()
+        # Import compute_reward from ctrl-sim (same as opponent)
+        import sys
+        import os
+        _CTRLSIM_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'third_party', 'ctrl-sim')
+        if _CTRLSIM_PATH not in sys.path:
+            sys.path.insert(0, _CTRLSIM_PATH)
+        from utils.sim import compute_reward
         
-        goal_pos = self._ego_goal_dict['pos']
-        goal_speed = self._ego_goal_dict['speed']
-        goal_heading = self._ego_goal_dict['heading']
+        # Use CtrlSim's reward config
+        rew_cfg = {
+            'position_target': True,
+            'position_target_tolerance': 1.0,
+            'speed_target': True,
+            'speed_target_tolerance': 1.0,
+            'heading_target': True,
+            'heading_target_tolerance': 0.3,
+            'shaped_goal_distance': True,
+            'shaped_goal_distance_scaling': 0.2,
+            'reward_scaling': 1.0,
+        }
         
-        # ========== Goal achievement detection ==========
-        dist_to_goal = np.linalg.norm(goal_pos - ego_pos)
-        position_tolerance = 1.0  # meters
-        speed_tolerance = 1.0  # m/s
-        heading_tolerance = 0.3  # rad
+        # Call CtrlSim's compute_reward function
+        # Returns 8-dimensional list: 
+        # [pos_achieved, heading_achieved, speed_achieved, 
+        #  pos_shaped, speed_shaped, heading_shaped, 
+        #  veh_veh_collision, veh_edge_collision]
+        reward_vector = compute_reward(
+            rew_cfg,
+            self.ego_vehicle,
+            self._ego_goal_dict,
+            self._ego_goal_dist_normalizer,
+            self._ego_vehicle_data_dict,
+            collision_fix=True
+        )
         
-        position_achieved = dist_to_goal < position_tolerance
-        speed_achieved = abs(ego_speed - goal_speed) < speed_tolerance
-        heading_achieved = abs(self._angle_diff(ego_heading, goal_heading)) < heading_tolerance
+        # Extract components
+        position_achieved = reward_vector[0]
+        heading_achieved = reward_vector[1]
+        speed_achieved = reward_vector[2]
+        pos_shaped = reward_vector[3]
+        speed_shaped = reward_vector[4]
+        heading_shaped = reward_vector[5]
+        veh_veh_collision = reward_vector[6]
+        veh_edge_collision = reward_vector[7]
         
-        # If goal already achieved, keep achieved state
-        if self._goal_reached:
-            position_achieved = True
-        elif position_achieved and speed_achieved and heading_achieved:
+        # Update goal and collision states
+        if position_achieved and speed_achieved and heading_achieved:
             self._goal_reached = True
         
-        # ========== Shaped Goal Distance Reward ==========
-        # The closer to the goal, the higher the reward 
-        # in ctrlsim: 0.2
-        goal_dist_scaling = 0.2
-        reward_scaling = 1.0
-        
-        if self._ego_goal_dist_normalizer > 0:
-            # Normalize distance reward: [0, 1], the closer, the higher
-            if self._goal_reached:
-                pos_goal_rew = goal_dist_scaling / reward_scaling
-            else:
-                pos_goal_rew = goal_dist_scaling * (1 - dist_to_goal / self._ego_goal_dist_normalizer) / reward_scaling
-                pos_goal_rew = max(0.0, pos_goal_rew)  # non-negative
-        else:
-            pos_goal_rew = 0.0
-        
-        reward += pos_goal_rew
-
-        # ========== Speed & Heading Shaped Rewards ==========
-        speed_goal_rew = 0.0
-        heading_goal_rew = 0.0
-        if self._ego_goal_dist_normalizer > 0:
-            speed_goal_rew = goal_dist_scaling * (1 - abs(ego_speed - goal_speed) / 40.0) / reward_scaling
-            heading_goal_rew = goal_dist_scaling * (1 - abs(self._angle_diff(ego_heading, goal_heading)) / (2 * np.pi)) / reward_scaling
-
-        reward += speed_goal_rew
-        reward += heading_goal_rew
-        
-        # ========== Collision penalty ==========
-        try:
-            veh_veh_collision = self.ego_vehicle.collision_type_veh == nocturne.CollisionType.VEHICLE_VEHICLE
-            veh_edge_collision = self.ego_vehicle.collision_type_edge == nocturne.CollisionType.VEHICLE_ROAD
-        except AttributeError:
-            # If nocturne version does not support, use old API 
-            try:
-                veh_veh_collision = self.ego_vehicle.collision_type == nocturne.CollisionType.VEHICLE_VEHICLE
-                veh_edge_collision = self.ego_vehicle.collision_type == nocturne.CollisionType.VEHICLE_ROAD
-            except:
-                veh_veh_collision = False
-                veh_edge_collision = False
-        
-        collision_penalty = -1.0
         if veh_veh_collision:
-            reward += collision_penalty * self.veh_veh_collision_rew_multiplier
             self._collision_occurred = True
-
+        
         if veh_edge_collision:
-            reward += collision_penalty * self.veh_edge_collision_rew_multiplier
             self._offroad_occurred = True
         
-        # ========== Update vehicle_data_dict (for continuous tracking) ==========
+        # Store reward vector in vehicle_data_dict (for compute_reward's history check)
         if ego_id in self._ego_vehicle_data_dict:
-            self._ego_vehicle_data_dict[ego_id]['reward'].append([
-                float(position_achieved),
-                float(heading_achieved),
-                float(speed_achieved),
-                pos_goal_rew,
-                speed_goal_rew,
-                heading_goal_rew,
-                float(veh_veh_collision),
-                float(veh_edge_collision),
-            ])
+            self._ego_vehicle_data_dict[ego_id]['reward'].append(reward_vector)
         
-        self.episode_reward += reward
-        return reward
+        # Convert to scalar: sum shaped rewards + collision penalties
+        scalar_reward = pos_shaped + speed_shaped + heading_shaped
+        scalar_reward += -veh_veh_collision * self.veh_veh_collision_rew_multiplier
+        scalar_reward += -veh_edge_collision * self.veh_edge_collision_rew_multiplier
+        
+        self.episode_reward += scalar_reward
+        return scalar_reward
     
     def _angle_diff(self, a: float, b: float) -> float:
         """Calculate the difference between two angles (handle wraparound)"""
