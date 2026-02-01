@@ -1585,6 +1585,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         Returns:
             Scalar reward value for PPO training
         """
+        import nocturne
+        
         if self.ego_vehicle is None or self._ego_goal_dict is None:
             return 0.0
         
@@ -1626,19 +1628,37 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         )
         
         # Extract components
-        position_achieved = reward_vector[0]
-        heading_achieved = reward_vector[1]
-        speed_achieved = reward_vector[2]
-        pos_shaped = reward_vector[3]
-        speed_shaped = reward_vector[4]
-        heading_shaped = reward_vector[5]
+        # Note: position_achieved from compute_reward has "persistence" logic - 
+        # once reached, it stays True. We use current state for goal_reached check.
+        pos_shaped = max(0.0, reward_vector[3])  # Non-negative clipping
+        speed_shaped = max(0.0, reward_vector[4])  # Non-negative clipping
+        heading_shaped = max(0.0, reward_vector[5])  # Non-negative clipping
         veh_veh_collision = reward_vector[6]
         veh_edge_collision = reward_vector[7]
         
-        # Update goal and collision states
-        if position_achieved and speed_achieved and heading_achieved:
+        # Check goal achieved using current state (not CtrlSim's persistent logic)
+        # This ensures _goal_reached only triggers when currently at goal
+        ego_pos = self.ego_vehicle.getPosition()
+        ego_pos_arr = np.array([ego_pos.x, ego_pos.y])
+        ego_speed = self.ego_vehicle.getSpeed()
+        ego_heading = self.ego_vehicle.getHeading()
+        
+        goal_pos = self._ego_goal_dict['pos']
+        goal_speed = self._ego_goal_dict['speed']
+        goal_heading = self._ego_goal_dict['heading']
+        
+        dist_to_goal = np.linalg.norm(goal_pos - ego_pos_arr)
+        position_achieved_current = dist_to_goal < 1.0  # position_target_tolerance
+        speed_achieved_current = abs(ego_speed - goal_speed) < 1.0  # speed_target_tolerance
+        heading_achieved_current = abs(self._angle_diff(ego_heading, goal_heading)) < 0.3  # heading_target_tolerance
+        
+        # Update goal state: once reached, stay reached (same as before)
+        if self._goal_reached:
+            pass  # Keep achieved state
+        elif position_achieved_current and speed_achieved_current and heading_achieved_current:
             self._goal_reached = True
         
+        # Update collision states
         if veh_veh_collision:
             self._collision_occurred = True
         
