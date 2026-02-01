@@ -1630,9 +1630,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # Extract components
         # Note: position_achieved from compute_reward has "persistence" logic - 
         # once reached, it stays True. We use current state for goal_reached check.
-        pos_shaped = max(0.0, reward_vector[3])  # Non-negative clipping
-        speed_shaped = max(0.0, reward_vector[4])  # Non-negative clipping
-        heading_shaped = max(0.0, reward_vector[5])  # Non-negative clipping
+        pos_shaped = reward_vector[3]
+        speed_shaped = reward_vector[4]
+        heading_shaped = reward_vector[5]
         veh_veh_collision = reward_vector[6]
         veh_edge_collision = reward_vector[7]
         
