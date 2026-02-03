@@ -22,6 +22,9 @@ class VehicleSelectionMixin:
         
         Returns:
             List of vehicle IDs that have RTG data, or None if cannot determine
+
+        过滤掉：   existence 在第 0 帧就是 0（第一帧就不存在）的车辆
+        这类车“只有一个时间步/没有有效轨迹”，无法用逆自行车模型定义动作，所以被认为没有有效时间步
         """
         if not hasattr(self, '_preproc_data') or self._preproc_data is None:
             return None

@@ -1708,6 +1708,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
     
     def _get_info(self) -> Dict[str, Any]:
         """Return additional information"""
+        done = self._check_done()
+
         # Calculate progress (distance to goal)
         progress = 0.0
         if self.ego_vehicle is not None and self._ego_goal_dict is not None:
@@ -1718,6 +1720,17 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             if self._ego_goal_dist_normalizer > 0:
                 progress = 1.0 - dist_to_goal / self._ego_goal_dist_normalizer
                 progress = max(0.0, min(1.0, progress))
+
+        if done:
+            # Cache completed episode statistics for get_complexity_info()
+            self._last_completed_episode_info = {
+                'collision_occurred': 1.0 if self._episode_collision_occurred else 0.0,
+                'goal_reached_occurred': 1.0 if self._episode_goal_reached else 0.0,
+                'offroad_occurred': 1.0 if self._episode_offroad_occurred else 0.0,
+                'avg_progress': self._episode_progress,
+                'episode_steps': self._episode_steps,
+                'episode_reward': self.episode_reward,
+            }
         
         info = {
             'step': self.current_step,
@@ -1733,17 +1746,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         info.update(self.get_complexity_info())
         
         # Add episode summary when episode ends
-        if self._check_done():
-            # Cache completed episode statistics for get_complexity_info()
-            self._last_completed_episode_info = {
-                'collision_occurred': 1.0 if self._episode_collision_occurred else 0.0,
-                'goal_reached_occurred': 1.0 if self._episode_goal_reached else 0.0,
-                'offroad_occurred': 1.0 if self._episode_offroad_occurred else 0.0,
-                'avg_progress': self._episode_progress,
-                'episode_steps': self._episode_steps,
-                'episode_reward': self.episode_reward,
-            }
-            
+        if done:
             info['episode'] = {
                 'r': self.episode_reward,
                 'l': self.current_step,
