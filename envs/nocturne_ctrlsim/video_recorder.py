@@ -86,6 +86,8 @@ class NocturneVideoRecorder:
         highlight_vehicle_ids: Optional[List[int]] = None,
         opponent_vehicle_ids: Optional[List[int]] = None,
         goal_points_by_id: Optional[Dict[int, np.ndarray]] = None,
+        scenario_id: Optional[str] = None,
+        show_vehicle_ids: bool = False,
     ):
         """
         捕获当前帧
@@ -131,6 +133,8 @@ class NocturneVideoRecorder:
             highlight_vehicle_ids,
             opponent_vehicle_ids,
             goal_points_by_id,
+            scenario_id,
+            show_vehicle_ids,
         )
         self.frame_count += 1
     
@@ -141,6 +145,8 @@ class NocturneVideoRecorder:
         highlight_vehicle_ids: Optional[List[int]],
         opponent_vehicle_ids: Optional[List[int]],
         goal_points_by_id: Optional[Dict[int, np.ndarray]],
+        scenario_id: Optional[str],
+        show_vehicle_ids: bool,
     ):
         """绘制并保存单帧"""
         plt.figure(figsize=(10, 10))
@@ -182,6 +188,17 @@ class NocturneVideoRecorder:
             )
             is_opponent = (not is_highlight) and (veh['id'] in opponent_ids)
             self._draw_vehicle(veh, is_highlight, is_opponent)
+            if show_vehicle_ids and (is_highlight or is_opponent):
+                plt.gca().text(
+                    veh['x'],
+                    veh['y'],
+                    f"{veh['id']}",
+                    fontsize=5,
+                    color='black',
+                    ha='center',
+                    va='center',
+                    zorder=7,
+                )
 
         if goal_points_by_id:
             for veh_id, goal_pos in goal_points_by_id.items():
@@ -205,11 +222,27 @@ class NocturneVideoRecorder:
             left=False, right=False, labelleft=False,
             labelbottom=False, bottom=False
         )
+
+        if scenario_id is not None:
+            ax = plt.gca()
+            ax.text(
+                0.01,
+                0.99,
+                f"scenario: {scenario_id}",
+                transform=ax.transAxes,
+                ha='left',
+                va='top',
+                fontsize=8,
+                color='black',
+                zorder=8,
+            )
+        
+        # 调整边距以确保内容显示完整，但保持固定尺寸
+        plt.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
         
         # 保存图片
-        plt.tight_layout()
         frame_path = os.path.join(self.frames_dir, f'frame_{self.frame_count:04d}.png')
-        plt.savefig(frame_path, dpi=self.dpi, bbox_inches='tight')
+        plt.savefig(frame_path, dpi=self.dpi)
         plt.close()
     
     def _draw_roads(self, roads_data: List):
@@ -403,6 +436,7 @@ def create_video_from_episode(
     fps: int = 10,
     dpi: int = 100,
     delete_images: bool = True,
+    scenario_id: Optional[str] = None,
 ) -> str:
     """
     从完整 episode 数据创建视频（事后生成）
@@ -415,6 +449,7 @@ def create_video_from_episode(
         fps: 帧率
         dpi: 分辨率
         delete_images: 是否删除中间图片
+        scenario_id: 场景 ID（用于帧标注）
     
     Returns:
         视频文件路径
@@ -434,6 +469,7 @@ def create_video_from_episode(
             roads_data,
             highlight_ids,
             opponent_ids,
+            scenario_id=scenario_id,
         )
     
     video_path = recorder.save_video(video_name)

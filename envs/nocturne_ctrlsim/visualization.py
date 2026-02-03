@@ -280,7 +280,14 @@ class VisualizationMixin:
         return image
 
     # TODO: test recording function, fps / dpi no need to be set
-    def start_recording(self, output_dir: str, video_name: str, fps: int = 10, dpi: int = 100):
+    def start_recording(
+        self,
+        output_dir: str,
+        video_name: str,
+        fps: int = 10,
+        dpi: int = 100,
+        show_vehicle_ids: bool = False,
+    ):
         """    
         Args:
             output_dir: Output directory
@@ -298,6 +305,7 @@ class VisualizationMixin:
         
         self.video_recorder.start_recording(video_name)
         self.recording_video = True
+        self.recording_show_vehicle_ids = show_vehicle_ids
         
         # Capture first frame (initial state)
         if self.scenario is not None and self.vehicles:
@@ -308,6 +316,8 @@ class VisualizationMixin:
                 highlight_vehicle_ids=[self.ego_vehicle.getID()] if self.ego_vehicle else None,
                 opponent_vehicle_ids=self.opponent_vehicle_ids,
                 goal_points_by_id=getattr(self, "_goal_points_by_id", None),
+                scenario_id=getattr(self.current_level, "scenario_id", None) if self.current_level else None,
+                show_vehicle_ids=show_vehicle_ids,
             )
     
     def stop_recording(self, video_name: Optional[str] = None) -> Optional[str]:

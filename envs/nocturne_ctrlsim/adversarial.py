@@ -842,6 +842,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 highlight_vehicle_ids=[self.ego_vehicle.getID()] if self.ego_vehicle else None,
                 opponent_vehicle_ids=self.opponent_vehicle_ids,
                 goal_points_by_id=self._goal_points_by_id,
+                scenario_id=getattr(self.current_level, "scenario_id", None) if self.current_level else None,
+                show_vehicle_ids=getattr(self, "recording_show_vehicle_ids", False),
             )
         
         # 8. Calculate reward and termination conditions

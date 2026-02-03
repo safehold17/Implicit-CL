@@ -40,6 +40,7 @@ class CtrlSimEgoWrapper:
         opponent_tilting_mode: str,
         show_level_log: bool,
         record_video: bool,
+        show_vehicle_ids: bool,
         output_dir: str,
         xpid: str,
         device: str = "cuda",
@@ -71,6 +72,7 @@ class CtrlSimEgoWrapper:
         self.checkpoint_path = opponent_checkpoint
         self.show_level_log = show_level_log
         self.record_video = record_video
+        self.show_vehicle_ids = show_vehicle_ids
         self.output_dir = output_dir
         self.xpid = xpid
         self.episode_idx = 0
@@ -130,7 +132,11 @@ class CtrlSimEgoWrapper:
             return
         out_dir = os.path.join(self.output_dir, self.xpid)
         os.makedirs(out_dir, exist_ok=True)
-        self.env.start_recording(out_dir, str(self.episode_idx))
+        self.env.start_recording(
+            out_dir,
+            str(self.episode_idx),
+            show_vehicle_ids=self.show_vehicle_ids,
+        )
 
     def _stop_recording(self):
         if not self.record_video:
@@ -474,6 +480,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--show_level_log", action="store_true")
     parser.add_argument("--record_video", action="store_true")
+    parser.add_argument("--show_vehicle_ids", action="store_true")
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--xpid", type=str, required=True)
     return parser.parse_args()
@@ -678,6 +685,7 @@ def main() -> None:
         opponent_tilting_mode=args.opponent_tilting_mode,
         show_level_log=args.show_level_log,
         record_video=args.record_video,
+        show_vehicle_ids=args.show_vehicle_ids,
         output_dir=args.output_dir,
         xpid=args.xpid,
         video_dir=video_dir,
