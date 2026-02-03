@@ -823,7 +823,15 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         )
         
         # 6. Step simulation
+        if hasattr(self.opponent, "cache_last_valid_positions"):
+            self.opponent.cache_last_valid_positions(self.vehicles)
         self.sim.step(self.dt)
+        if hasattr(self.opponent, "post_step_fix_opponent_positions"):
+            self.opponent.post_step_fix_opponent_positions(
+                self.vehicles,
+                self._goal_points_by_id,
+                self.current_step,
+            )
         
         # 7. If recording is enabled, capture current frame
         if self.recording_video and self.video_recorder is not None:

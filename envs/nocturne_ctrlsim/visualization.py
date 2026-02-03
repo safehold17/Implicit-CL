@@ -31,17 +31,23 @@ class VisualizationMixin:
         positions = []
         for veh in self.vehicles:
             pos = veh.getPosition()
-            if pos.x == -10000 and pos.y == -10000:
+            x = pos.x
+            y = pos.y
+            if not math.isfinite(x) or not math.isfinite(y):
+                continue
+            if abs(x) > 1e5 or abs(y) > 1e5:
+                continue
+            if x == -10000 and y == -10000:
                 continue
             vehicle_data.append({
                 'id': veh.getID(),
-                'x': pos.x,
-                'y': pos.y,
+                'x': x,
+                'y': y,
                 'heading': veh.getHeading(),
                 'length': veh.getLength(),
                 'width': veh.getWidth(),
             })
-            positions.append([pos.x, pos.y])
+            positions.append([x, y])
 
         if not vehicle_data:
             return None

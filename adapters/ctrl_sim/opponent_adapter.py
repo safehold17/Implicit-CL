@@ -31,6 +31,27 @@ from nocturne.bicycle_model import BicycleModel
 from .existence import sim_position_exists
 
 
+def _compute_goal_hold_until(
+    prev_hold_until: Optional[int],
+    current_step: int,
+    reached_goal: bool,
+    hold_steps: int,
+) -> Optional[int]:
+    if prev_hold_until is None and reached_goal:
+        return current_step + hold_steps
+    return prev_hold_until
+
+
+def _should_drop_after_goal(current_step: int, hold_until: Optional[int]) -> bool:
+    return hold_until is not None and current_step >= hold_until
+
+
+def _keep_exists_on_invalid(sim_exists: bool, prev_exists: bool) -> bool:
+    if sim_exists:
+        return True
+    return bool(prev_exists)
+
+
 @dataclass
 class TiltConfig:
     """
@@ -230,6 +251,11 @@ class CtrlSimOpponentAdapter:
         self._goal_dict: Dict = {}
         self._goal_dist_normalizer: Dict = {}
         self._ego_id: Optional[int] = None
+        self._opponent_vehicle_exits: Dict[int, bool] = {}
+        self._opponent_last_valid_pos: Dict[int, Tuple[float, float]] = {}
+        self._opponent_goal_hold_until: Dict[int, Optional[int]] = {}
+        self._goal_pos_tolerance: float = 1.0
+        self._goal_hold_steps: int = 5
         
         # 从配置中获取时间相关参数
         self.dt = cfg.nocturne.dt
@@ -394,6 +420,9 @@ class CtrlSimOpponentAdapter:
         self._vehicle_data_dict = {}
         self._goal_dict = {}
         self._goal_dist_normalizer = {}
+        self._opponent_vehicle_exits = {}
+        self._opponent_last_valid_pos = {}
+        self._opponent_goal_hold_until = {}
         
         # 创建车辆索引映射
         self._veh_id_to_idx = {}
@@ -408,9 +437,94 @@ class CtrlSimOpponentAdapter:
             self._goal_dist_normalizer[veh_id] = self._compute_goal_dist_normalizer(
                 veh, self._goal_dict[veh_id]['pos']
             )
+            if veh_id in vehicles_to_control:
+                pos = veh.getPosition()
+                sim_exists = sim_position_exists(pos.x, pos.y)
+                self._opponent_vehicle_exits[veh_id] = bool(sim_exists)
+                if sim_exists:
+                    self._opponent_last_valid_pos[veh_id] = (
+                        float(pos.x),
+                        float(pos.y),
+                    )
+                self._opponent_goal_hold_until[veh_id] = None
         
         # 重置策略内部状态（参考: policy.py 第 45-58 行）
         self._policy.reset(self._vehicle_data_dict)
+
+    def cache_last_valid_positions(self, vehicles: List):
+        for veh in vehicles:
+            veh_id = veh.getID()
+            if veh_id not in self._vehicles_to_control:
+                continue
+            pos = veh.getPosition()
+            if sim_position_exists(pos.x, pos.y):
+                self._opponent_last_valid_pos[veh_id] = (
+                    float(pos.x),
+                    float(pos.y),
+                )
+
+    def post_step_fix_opponent_positions(
+        self,
+        vehicles: List,
+        goal_points_by_id: Optional[Dict[int, np.ndarray]],
+        current_step: int,
+    ):
+        if goal_points_by_id is None:
+            goal_points_by_id = {}
+        for veh in vehicles:
+            veh_id = veh.getID()
+            if veh_id not in self._vehicles_to_control:
+                continue
+            pos = veh.getPosition()
+            sim_exists = sim_position_exists(pos.x, pos.y)
+            prev_exists = self._opponent_vehicle_exits.get(veh_id, bool(sim_exists))
+
+            if sim_exists:
+                self._opponent_last_valid_pos[veh_id] = (
+                    float(pos.x),
+                    float(pos.y),
+                )
+            elif prev_exists and veh_id in self._opponent_last_valid_pos:
+                last_x, last_y = self._opponent_last_valid_pos[veh_id]
+                try:
+                    veh.setPosition(last_x, last_y)
+                    pos = veh.getPosition()
+                    sim_exists = True
+                except Exception:
+                    pass
+
+            goal_pos = goal_points_by_id.get(veh_id)
+            reached_goal = False
+            if goal_pos is not None and sim_exists:
+                try:
+                    goal_arr = np.asarray(goal_pos, dtype=np.float32)
+                    dist = np.linalg.norm(
+                        goal_arr[:2] - np.array([pos.x, pos.y], dtype=np.float32)
+                    )
+                    reached_goal = dist < self._goal_pos_tolerance
+                except Exception:
+                    reached_goal = False
+
+            hold_until = self._opponent_goal_hold_until.get(veh_id)
+            hold_until = _compute_goal_hold_until(
+                hold_until,
+                current_step=current_step,
+                reached_goal=reached_goal,
+                hold_steps=self._goal_hold_steps,
+            )
+            self._opponent_goal_hold_until[veh_id] = hold_until
+
+            if _should_drop_after_goal(current_step, hold_until):
+                self._opponent_vehicle_exits[veh_id] = False
+                try:
+                    veh.setPosition(-1000000.0, -1000000.0)
+                except Exception:
+                    pass
+                continue
+
+            self._opponent_vehicle_exits[veh_id] = _keep_exists_on_invalid(
+                sim_exists, prev_exists
+            )
     
     def step(self, t: int, vehicles: List) -> Dict[int, Tuple[float, float]]:
         """
@@ -702,11 +816,26 @@ class CtrlSimOpponentAdapter:
             # 更新存在状态
             protected = (veh_id == self._ego_id) or (veh_id in self._vehicles_to_control)
             if protected:
-                pos = veh.getPosition()
-                veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
+                if veh_id in self._vehicles_to_control:
+                    pos = veh.getPosition()
+                    sim_exists = sim_position_exists(pos.x, pos.y)
+                    prev_exists = self._opponent_vehicle_exits.get(veh_id, bool(sim_exists))
+                    hold_until = self._opponent_goal_hold_until.get(veh_id)
+                    exists = _keep_exists_on_invalid(sim_exists, prev_exists)
+                    if _should_drop_after_goal(t, hold_until):
+                        exists = False
+                    self._opponent_vehicle_exits[veh_id] = bool(exists)
+                    veh_exists = 1 if exists else 0
+                else:
+                    pos = veh.getPosition()
+                    veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
             else:
                 veh_exists = gt_traj_data[t, 4]
-            if t > 0 and vehicle_data_dict[veh_id]["existence"][-1] == 0:
+            if (
+                t > 0
+                and veh_id not in self._vehicles_to_control
+                and vehicle_data_dict[veh_id]["existence"][-1] == 0
+            ):
                 veh_exists = 0
             vehicle_data_dict[veh_id]["existence"].append(veh_exists)
             
