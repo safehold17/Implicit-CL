@@ -463,6 +463,21 @@ class CtrlSimOpponentAdapter:
                     float(pos.y),
                 )
 
+    def get_opponent_vehicle_exists(self, veh_id: int) -> Optional[bool]:
+        """
+        获取对手车辆的存在标记。
+
+        仅对对手车辆返回有效值；非对手车辆返回 None。
+        """
+        if veh_id not in self._vehicles_to_control:
+            return None
+        if veh_id in self._opponent_vehicle_exits:
+            return bool(self._opponent_vehicle_exits[veh_id])
+        exists_hist = self._vehicle_data_dict.get(veh_id, {}).get("existence")
+        if exists_hist:
+            return bool(exists_hist[-1])
+        return None
+
     def post_step_fix_opponent_positions(
         self,
         vehicles: List,
@@ -650,11 +665,15 @@ class CtrlSimOpponentAdapter:
         # action is only defined if state at next timestep is defined
         protected = (veh_id == self._ego_id) or (veh_id in self._vehicles_to_control)
         if protected:
-            if veh is not None:
-                pos = veh.getPosition()
-                veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
+            if veh_id in self._vehicles_to_control:
+                exists = self.get_opponent_vehicle_exists(veh_id)
+                veh_exists = 1 if exists else 0
             else:
-                veh_exists = 0
+                if veh is not None:
+                    pos = veh.getPosition()
+                    veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
+                else:
+                    veh_exists = 0
         else:
             veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
         # once we encounter the first missing timestep, all future timesteps are also missing
@@ -665,7 +684,9 @@ class CtrlSimOpponentAdapter:
             if veh is not None and protected:
                 return (0.0, 0.0)
             if veh is not None:
-                veh.setPosition(-1000000, -1000000)
+                # For opponents, keep position even if GT action is missing.
+                if veh_id not in self._vehicles_to_control:
+                    veh.setPosition(-1000000, -1000000)
             return (0.0, 0.0)
         
         if veh is None:
@@ -822,7 +843,8 @@ class CtrlSimOpponentAdapter:
                     prev_exists = self._opponent_vehicle_exits.get(veh_id, bool(sim_exists))
                     hold_until = self._opponent_goal_hold_until.get(veh_id)
                     exists = _keep_exists_on_invalid(sim_exists, prev_exists)
-                    if _should_drop_after_goal(t, hold_until):
+                    drop_after_goal = _should_drop_after_goal(t, hold_until)
+                    if drop_after_goal:
                         exists = False
                     self._opponent_vehicle_exits[veh_id] = bool(exists)
                     veh_exists = 1 if exists else 0

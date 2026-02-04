@@ -832,6 +832,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 self._goal_points_by_id,
                 self.current_step,
             )
+        # Debug logging removed after investigation
         
         # 7. If recording is enabled, capture current frame
         if self.recording_video and self.video_recorder is not None:
@@ -1297,7 +1298,11 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         protected = (
             self.ego_vehicle is not None and veh_id == self.ego_vehicle.getID()
         ) or (veh_id in self.opponent_vehicle_ids)
-        veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
+        if veh_id in self.opponent_vehicle_ids and self.opponent is not None:
+            exists = self.opponent.get_opponent_vehicle_exists(veh_id)
+            veh_exists = 1 if exists else 0
+        else:
+            veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
         # Once missing, remain missing (align ctrl-sim evaluator)
         ego_data = self.opponent.get_vehicle_data(veh_id) if self.opponent else None
         if t > 0 and ego_data and ego_data["existence"][-1] == 0:
@@ -1306,7 +1311,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             if veh is not None and protected:
                 return (0.0, 0.0)
             if veh is not None:
-                veh.setPosition(-1000000, -1000000)
+                if veh_id not in self.opponent_vehicle_ids:
+                    veh.setPosition(-1000000, -1000000)
             return (0.0, 0.0)
         
         if veh is None:
