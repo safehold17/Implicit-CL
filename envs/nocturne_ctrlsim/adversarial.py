@@ -1294,9 +1294,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             return (0.0, 0.0)
         
         # Check if vehicle exists in current and next time step
-        protected = (
-            self.ego_vehicle is not None and veh_id == self.ego_vehicle.getID()
-        ) or (veh_id in self.opponent_vehicle_ids)
         if veh_id in self.opponent_vehicle_ids and self.opponent is not None:
             exists = self.opponent.get_opponent_vehicle_exists(veh_id)
             veh_exists = 1 if exists else 0
@@ -1306,15 +1303,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         ego_data = self.opponent.get_vehicle_data(veh_id) if self.opponent else None
         if t > 0 and ego_data and ego_data["existence"][-1] == 0:
             veh_exists = 0
-        if not veh_exists:
-            if veh is not None and protected:
-                return (0.0, 0.0)
-            if veh is not None:
-                if veh_id not in self.opponent_vehicle_ids:
-                    veh.setPosition(-1000000, -1000000)
-            return (0.0, 0.0)
-        
-        if veh is None:
+
+        if not veh_exists or veh is None:
             return (0.0, 0.0)
         
         bike_model = BicycleModel(
