@@ -103,23 +103,31 @@ class VisualizationMixin:
         show_vehicle_ids = getattr(self, 'show_vehicle_ids', True)
         show_ego_vehicle_selection = getattr(self, 'show_ego_vehicle_selection', True)
         tilt_by_vehicle_id = {}
-        if show_tilting_params and self.current_level is not None and opponent_ids:
-            if self.tilting_mode == 'global':
-                tilt_tuple = (
+        if show_tilting_params and self.current_level is not None:
+            if self.tilting_mode == 'ego' and self.ego_vehicle is not None:
+                ego_id = self.ego_vehicle.getID()
+                tilt_by_vehicle_id[ego_id] = (
                     self.current_level.goal_tilt,
                     self.current_level.veh_veh_tilt,
                     self.current_level.veh_edge_tilt,
                 )
-                for veh_id in opponent_ids:
-                    tilt_by_vehicle_id[veh_id] = tilt_tuple
-            else:
-                per = self.current_level.per_vehicle_tilting
-                if per:
-                    sorted_opponent_ids = sorted(self.opponent_vehicle_ids)
-                    for i, veh_id in enumerate(sorted_opponent_ids):
-                        base = 3 * i
-                        if base + 2 < len(per):
-                            tilt_by_vehicle_id[veh_id] = (per[base], per[base + 1], per[base + 2])
+            elif opponent_ids:
+                if self.tilting_mode == 'global':
+                    tilt_tuple = (
+                        self.current_level.goal_tilt,
+                        self.current_level.veh_veh_tilt,
+                        self.current_level.veh_edge_tilt,
+                    )
+                    for veh_id in opponent_ids:
+                        tilt_by_vehicle_id[veh_id] = tilt_tuple
+                elif self.tilting_mode == 'per_vehicle':
+                    per = self.current_level.per_vehicle_tilting
+                    if per:
+                        sorted_opponent_ids = sorted(self.opponent_vehicle_ids)
+                        for i, veh_id in enumerate(sorted_opponent_ids):
+                            base = 3 * i
+                            if base + 2 < len(per):
+                                tilt_by_vehicle_id[veh_id] = (per[base], per[base + 1], per[base + 2])
 
         vehicle_patches = {}
         tilt_text_specs = []
@@ -175,7 +183,7 @@ class VisualizationMixin:
                 [veh['x'], line_end_x], [veh['y'], line_end_y],
                 color='black', zorder=6, alpha=0.25, linewidth=heading_lw
             )
-            if show_tilting_params and is_opponent and veh['id'] in tilt_by_vehicle_id:
+            if show_tilting_params and veh['id'] in tilt_by_vehicle_id:
                 tilt_vals = tilt_by_vehicle_id[veh['id']]
                 is_horizontal = abs(math.cos(veh['heading'])) >= abs(math.sin(veh['heading']))
                 if is_horizontal:

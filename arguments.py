@@ -592,8 +592,14 @@ parser.add_argument(
     '--tilting_mode',
     type=str,
     default='per_vehicle',
-    choices=['global', 'per_vehicle', 'student'], # TODO: student mode not implemented yet
-    help='Tilting mode: global (all opponents share same tilts) or per_vehicle (each opponent has independent tilts)')
+    choices=['global', 'per_vehicle', 'ego', 'none'],
+    help=(
+        'Tilting mode: '
+        'global (all opponents share same tilts), '
+        'per_vehicle (each opponent has independent tilts), '
+        'ego (tilts stored for ego only; opponents use 0), '
+        'none (all tilts are 0, scenario-only adversary).'
+    ))
 parser.add_argument(
     '--scenario_index_path',
     type=str,
@@ -638,8 +644,8 @@ parser.add_argument(
 parser.add_argument(
     '--show_vehicle_ids',
     type=str2bool, nargs='?', const=True, default=True,
-    help='Show vehicle id text for ego/opponent vehicles in Nocturne render.')
+    help='Show vehicle id text for ego/opponent vehicles in level image.')
 parser.add_argument(
     '--show_ego_vehicle_selection',
     type=str2bool, nargs='?', const=True, default=True,
-    help='Show ego vehicle selection mode text in Nocturne render.')
+    help='Show ego vehicle selection mode text in level image.')

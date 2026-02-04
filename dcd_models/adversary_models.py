@@ -24,9 +24,12 @@ class NocturneAdversaryPolicy(DeviceAwareModule):
     """
     Nocturne Teacher 策略（关卡生成者）
     
-    Teacher 通过 4 步生成关卡：
-    - Step 0: 选择 scenario_id（连续动作 [-1, 1] 映射到索引）
-    - Step 1-3: 设置 goal_tilt, veh_veh_tilt, veh_edge_tilt（连续动作 [-1, 1]）
+    Teacher 通过多步生成关卡：
+    - global/ego: 4 步
+      - Step 0: 选择 scenario_id（连续动作 [-1, 1] 映射到索引）
+      - Step 1-3: 设置 goal_tilt, veh_veh_tilt, veh_edge_tilt（连续动作 [-1, 1]）
+    - per_vehicle: 1 + 3 * opponent_k 步
+    - none: 1 步（只选场景，tilt 固定为 0）
     
     观测空间：Dict{'image': level_params, 'time_step': step, 'random_z': z}
     动作空间：Box(1,) 连续动作 [-1, 1]

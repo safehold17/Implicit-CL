@@ -61,11 +61,14 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
        - call reset_random() to randomly generate level
        - or call reset_to_level() to load specified level
     
-    Adversary action space (4 steps building):
-    - Step 0: select scenario_id (discrete: map to scenario pool index)
-    - Step 1: set goal_tilt (continuous: [-1, 1] -> [-25, 25])
-    - Step 2: set veh_veh_tilt (continuous: [-1, 1] -> [-25, 25])
-    - Step 3: set veh_edge_tilt (continuous: [-1, 1] -> [-25, 25])
+    Adversary action space (building steps):
+    - global/ego: 4 steps
+      - Step 0: select scenario_id (discrete: map to scenario pool index)
+      - Step 1: set goal_tilt (continuous: [-1, 1] -> [-25, 25])
+      - Step 2: set veh_veh_tilt (continuous: [-1, 1] -> [-25, 25])
+      - Step 3: set veh_edge_tilt (continuous: [-1, 1] -> [-25, 25])
+    - per_vehicle: 1 + 3 * opponent_k steps
+    - none: 1 step (scenario only, all tilts fixed to 0)
     """
     
     def __init__(
@@ -182,8 +185,11 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self.dt = cfg.nocturne.dt
         
         # ========== Tilting config ==========
-        if tilting_mode not in ['global', 'per_vehicle']:
-            raise ValueError(f"tilting_mode must be 'global' or 'per_vehicle', got {tilting_mode}")
+        if tilting_mode not in ['global', 'per_vehicle', 'ego', 'none']:
+            raise ValueError(
+                "tilting_mode must be 'global', 'per_vehicle', 'ego', or 'none', "
+                f"got {tilting_mode}"
+            )
         self.tilting_mode = tilting_mode
         self.show_tilting_params = show_tilting_params
         self.show_vehicle_ids = show_vehicle_ids
@@ -233,6 +239,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt, per_vehicle_tilts...]
         if self.tilting_mode == 'per_vehicle':
             self.level_params_vec = list(DEFAULT_LEVEL_PARAMS) + [0] * PER_VEHICLE_TILTING_LENGTH
+        elif self.tilting_mode == 'none':
+            self.level_params_vec = [0]
         else:
             self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
         
@@ -268,9 +276,11 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         )
         
         # ========== Adversary space definition ==========
-        # Adversary building steps: scenario_id + tilt parameters
+        # Adversary building steps: scenario_id + tilt parameters (or scenario only in 'none' mode)
         if self.tilting_mode == 'per_vehicle':
             self.adversary_max_steps = 1 + PER_VEHICLE_TILTING_LENGTH
+        elif self.tilting_mode == 'none':
+            self.adversary_max_steps = 1
         else:
             self.adversary_max_steps = 4
         self.random_z_dim = random_z_dim
@@ -354,6 +364,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # Reset level parameters to default values
         if self.tilting_mode == 'per_vehicle':
             self.level_params_vec = list(DEFAULT_LEVEL_PARAMS) + [0] * PER_VEHICLE_TILTING_LENGTH
+        elif self.tilting_mode == 'none':
+            self.level_params_vec = [0]
         else:
             self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
         
@@ -379,7 +391,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         - Step 0: action -> scenario_index (discretized to scenario pool size)
         - Step 1..: action -> tilt parameters ([-1,1] -> tilt_range)
 
-        always start with choosing a scenario, then choosing tilting parameters
+        Always start with choosing a scenario, then choosing tilting parameters.
+        In tilting_mode == 'none', there are no tilt steps.
         
         Args:
             action: continuous action [-1, 1]
@@ -409,7 +422,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             tilt_scale = (self.tilt_range[1] - self.tilt_range[0]) / 2.0
             tilt_value = action * tilt_scale
             tilt_value = np.clip(tilt_value, self.tilt_range[0], self.tilt_range[1])
-            if self.tilting_mode == 'per_vehicle':
+            if self.tilting_mode == 'none':
+                pass
+            elif self.tilting_mode == 'per_vehicle':
                 # step 0 is for choosing scenario id
                 # start with step 1
                 per_idx = self.adversary_step_count - 1
@@ -466,6 +481,15 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 veh_veh_tilt=0,
                 veh_edge_tilt=0,
                 per_vehicle_tilting=per_vehicle_tilting,
+            )
+        elif self.tilting_mode == 'none':
+            self.current_level = ScenarioLevel(
+                scenario_id=scenario_id,
+                seed=self.level_seed,
+                goal_tilt=0,
+                veh_veh_tilt=0,
+                veh_edge_tilt=0,
+                per_vehicle_tilting=(),
             )
         else:
             self.current_level = ScenarioLevel(
@@ -586,7 +610,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 level.veh_veh_tilt, 
                 level.veh_edge_tilt
             )
-        else:  # per_vehicle mode
+        elif self.tilting_mode == 'per_vehicle':
             # Per-vehicle mode: each opponent has independent tilts
             # Sort opponent_vehicle_ids by veh_id (integer, numerical order)
             sorted_opponent_ids = sorted(self.opponent_vehicle_ids)
@@ -604,6 +628,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             
             # Set per-vehicle tilts via adapter
             self.opponent.set_per_vehicle_tilting(per_vehicle_mapping)
+        else:
+            # Ego/none mode: opponents always use zero tilts
+            self.opponent.set_tilting(0, 0, 0)
         
         self.opponent.reset(
             self.scenario,
@@ -677,6 +704,19 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 0,
                 0,
                 *level.per_vehicle_tilting,
+            ]
+        elif self.tilting_mode == 'none':
+            self.current_level = ScenarioLevel(
+                scenario_id=level.scenario_id,
+                seed=level.seed,
+                goal_tilt=0,
+                veh_veh_tilt=0,
+                veh_edge_tilt=0,
+                per_vehicle_tilting=(),
+            )
+            level = self.current_level
+            self.level_params_vec = [
+                scenario_idx,
             ]
         else:
             self.level_params_vec = [
@@ -1005,11 +1045,11 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 'episode_reward': self.episode_reward,
             })
 
-        if self.tilting_mode == 'global':
+        if self.tilting_mode in ('global', 'ego', 'none'):
             info.update({
-                'goal_tilt': self.current_level.goal_tilt,
-                'veh_veh_tilt': self.current_level.veh_veh_tilt,
-                'veh_edge_tilt': self.current_level.veh_edge_tilt,
+                'goal_tilt': 0 if self.tilting_mode == 'none' else self.current_level.goal_tilt,
+                'veh_veh_tilt': 0 if self.tilting_mode == 'none' else self.current_level.veh_veh_tilt,
+                'veh_edge_tilt': 0 if self.tilting_mode == 'none' else self.current_level.veh_edge_tilt,
             })
         else:
             per = self.current_level.per_vehicle_tilting
@@ -1095,7 +1135,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         """Randomly generate level"""
         from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
         
-        if self.tilting_mode == 'global':
+        if self.tilting_mode in ('global', 'ego'):
             # Global mode: sample 3 global tilts, per-vehicle tilting to 0
             per_vehicle_tilting = tuple([0] * PER_VEHICLE_TILTING_LENGTH)
             return ScenarioLevel(
@@ -1104,6 +1144,16 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 goal_tilt=round(float(np.random.uniform(*self.tilt_range))),
                 veh_veh_tilt=round(float(np.random.uniform(*self.tilt_range))),
                 veh_edge_tilt=round(float(np.random.uniform(*self.tilt_range))),
+                per_vehicle_tilting=per_vehicle_tilting,
+            )
+        elif self.tilting_mode == 'none':
+            per_vehicle_tilting = tuple([0] * PER_VEHICLE_TILTING_LENGTH)
+            return ScenarioLevel(
+                scenario_id=np.random.choice(self.scenario_ids),
+                seed=rand_int_seed(),
+                goal_tilt=0,
+                veh_veh_tilt=0,
+                veh_edge_tilt=0,
                 per_vehicle_tilting=per_vehicle_tilting,
             )
         else:  # per_vehicle mode
@@ -1134,6 +1184,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         Note: only mutate tilt parameters, do not change scenario_id
         """
         from dataclasses import replace
+
+        if self.tilting_mode == 'none':
+            return level
         
         mutations = {}
         params = ['goal_tilt', 'veh_veh_tilt', 'veh_edge_tilt']
