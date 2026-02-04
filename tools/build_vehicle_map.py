@@ -127,7 +127,7 @@ def _select_dense_vehicle(
     gt_data_dict: Dict,
     history_steps: int,
     k_neighbors: int = 7,
-    traj_len_threshold: int = 30,
+    traj_len_threshold: int = 60,
 ) -> Optional[int]:
     """Select vehicle with the smallest average distance to its nearest neighbors.
     
@@ -268,7 +268,7 @@ def _select_opponent_vehicle_ids(
     ego_id: Optional[int],
     history_steps: int,
     k: int = 7,
-    traj_len_threshold: int = 30,
+    traj_len_threshold: int = 60,
 ) -> List[int]:
     """Select opponent vehicle ids (k nearest moving vehicles to ego).
     
@@ -453,7 +453,7 @@ def main() -> None:
                 ego_id,
                 history_steps,
                 k=7,
-                traj_len_threshold=10,
+                traj_len_threshold=60,
             )
             
             vehicle_map[scenario_id] = {
