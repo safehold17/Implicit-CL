@@ -832,7 +832,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 self._goal_points_by_id,
                 self.current_step,
             )
-        # Debug logging removed after investigation
         
         # 7. If recording is enabled, capture current frame
         if self.recording_video and self.video_recorder is not None:

@@ -256,6 +256,8 @@ class CtrlSimOpponentAdapter:
         self._opponent_goal_hold_until: Dict[int, Optional[int]] = {}
         self._goal_pos_tolerance: float = 1.0
         self._goal_hold_steps: int = 5
+        # Whether to move non-controlled vehicles out of the scene when GT is missing.
+        self.allow_set_position_for_noncontrolled: bool = False
         
         # 从配置中获取时间相关参数
         self.dt = cfg.nocturne.dt
@@ -685,7 +687,7 @@ class CtrlSimOpponentAdapter:
                 return (0.0, 0.0)
             if veh is not None:
                 # For opponents, keep position even if GT action is missing.
-                if veh_id not in self._vehicles_to_control:
+                if self.allow_set_position_for_noncontrolled and veh_id not in self._vehicles_to_control:
                     veh.setPosition(-1000000, -1000000)
             return (0.0, 0.0)
         
