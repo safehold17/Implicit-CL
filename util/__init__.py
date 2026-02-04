@@ -183,6 +183,8 @@ def _make_env(args):
             'max_episode_steps': max_episode_steps,
             'device': getattr(args, 'device', 'cuda'),
             'tilting_mode': getattr(args, 'tilting_mode', 'per_vehicle'),
+            'mutation_mode': getattr(args, 'mutation_mode', 'all'),
+            'mutation_range': getattr(args, 'mutation_range', 5.0),
             'show_tilting_params': getattr(args, 'show_tilting_params', True),
             'show_vehicle_ids': getattr(args, 'show_vehicle_ids', True),
             'show_ego_vehicle_selection': getattr(args, 'show_ego_vehicle_selection', True),

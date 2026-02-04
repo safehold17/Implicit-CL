@@ -360,7 +360,7 @@ class ParallelAdversarialVecEnv(SubprocVecEnv):
         return _flatten_obs(obs)
 
     # mutate level
-    def mutate_level(self, num_edits):
+    def mutate_level(self, num_edits=None):
         self._assert_not_closed()
         [remote.send(('mutate_level', num_edits)) for _, remote in enumerate(self.remotes)]
         self.waiting = True

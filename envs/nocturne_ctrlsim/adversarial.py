@@ -91,6 +91,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         max_scenario_pool_size: int = 10000,
         # Tilting mode
         tilting_mode: str = 'per_vehicle',
+        mutation_mode: str = 'all',
+        mutation_range: float = 5.0,
         show_tilting_params: bool = True,
         show_vehicle_ids: bool = True,
         show_ego_vehicle_selection: bool = True,
@@ -190,7 +192,14 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 "tilting_mode must be 'global', 'per_vehicle', 'ego', or 'none', "
                 f"got {tilting_mode}"
             )
+        if mutation_mode not in ['one', 'all']:
+            raise ValueError(
+                "mutation_mode must be 'one' or 'all', "
+                f"got {mutation_mode}"
+            )
         self.tilting_mode = tilting_mode
+        self.mutation_mode = mutation_mode
+        self.mutation_range = mutation_range
         self.show_tilting_params = show_tilting_params
         self.show_vehicle_ids = show_vehicle_ids
         self.show_ego_vehicle_selection = show_ego_vehicle_selection
@@ -790,32 +799,28 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         return self._get_student_observation()
     
-    def mutate_level(self, num_edits: int = 1) -> np.ndarray: # TODO: not implemented for per_vehicle tilting yet
+    def mutate_level(self) -> np.ndarray:
         """
         Mutate current level and reset
         
         Level editing.
         
         Mutation strategy:
-        - Randomly select parameters for perturbation
-        - Perturbation direction: -1, 0, +1
-        - Perturbation amplitude: Gaussian distribution
-        
-        Args:
-            num_edits: number of mutations
-        
+        - Determine mutation_mode (one/all)
+        - Determine tilting_mode and apply corresponding deltas
+
         Returns:
             student initial observation after mutation
         """
         if self.current_level is None:
             raise ValueError("Must call reset_to_level first")
-        
-        if num_edits > 0:
-            mutated = self._mutate_level_internal(self.current_level, num_edits)
-            self.level_seed = rand_int_seed()  # new seed
-            return self.reset_to_level(mutated)
-        
-        return self.reset_agent()
+
+        if self.tilting_mode == 'none':
+            return self.reset_agent()
+
+        mutated = self._mutate_level_internal(self.current_level)
+        self.level_seed = rand_int_seed()  # new seed
+        return self.reset_to_level(mutated)
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
         """
@@ -1170,37 +1175,56 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
     
     def _mutate_level_internal(
         self,
-        level: ScenarioLevel,
-        num_edits: int
+        level: ScenarioLevel
     ) -> ScenarioLevel:
         """
         Execute level mutation
         
-        Mutation strategy (see BipedalWalker):
-        1. Randomly select parameters
-        2. Randomly select direction: -1, 0, +1
-        3. Apply Gaussian perturbation
-        
+        Mutation strategy:
+        1. Determine mutation_mode (one/all)
+        2. If one, randomly choose a tilting dimension
+        3. Sample delta(s) from [-mutation_range, mutation_range]
+        4. Apply deltas based on tilting_mode
+
         Note: only mutate tilt parameters, do not change scenario_id
         """
         from dataclasses import replace
 
         if self.tilting_mode == 'none':
             return level
-        
-        mutations = {}
+
+        dims = [np.random.randint(0, 3)] if self.mutation_mode == 'one' else [0, 1, 2]
         params = ['goal_tilt', 'veh_veh_tilt', 'veh_edge_tilt']
-        
-        for _ in range(num_edits):
-            # Only mutate tilt parameters, do not change scenario_id
-            param = np.random.choice(params)
-            current_val = mutations.get(param, getattr(level, param))
-            direction = np.random.randint(-1, 2)  # -1, 0, 1
-            mutation = direction * np.random.uniform(0, self.tilt_mutation_std)
-            new_val = np.clip(current_val + mutation, *self.tilt_range)
-            mutations[param] = round(float(new_val))
-        
-        return replace(level, **mutations)
+
+        if self.tilting_mode in ('global', 'ego'):
+            mutations = {}
+            if self.mutation_mode == 'one':
+                dim = dims[0]
+                param = params[dim]
+                delta = np.random.uniform(-self.mutation_range, self.mutation_range)
+                new_val = np.clip(getattr(level, param) + delta, *self.tilt_range)
+                mutations[param] = round(float(new_val))
+            else:
+                deltas = np.random.uniform(-self.mutation_range, self.mutation_range, size=3)
+                for param, delta in zip(params, deltas):
+                    new_val = np.clip(getattr(level, param) + delta, *self.tilt_range)
+                    mutations[param] = round(float(new_val))
+            return replace(level, **mutations)
+
+        # per_vehicle mode: update per_vehicle_tilting only
+        per = list(level.per_vehicle_tilting)
+        num_vehicles = PER_VEHICLE_TILTING_LENGTH // 3
+        if self.mutation_mode == 'one':
+            dim = dims[0]
+            deltas = np.random.uniform(-self.mutation_range, self.mutation_range, size=num_vehicles)
+            for i, delta in enumerate(deltas):
+                idx = i * 3 + dim
+                per[idx] = round(float(np.clip(per[idx] + delta, *self.tilt_range)))
+        else:
+            deltas = np.random.uniform(-self.mutation_range, self.mutation_range, size=PER_VEHICLE_TILTING_LENGTH)
+            for idx, delta in enumerate(deltas):
+                per[idx] = round(float(np.clip(per[idx] + delta, *self.tilt_range)))
+        return replace(level, per_vehicle_tilting=tuple(per))
     
     def _load_scenario(self, scenario_id: str):
         """

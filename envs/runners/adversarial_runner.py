@@ -554,7 +554,10 @@ class AdversarialRunner(object):
             if edit_level: # Get mutated levels
                 levels = [self.level_store.get_level(seed) for seed in fixed_seeds]
                 self.ued_venv.reset_to_level_batch(levels)
-                self.ued_venv.mutate_level(num_edits=num_edits)
+                if args.env_name.startswith('Nocturne'):
+                    self.ued_venv.mutate_level()
+                else:
+                    self.ued_venv.mutate_level(num_edits=num_edits)
                 self._update_plr_with_current_unseen_levels(parent_seeds=fixed_seeds)
                 return
             if level_replay: # Get replay levels

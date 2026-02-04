@@ -601,6 +601,17 @@ parser.add_argument(
         'none (all tilts are 0, scenario-only adversary).'
     ))
 parser.add_argument(
+    '--mutation_mode',
+    type=str,
+    default='all',
+    choices=['one', 'all'],
+    help='Mutation mode for tilting parameters: one or all.')
+parser.add_argument(
+    '--mutation_range',
+    type=float,
+    default=5.0,
+    help='Mutation range for tilting parameters (delta sampled from [-range, range]).')
+parser.add_argument(
     '--scenario_index_path',
     type=str,
     default='data/scenarios_index.json',
