@@ -460,8 +460,26 @@ parser.add_argument(
 parser.add_argument(
     '--test_num_episodes',
     type=int,
-    default=10,
+    default=1,
     help='Number of test episodes per environment.')
+parser.add_argument(
+    '--eval_record_video',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Record rollout videos during evaluation.')
+parser.add_argument(
+    '--eval_video_dir',
+    type=str,
+    default=None,
+    help='Override directory for evaluation videos. Default uses log_dir/xpid/videos.')
+parser.add_argument(
+    '--eval_screenshot',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Save a screenshot at the start of each evaluation episode.')
+parser.add_argument(
+    '--eval_screenshot_batch_size',
+    type=int,
+    default=2,
+    help='Number of evaluation environments to screenshot each test interval.')
 parser.add_argument(
     '--test_num_processes',
     type=int,

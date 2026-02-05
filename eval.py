@@ -33,7 +33,7 @@ from envs.bipedalwalker import *
 from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim  env
 from envs.wrappers import VecMonitor, VecPreprocessImageWrapper, ParallelAdversarialVecEnv, \
 	MultiGridFullyObsWrapper, VecFrameStack, CarRacingWrapper
-from util import DotDict, str2bool, make_agent, create_parallel_env, is_discrete_actions
+from util import DotDict, str2bool, make_agent, create_parallel_env, is_discrete_actions, save_images
 from arguments import parser
 
 """
@@ -153,11 +153,15 @@ class Evaluator(object):
 		num_episodes=10, 
 		record_video=False, 
 		device='cuda',
+		eval_screenshot=False,
+		eval_screenshot_dir=None,
 		**kwargs):
 		self.kwargs = kwargs # kwargs for env wrappers
 		self._init_parallel_envs(
 			env_names, num_processes, device=device, record_video=record_video, **kwargs)
 		self.num_episodes = num_episodes
+		self.eval_screenshot = eval_screenshot
+		self.eval_screenshot_dir = eval_screenshot_dir
 		if 'Bipedal' in env_names[0]:
 			self.solved_threshold = 230
 		else:
@@ -170,7 +174,7 @@ class Evaluator(object):
 		return keys
 
 	@staticmethod
-	def _make_env(env_name, record_video=False, **kwargs):
+	def _make_env(env_name, record_video=False, process_idx=None, **kwargs):
 		is_nocturne = env_name.startswith('Nocturne')
 		
 		if env_name in ['BipedalWalker-v3', 'BipedalWalkerHardcore-v3']:
@@ -236,11 +240,14 @@ class Evaluator(object):
 						self.video_dir = video_dir
 						self.episode_count = 0
 						self.recording_started = False
+						self.process_idx = process_idx
 						self.observation_space = original_env.observation_space
 						self.action_space = original_env.action_space
 
 					def _episode_name(self):
-						return f"episode_{self.episode_count:04d}"
+						if self.process_idx is None:
+							return f"episode_{self.episode_count:04d}"
+						return f"process{self.process_idx}_episode_{self.episode_count:04d}"
 
 					def _start_if_needed(self):
 						if self.recording_started:
@@ -262,12 +269,10 @@ class Evaluator(object):
 							obs = self.env.reset_random()
 						else:
 							obs = self.env.reset(**kw)
-						self._start_if_needed()
 						return obs
 
 					def reset_random(self, **kw):
 						obs = self.env.reset_random(**kw)
-						self._start_if_needed()
 						return obs
 
 					def reset_agent(self, **kw):
@@ -275,7 +280,6 @@ class Evaluator(object):
 							obs = self.env.reset_agent(**kw)
 						else:
 							obs = self.env.reset_agent()
-						self._start_if_needed()
 						return obs
 					
 					def step(self, action):
@@ -334,9 +338,16 @@ class Evaluator(object):
 		self.device = device
 		self.venv = {env_name:None for env_name in env_names}
 
-		make_fn = []
 		for env_name in env_names:
-			make_fn = [lambda: Evaluator._make_env(env_name, record_video, **kwargs)]*self.num_processes
+			make_fn = [
+				(lambda idx: lambda: Evaluator._make_env(
+					env_name,
+					record_video,
+					process_idx=idx,
+					**kwargs,
+				))(i)
+				for i in range(self.num_processes)
+			]
 			venv = ParallelAdversarialVecEnv(make_fn, adversary=False, is_eval=True)
 			venv = Evaluator.wrap_venv(venv, env_name, device=device)
 			self.venv[env_name] = venv
@@ -346,6 +357,26 @@ class Evaluator(object):
 	def close(self):
 		for _, venv in self.venv.items():
 			venv.close()
+
+	def save_eval_screenshot(
+		self,
+		out_dir: str,
+		update_idx: int,
+		batch_size: int = 1,
+		prefix: str = "eval",
+	) -> None:
+		"""Save a screenshot grid from evaluation environments."""
+		if batch_size <= 0:
+			return
+		os.makedirs(out_dir, exist_ok=True)
+		for env_name in self.env_names:
+			venv = self.venv[env_name]
+			images = venv.get_images()
+			if not images:
+				continue
+			images = images[:batch_size]
+			path = os.path.join(out_dir, f"{prefix}-{env_name}-update{update_idx}.png")
+			save_images(images, path, normalize=True, channels_first=False)
 
 	def evaluate(self, 
 		agent, 
@@ -363,6 +394,25 @@ class Evaluator(object):
 		for env_name, venv in self.venv.items():
 			returns = []
 			solved_episodes = 0
+			episode_counts = [0 for _ in range(self.num_processes)]
+			if self.eval_screenshot and self.eval_screenshot_dir:
+				os.makedirs(self.eval_screenshot_dir, exist_ok=True)
+
+			def _save_episode_images(start_indices):
+				if not self.eval_screenshot or not self.eval_screenshot_dir:
+					return
+				images = venv.get_images()
+				if not images:
+					return
+				for idx in start_indices:
+					if episode_counts[idx] >= self.num_episodes:
+						continue
+					if idx >= len(images):
+						continue
+					name = f"eval_process{idx}_episode_{episode_counts[idx]:02d}.png"
+					path = os.path.join(self.eval_screenshot_dir, name)
+					save_images([images[idx]], path, normalize=True, channels_first=False)
+					episode_counts[idx] += 1
 			# PAIRED/Minimax returns adversary obs, level info, reset 
 			# DR/PLR envs return agent obs, vehicle and map info, reset_random
 			# reset() returns adversary observation (dict), but we need agent observation (array)
@@ -371,6 +421,7 @@ class Evaluator(object):
 				obs = venv.reset_random()
 			else:
 				obs = venv.reset()
+			_save_episode_images(range(self.num_processes))
 			recurrent_hidden_states = torch.zeros(
 				self.num_processes, agent.algo.actor_critic.recurrent_hidden_state_size, device=self.device)
 			if agent.algo.actor_critic.is_recurrent and agent.algo.actor_critic.rnn.arch == 'lstm':
@@ -418,6 +469,10 @@ class Evaluator(object):
 
 						if len(returns) >= self.num_episodes:
 							break
+				if self.eval_screenshot and len(returns) < self.num_episodes:
+					done_indices = [i for i, d in enumerate(done) if d]
+					if done_indices:
+						_save_episode_images(done_indices)
 
 				if render:
 					venv.render_to_screen()

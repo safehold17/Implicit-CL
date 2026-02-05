@@ -165,10 +165,17 @@ if __name__ == '__main__':
     # === Set up Evaluator ===
     evaluator = None
     if args.test_env_names:
+            eval_video_dir = args.eval_video_dir
+            if eval_video_dir is None:
+                eval_video_dir = os.path.join(log_dir, args.xpid, 'videos')
             evaluator = Evaluator(
                 args.test_env_names.split(','), 
                 num_processes=args.test_num_processes, 
                 num_episodes=args.test_num_episodes,
+                record_video=args.eval_record_video,
+                video_dir=eval_video_dir,
+                eval_screenshot=args.eval_screenshot,
+                eval_screenshot_dir=screenshot_dir,
                 frame_stack=args.frame_stack,
                 grayscale=args.grayscale,
                 num_action_repeat=args.num_action_repeat,
@@ -208,7 +215,8 @@ if __name__ == '__main__':
                         train_runner.agents['agent'],
                         return_episode_returns=True)
                 else:
-                    test_stats = evaluator.evaluate(train_runner.agents['agent'])
+                    test_stats = evaluator.evaluate(
+                        train_runner.agents['agent'])
                 stats.update(test_stats)
                 if train_runner.agents.get('adversary_agent') is not None and (
                     args.use_accel_paired or j == num_updates - 1

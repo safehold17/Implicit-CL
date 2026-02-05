@@ -112,6 +112,13 @@ class NocturneVideoRecorder:
             x = pos.x
             y = pos.y
 
+            if not np.isfinite(x) or not np.isfinite(y):
+                continue
+            if abs(x) > 1e5 or abs(y) > 1e5:
+                continue
+            if x == -10000 and y == -10000:
+                continue
+
             vehicle_data.append({
                 'id': veh.getID(),
                 'x': x,
