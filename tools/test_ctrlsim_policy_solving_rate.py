@@ -668,7 +668,7 @@ def main() -> None:
     if args.record_video:
         print(f"Video output dir: {video_dir}")
 
-    env_names = ["Nocturne-CtrlSim-Adversarial-v0"]
+    env_names = ["Nocturne-CtrlSim-v0"]
     evaluator = CtrlSimEvaluator(
         env_names=env_names,
         num_processes=args.num_processes,

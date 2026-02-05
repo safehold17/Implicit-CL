@@ -7,7 +7,7 @@ model_path: ${project_root}/checkpoints/model.ckpt
 # ========== Nocturne + CtRL-Sim 环境配置 ==========
 nocturne_env:
   # 环境注册名称
-  env_name: "Nocturne-CtrlSim-Adversarial-v0"
+  env_name: "Nocturne-CtrlSim-v0"
   
   # 场景配置
   scenario_index_path: ${project_root}/data/scenarios_index.json

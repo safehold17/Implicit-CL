@@ -22,7 +22,7 @@ env_kwargs = {
 print("Creating environment...")
 try:
     print("[1] About to call gym_make...")
-    env = gym_make('Nocturne-CtrlSim-Adversarial-v0', **env_kwargs)
+    env = gym_make('Nocturne-CtrlSim-v0', **env_kwargs)
     print("[2] ✓ Environment created successfully")
     
     print("\n[3] Testing reset...")

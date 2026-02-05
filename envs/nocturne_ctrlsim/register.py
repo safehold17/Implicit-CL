@@ -30,7 +30,7 @@ def register(env_id, entry_point, reward_threshold=0.95, max_episode_steps=None)
 
 # Register default environment configuration
 register(
-    env_id="Nocturne-CtrlSim-Adversarial-v0",
+    env_id="Nocturne-CtrlSim-v0",
     entry_point="envs.nocturne_ctrlsim.adversarial:NocturneCtrlSimAdversarial",
     max_episode_steps=90,  # Same as ctrl-sim default steps
 )
