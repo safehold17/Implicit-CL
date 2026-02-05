@@ -361,6 +361,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_processes", type=int, default=1)
     parser.add_argument("--num_episodes", type=int, default=10)
     parser.add_argument(
+        "--progress_threshold",
+        type=float,
+        default=0.9,
+        help="Progress threshold used in solved metric: solved if progress > threshold or position_reached.",
+    )
+    parser.add_argument(
         "--tilting_mode",
         type=str,
         choices=["global", "per_vehicle", "ego", "none"],
@@ -441,7 +447,13 @@ def _build_tilting_columns(info, tilting_mode):
     return columns
 
 
-def _extract_episode_metrics(info, episode_return, solved_threshold, tilting_mode):
+def _extract_episode_metrics(
+    info,
+    episode_return,
+    solved_threshold,
+    progress_threshold,
+    tilting_mode,
+):
     if "episode" in info:
         episode_return = info["episode"].get("r", episode_return)
     _ = solved_threshold
@@ -452,7 +464,11 @@ def _extract_episode_metrics(info, episode_return, solved_threshold, tilting_mod
     )
     offroad = info.get("offroad_occurred", info.get("offroad", 0.0))
     progress = info.get("avg_progress", info.get("progress", 0.0))
-    solved = 1.0 if (float(progress) > 0.8 or float(position_reached) > 0.0) else 0.0
+    solved = (
+        1.0
+        if (float(progress) > float(progress_threshold) or float(position_reached) > 0.0)
+        else 0.0
+    )
 
     metrics = {
         "scenario_id": info.get("scenario_id", ""),
@@ -470,7 +486,13 @@ def _extract_episode_metrics(info, episode_return, solved_threshold, tilting_mod
 
 
 def evaluate_with_metrics(
-    evaluator, agent, deterministic, show_progress, render, tilting_mode
+    evaluator,
+    agent,
+    deterministic,
+    show_progress,
+    render,
+    tilting_mode,
+    progress_threshold,
 ):
     env_name = evaluator.env_names[0]
     venv = evaluator.venv[env_name]
@@ -518,7 +540,11 @@ def evaluate_with_metrics(
         for info in infos:
             if "episode" in info.keys():
                 metrics = _extract_episode_metrics(
-                    info, info["episode"]["r"], solved_threshold, tilting_mode
+                    info,
+                    info["episode"]["r"],
+                    solved_threshold,
+                    progress_threshold,
+                    tilting_mode,
                 )
                 episode_metrics.append(metrics)
                 if pbar:
@@ -640,6 +666,7 @@ def main() -> None:
         show_progress=args.verbose,
         render=args.render,
         tilting_mode=args.tilting_mode,
+        progress_threshold=args.progress_threshold,
     )
     csv_path = write_metrics_csv(args.output_dir, args.xpid, episode_metrics)
     print(f"Metrics saved to: {csv_path}")
