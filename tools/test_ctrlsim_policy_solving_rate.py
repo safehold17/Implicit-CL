@@ -78,10 +78,7 @@ class CtrlSimEgoWrapper:
         self.episode_idx = 0
         self.goal_pos_tolerance = 1.0
         self._opponent_reached_goal_ids = set()
-        self._opponent_stop_modes = {}
-        self._logged_initial = False
-        self._logged_ego_reached = False
-        self.debug_csv_path = os.path.join(self.output_dir, self.xpid, "goal_stop_debug.csv")
+        self._episode_position_reached = False
 
         self.ego_adapter = CtrlSimOpponentAdapter(
             cfg=self.env.cfg,
@@ -146,9 +143,7 @@ class CtrlSimEgoWrapper:
 
     def _reset_episode_state(self):
         self._opponent_reached_goal_ids = set()
-        self._opponent_stop_modes = {}
-        self._logged_initial = False
-        self._logged_ego_reached = False
+        self._episode_position_reached = False
 
     def _get_goal_pos(self, veh_id):
         goal_points = getattr(self.env, "_goal_points_by_id", None)
@@ -157,20 +152,6 @@ class CtrlSimEgoWrapper:
         if veh_id == self.ego_id and getattr(self.env, "_ego_goal_dict", None) is not None:
             return self.env._ego_goal_dict.get("pos")
         return None
-
-    def _get_goal_pos_with_source(self, veh_id):
-        goal_points = getattr(self.env, "_goal_points_by_id", None)
-        if goal_points and veh_id in goal_points:
-            return goal_points[veh_id], "goal_points_by_id"
-        if veh_id == self.ego_id and getattr(self.env, "_ego_goal_dict", None) is not None:
-            return self.env._ego_goal_dict.get("pos"), "ego_goal_dict"
-        return None, "none"
-
-    def _distance_to_goal(self, veh, goal_pos):
-        if veh is None or goal_pos is None:
-            return None
-        pos = veh.getPosition()
-        return float(np.linalg.norm(goal_pos - np.array([pos.x, pos.y])))
 
     def _is_within_goal(self, veh, goal_pos):
         if veh is None or goal_pos is None:
@@ -209,82 +190,12 @@ class CtrlSimEgoWrapper:
             pass
         return stop_mode
 
-    def _log_debug_event(
-        self,
-        event,
-        veh_id,
-        step,
-        has_goal_point,
-        goal_source,
-        dist_to_goal,
-        stop_mode="",
-    ):
-        out_dir = os.path.join(self.output_dir, self.xpid)
-        os.makedirs(out_dir, exist_ok=True)
-        fields = [
-            "episode",
-            "step",
-            "veh_id",
-            "event",
-            "has_goal_point",
-            "goal_source",
-            "dist_to_goal",
-            "stop_mode",
-        ]
-        write_header = not os.path.exists(self.debug_csv_path)
-        with open(self.debug_csv_path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fields)
-            if write_header:
-                writer.writeheader()
-            writer.writerow(
-                {
-                    "episode": self.episode_idx,
-                    "step": int(step),
-                    "veh_id": int(veh_id) if veh_id is not None else "",
-                    "event": event,
-                    "has_goal_point": bool(has_goal_point),
-                    "goal_source": goal_source,
-                    "dist_to_goal": "" if dist_to_goal is None else float(dist_to_goal),
-                    "stop_mode": stop_mode,
-                }
-            )
-
-    def _log_initial_states(self):
-        if self._logged_initial:
-            return
-        self._logged_initial = True
-        if self.env.ego_vehicle is not None and self.ego_id is not None:
-            goal_pos, goal_source = self._get_goal_pos_with_source(self.ego_id)
-            dist = self._distance_to_goal(self.env.ego_vehicle, goal_pos)
-            self._log_debug_event(
-                "ego_initial",
-                self.ego_id,
-                self.env.current_step,
-                goal_pos is not None,
-                goal_source,
-                dist,
-            )
-        for veh in self.env.opponent_vehicles:
-            if veh is None:
-                continue
-            veh_id = veh.getID()
-            goal_pos, goal_source = self._get_goal_pos_with_source(veh_id)
-            dist = self._distance_to_goal(veh, goal_pos)
-            self._log_debug_event(
-                "opponent_initial",
-                veh_id,
-                self.env.current_step,
-                goal_pos is not None,
-                goal_source,
-                dist,
-            )
-
     def _update_opponent_stop_states(self):
         for veh in self.env.opponent_vehicles:
             if veh is None:
                 continue
             veh_id = veh.getID()
-            goal_pos, goal_source = self._get_goal_pos_with_source(veh_id)
+            goal_pos = self._get_goal_pos(veh_id)
             if goal_pos is None:
                 continue
             if veh_id in self._opponent_reached_goal_ids:
@@ -292,18 +203,7 @@ class CtrlSimEgoWrapper:
                 continue
             if self._is_within_goal(veh, goal_pos):
                 self._opponent_reached_goal_ids.add(veh_id)
-                stop_mode = self._stop_vehicle(veh)
-                self._opponent_stop_modes[veh_id] = stop_mode
-                dist = self._distance_to_goal(veh, goal_pos)
-                self._log_debug_event(
-                    "opponent_reached_goal",
-                    veh_id,
-                    self.env.current_step,
-                    True,
-                    goal_source,
-                    dist,
-                    stop_mode=stop_mode,
-                )
+                self._stop_vehicle(veh)
 
     def _ego_reached_goal(self):
         if self.ego_id is None or self.env.ego_vehicle is None:
@@ -318,7 +218,6 @@ class CtrlSimEgoWrapper:
         self._reset_ego_adapter()
         self._log_level()
         self._start_recording()
-        self._log_initial_states()
         return obs
 
     def reset(self):
@@ -328,7 +227,6 @@ class CtrlSimEgoWrapper:
         self._reset_ego_adapter()
         self._log_level()
         self._start_recording()
-        self._log_initial_states()
         return obs
 
     def reset_agent(self):
@@ -336,7 +234,6 @@ class CtrlSimEgoWrapper:
         self._reset_episode_state()
         self._maybe_disable_opponent_tilting()
         self._reset_ego_adapter()
-        self._log_initial_states()
         return obs
 
     def step(self, _action):
@@ -361,22 +258,11 @@ class CtrlSimEgoWrapper:
             {self.ego_id: (accel, steer)} if self.ego_id is not None else {},
         )
         self._update_opponent_stop_states()
-        if self._ego_reached_goal():
-            self.env._goal_reached = True
-            if hasattr(self.env, "_episode_goal_reached"):
-                self.env._episode_goal_reached = True
-            if not self._logged_ego_reached:
-                goal_pos, goal_source = self._get_goal_pos_with_source(self.ego_id)
-                dist = self._distance_to_goal(self.env.ego_vehicle, goal_pos)
-                self._log_debug_event(
-                    "ego_reached_goal",
-                    self.ego_id,
-                    self.env.current_step,
-                    goal_pos is not None,
-                    goal_source,
-                    dist,
-                )
-                self._logged_ego_reached = True
+        position_reached = self._ego_reached_goal()
+        if position_reached:
+            self._episode_position_reached = True
+
+        if position_reached:
             if not done:
                 done = True
                 if hasattr(self.env, "opponent"):
@@ -385,11 +271,13 @@ class CtrlSimEgoWrapper:
                     info = self.env._get_info()
                 else:
                     info = dict(info)
-                    info.setdefault("goal_reached", True)
                     info.setdefault(
                         "episode",
                         {"r": reward, "l": self.env.current_step},
                     )
+        info = dict(info)
+        info["position_reached"] = float(position_reached)
+        info["position_reached_occurred"] = float(self._episode_position_reached)
         if done:
             self._stop_recording()
         return obs, reward, done, info
@@ -434,16 +322,22 @@ class CtrlSimEvaluator(Evaluator):
         self.num_processes = num_processes
         self.device = device
         self.venv = {env_name: None for env_name in env_names}
+        base_seed = kwargs.get("seed")
 
         for env_name in env_names:
-            make_fn = [
-                lambda: self._make_env(
-                    env_name,
-                    record_video,
-                    device=device,
-                    **kwargs,
+            make_fn = []
+            for process_id in range(self.num_processes):
+                env_kwargs = dict(kwargs)
+                if base_seed is not None:
+                    env_kwargs["seed"] = int(base_seed) + process_id
+                make_fn.append(
+                    lambda env_name=env_name, env_kwargs=env_kwargs: self._make_env(
+                        env_name,
+                        record_video=record_video,
+                        device=device,
+                        **env_kwargs,
+                    )
                 )
-            ] * self.num_processes
             venv = ParallelAdversarialVecEnv(make_fn, adversary=False, is_eval=True)
             venv = Evaluator.wrap_venv(venv, env_name, device=device)
             self.venv[env_name] = venv
@@ -465,7 +359,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint_path", type=str, required=True)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Base random seed. If omitted, a random seed is generated for each run.",
+    )
     parser.add_argument("--num_steps", type=int, default=90)
     parser.add_argument("--num_processes", type=int, default=1)
     parser.add_argument("--num_episodes", type=int, default=10)
@@ -506,39 +405,59 @@ def _build_tilting_columns(info, opponent_tilting_mode):
         for _ in range(opp_count):
             tilts.append((0.0, 0.0, 0.0))
 
-    difficulty = 0.0
-    valid = 0
+    goal_sum = 0.0
+    goal_valid = 0
+    veh_veh_sum = 0.0
+    veh_veh_valid = 0
+    veh_edge_sum = 0.0
+    veh_edge_valid = 0
     for g, v, e in tilts:
-        if g == 0 and v == 0 and e == 0:
-            continue
-        valid += 1
-        difficulty += (g + v + e) / 3.0
-    if valid > 0:
-        difficulty /= valid
+        if g != 0.0:
+            goal_valid += 1
+            goal_sum += g
+        if v != 0.0:
+            veh_veh_valid += 1
+            veh_veh_sum += v
+        if e != 0.0:
+            veh_edge_valid += 1
+            veh_edge_sum += e
+
+    veh_goal_avg = round(goal_sum / goal_valid, 2) if goal_valid > 0 else 0.0
+    veh_veh_avg = round(veh_veh_sum / veh_veh_valid, 2) if veh_veh_valid > 0 else 0.0
+    veh_edge_avg = round(veh_edge_sum / veh_edge_valid, 2) if veh_edge_valid > 0 else 0.0
 
     columns = {}
     for i, (g, v, e) in enumerate(tilts):
         columns[f"opp{i}_goal_tilt"] = g
         columns[f"opp{i}_veh_veh_tilt"] = v
         columns[f"opp{i}_veh_edge_tilt"] = e
-    columns["difficulty"] = float(difficulty)
+    columns["veh_goal_avg"] = float(veh_goal_avg)
+    columns["veh_veh_avg"] = float(veh_veh_avg)
+    columns["veh_edge_avg"] = float(veh_edge_avg)
     return columns
 
 
 def _extract_episode_metrics(info, episode_return, solved_threshold, opponent_tilting_mode):
     if "episode" in info:
         episode_return = info["episode"].get("r", episode_return)
-    solved = 1.0 if episode_return > solved_threshold else 0.0
+    _ = solved_threshold
     collision = info.get("collision_occurred", info.get("collision", 0.0))
     goal_reached = info.get("goal_reached_occurred", info.get("goal_reached", 0.0))
+    position_reached = info.get(
+        "position_reached_occurred", info.get("position_reached", 0.0)
+    )
     offroad = info.get("offroad_occurred", info.get("offroad", 0.0))
     progress = info.get("avg_progress", info.get("progress", 0.0))
+    solved = 1.0 if (float(progress) > 0.8 or float(position_reached) > 0.0) else 0.0
 
     metrics = {
+        "scenario_id": info.get("scenario_id", ""),
+        "seed": info.get("seed", ""),
         "test_returns": float(episode_return),
-        "solved_rate": float(solved),
+        "solved": float(solved),
         "collision": float(collision),
         "goal_reached": float(goal_reached),
+        "position_reached": float(position_reached),
         "offroad": float(offroad),
         "progress": float(progress),
     }
@@ -618,7 +537,9 @@ def _tilting_fields():
         fields.append(f"opp{i}_goal_tilt")
         fields.append(f"opp{i}_veh_veh_tilt")
         fields.append(f"opp{i}_veh_edge_tilt")
-    fields.append("difficulty")
+    fields.append("veh_goal_avg")
+    fields.append("veh_veh_avg")
+    fields.append("veh_edge_avg")
     return fields
 
 
@@ -629,10 +550,13 @@ def write_metrics_csv(output_dir, xpid, episode_metrics):
 
     fields = [
         "episode",
+        "scenario_id",
+        "seed",
         "test_returns",
-        "solved_rate",
+        "solved",
         "collision",
         "goal_reached",
+        "position_reached",
         "offroad",
         "progress",
     ] + _tilting_fields()
@@ -647,10 +571,16 @@ def write_metrics_csv(output_dir, xpid, episode_metrics):
 
         if episode_metrics:
             avg = {"episode": "avg"}
+            non_avg_fields = {"scenario_id", "seed"}
             for field in fields:
                 if field == "episode":
+                    avg[field] = "avg"
                     continue
-                avg[field] = float(np.mean([m[field] for m in episode_metrics]))
+                if field in non_avg_fields:
+                    avg[field] = ""
+                    continue
+                mean_value = float(np.mean([m[field] for m in episode_metrics]))
+                avg[field] = f"{mean_value:.2f}"
             writer.writerow(avg)
 
     return csv_path
@@ -658,8 +588,10 @@ def write_metrics_csv(output_dir, xpid, episode_metrics):
 
 def main() -> None:
     args = parse_args()
+    base_seed = args.seed if args.seed is not None else int.from_bytes(os.urandom(4), byteorder="little")
     print(f"Opponent tilting mode: {args.opponent_tilting_mode}")
     print(f"Checkpoint: {args.checkpoint_path}")
+    print(f"Base seed: {base_seed}")
 
     if args.record_video and args.num_processes != 1:
         raise ValueError("--record_video requires --num_processes=1")
@@ -674,7 +606,7 @@ def main() -> None:
         num_processes=args.num_processes,
         num_episodes=args.num_episodes,
         device=args.device,
-        seed=args.seed,
+        seed=base_seed,
         scenario_index_path=args.scenario_index_path,
         opponent_checkpoint=args.checkpoint_path,
         scenario_data_dir=args.scenario_data_dir,
@@ -706,11 +638,6 @@ def main() -> None:
     print(f"Metrics saved to: {csv_path}")
 
     evaluator.close()
-
-    print("\nExample:")
-    print(
-        "python tools/test_ctrlsim_policy_solving_rate.py \\\n  --scenario_index_path <path> \\\n  --scenario_data_dir <path> \\\n  --preprocess_dir <path> \\\n  --checkpoint_path <path> \\\n  --opponent_tilting_mode per_level \\\n  --output_dir <dir> --xpid <xpid> \\\n  --record_video"
-    )
 
 
 if __name__ == "__main__":
