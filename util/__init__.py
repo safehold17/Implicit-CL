@@ -190,6 +190,7 @@ def _make_env(args):
             'show_ego_vehicle_selection': getattr(args, 'show_ego_vehicle_selection', True),
             'veh_veh_collision_rew_multiplier': getattr(args, 'veh_veh_collision_rew_multiplier', 10.0),
             'veh_edge_collision_rew_multiplier': getattr(args, 'veh_edge_collision_rew_multiplier', 10.0),
+            'remove_background_vehicles': getattr(args, 'remove_background_vehicles', True),
         })
         return gym_make(args.env_name, **env_kwargs)
 

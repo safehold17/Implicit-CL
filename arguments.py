@@ -659,6 +659,10 @@ parser.add_argument(
     type=float,
     default=10.0,
     help='Collision penalty multiplier for vehicle-road-edge collisions (ctrl-sim default).')
+parser.add_argument(
+    '--remove_background_vehicles',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Remove moving vehicles other than ego/opponent in Nocturne env.')
 
 # ============== render options ==============
 parser.add_argument(

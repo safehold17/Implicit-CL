@@ -96,6 +96,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         show_tilting_params: bool = True,
         show_vehicle_ids: bool = True,
         show_ego_vehicle_selection: bool = True,
+        remove_background_vehicles: bool = True,
 
         obs_dim: int = DEFAULT_OBS_DIM,
         action_dim: int = DEFAULT_ACTION_DIM,
@@ -203,6 +204,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self.show_tilting_params = show_tilting_params
         self.show_vehicle_ids = show_vehicle_ids
         self.show_ego_vehicle_selection = show_ego_vehicle_selection
+        self.remove_background_vehicles = remove_background_vehicles
+        self.removed_vehicle_ids: List[int] = []
         
         # ========== State variables ==========
         self.current_level: Optional[ScenarioLevel] = None
@@ -640,6 +643,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         else:
             # Ego/none mode: opponents always use zero tilts
             self.opponent.set_tilting(0, 0, 0)
+
+        if self.remove_background_vehicles:
+            self._remove_background_moving_vehicles()
         
         self.opponent.reset(
             self.scenario,
@@ -1268,6 +1274,43 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             if veh.getID() == veh_id:
                 return veh
         return None
+
+    def _remove_background_moving_vehicles(self):
+        """
+        Remove moving vehicles other than ego/opponent.
+        Uses preprocessed-filtered moving vehicles and skips removal if
+        preprocessed data is missing (fallback B).
+        """
+        if not hasattr(self, '_preproc_data') or self._preproc_data is None:
+            return
+
+        preproc_ids = self._get_preproc_vehicle_ids()
+        if not preproc_ids:
+            return
+
+        moving_ids = self._get_moving_vehicle_ids(filter_by_preproc=True)
+        if not moving_ids:
+            return
+
+        ego_id = self.ego_vehicle.getID() if self.ego_vehicle else None
+        protected_ids = set(self.opponent_vehicle_ids)
+        if ego_id is not None:
+            protected_ids.add(ego_id)
+
+        remove_ids = [vid for vid in moving_ids if vid not in protected_ids]
+        if not remove_ids:
+            return
+
+        removed_set = set(remove_ids)
+        for veh in self.vehicles:
+            if veh.getID() in removed_set:
+                veh.setPosition(-1000000, -1000000)
+                veh.physics_simulated = False
+                self.opponent.apply_action(veh, (0.0, 0.0))
+                veh.speed = 0.0
+
+        self.vehicles = [veh for veh in self.vehicles if veh.getID() not in removed_set]
+        self.removed_vehicle_ids = remove_ids
     
     def _initialize_ego_goal_state(self):
         """
