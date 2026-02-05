@@ -37,7 +37,7 @@ class CtrlSimEgoWrapper:
         vehicle_map_path: str,
         opponent_k: int,
         max_episode_steps: int,
-        opponent_tilting_mode: str,
+        tilting_mode: str,
         show_level_log: bool,
         record_video: bool,
         show_vehicle_ids: bool,
@@ -47,14 +47,6 @@ class CtrlSimEgoWrapper:
         seed: int = 0,
         **_kwargs,
     ):
-        if opponent_tilting_mode == "per_level":
-            tilting_mode = "per_vehicle"
-        elif opponent_tilting_mode == "global":
-            tilting_mode = "global"
-        else:
-            # none: still use global mode, but tilting will be zeroed after reset
-            tilting_mode = "global"
-
         self.env = NocturneCtrlSimAdversarial(
             scenario_index_path=scenario_index_path,
             opponent_checkpoint=opponent_checkpoint,
@@ -67,7 +59,7 @@ class CtrlSimEgoWrapper:
             seed=seed,
             tilting_mode=tilting_mode,
         )
-        self.opponent_tilting_mode = opponent_tilting_mode
+        self.tilting_mode = tilting_mode
         self.device = device
         self.checkpoint_path = opponent_checkpoint
         self.show_level_log = show_level_log
@@ -104,7 +96,7 @@ class CtrlSimEgoWrapper:
 
     def _maybe_disable_opponent_tilting(self):
         # none: force opponent tilting to zero
-        if self.opponent_tilting_mode == "none":
+        if self.tilting_mode == "none":
             self.env.opponent.set_tilting(0, 0, 0)
 
     def _log_level(self):
@@ -369,10 +361,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_processes", type=int, default=1)
     parser.add_argument("--num_episodes", type=int, default=10)
     parser.add_argument(
-        "--opponent_tilting_mode",
+        "--tilting_mode",
         type=str,
-        choices=["per_level", "global", "none"],
-        default="per_level",
+        choices=["global", "per_vehicle", "ego", "none"],
+        default="per_vehicle",
     )
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--verbose", action="store_true")
@@ -385,22 +377,31 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _build_tilting_columns(info, opponent_tilting_mode):
+def _build_tilting_columns(info, tilting_mode):
     opp_count = 7
     tilts = []
+    ego_goal_tilt = 0.0
+    ego_veh_veh_tilt = 0.0
+    ego_veh_edge_tilt = 0.0
 
-    if opponent_tilting_mode == "per_level":
+    if tilting_mode == "per_vehicle":
         for i in range(opp_count):
             g = info.get(f"per_vehicle_goal_tilt_{i}", 0.0)
             v = info.get(f"per_vehicle_veh_tilt_{i}", 0.0)
             e = info.get(f"per_vehicle_edge_tilt_{i}", 0.0)
             tilts.append((float(g), float(v), float(e)))
-    elif opponent_tilting_mode == "global":
+    elif tilting_mode == "global":
         g = float(info.get("goal_tilt", 0.0))
         v = float(info.get("veh_veh_tilt", 0.0))
         e = float(info.get("veh_edge_tilt", 0.0))
         for _ in range(opp_count):
             tilts.append((g, v, e))
+    elif tilting_mode == "ego":
+        ego_goal_tilt = float(info.get("goal_tilt", 0.0))
+        ego_veh_veh_tilt = float(info.get("veh_veh_tilt", 0.0))
+        ego_veh_edge_tilt = float(info.get("veh_edge_tilt", 0.0))
+        for _ in range(opp_count):
+            tilts.append((0.0, 0.0, 0.0))
     else:
         for _ in range(opp_count):
             tilts.append((0.0, 0.0, 0.0))
@@ -434,10 +435,13 @@ def _build_tilting_columns(info, opponent_tilting_mode):
     columns["veh_goal_avg"] = float(veh_goal_avg)
     columns["veh_veh_avg"] = float(veh_veh_avg)
     columns["veh_edge_avg"] = float(veh_edge_avg)
+    columns["ego_goal_tilt"] = ego_goal_tilt
+    columns["ego_veh_veh_tilt"] = ego_veh_veh_tilt
+    columns["ego_veh_edge_tilt"] = ego_veh_edge_tilt
     return columns
 
 
-def _extract_episode_metrics(info, episode_return, solved_threshold, opponent_tilting_mode):
+def _extract_episode_metrics(info, episode_return, solved_threshold, tilting_mode):
     if "episode" in info:
         episode_return = info["episode"].get("r", episode_return)
     _ = solved_threshold
@@ -461,12 +465,12 @@ def _extract_episode_metrics(info, episode_return, solved_threshold, opponent_ti
         "offroad": float(offroad),
         "progress": float(progress),
     }
-    metrics.update(_build_tilting_columns(info, opponent_tilting_mode))
+    metrics.update(_build_tilting_columns(info, tilting_mode))
     return metrics
 
 
 def evaluate_with_metrics(
-    evaluator, agent, deterministic, show_progress, render, opponent_tilting_mode
+    evaluator, agent, deterministic, show_progress, render, tilting_mode
 ):
     env_name = evaluator.env_names[0]
     venv = evaluator.venv[env_name]
@@ -514,7 +518,7 @@ def evaluate_with_metrics(
         for info in infos:
             if "episode" in info.keys():
                 metrics = _extract_episode_metrics(
-                    info, info["episode"]["r"], solved_threshold, opponent_tilting_mode
+                    info, info["episode"]["r"], solved_threshold, tilting_mode
                 )
                 episode_metrics.append(metrics)
                 if pbar:
@@ -540,6 +544,9 @@ def _tilting_fields():
     fields.append("veh_goal_avg")
     fields.append("veh_veh_avg")
     fields.append("veh_edge_avg")
+    fields.append("ego_goal_tilt")
+    fields.append("ego_veh_veh_tilt")
+    fields.append("ego_veh_edge_tilt")
     return fields
 
 
@@ -589,7 +596,7 @@ def write_metrics_csv(output_dir, xpid, episode_metrics):
 def main() -> None:
     args = parse_args()
     base_seed = args.seed if args.seed is not None else int.from_bytes(os.urandom(4), byteorder="little")
-    print(f"Opponent tilting mode: {args.opponent_tilting_mode}")
+    print(f"Tilting mode: {args.tilting_mode}")
     print(f"Checkpoint: {args.checkpoint_path}")
     print(f"Base seed: {base_seed}")
 
@@ -614,7 +621,7 @@ def main() -> None:
         vehicle_map_path=args.vehicle_map_path,
         max_episode_steps=args.num_steps,
         opponent_k=7,
-        opponent_tilting_mode=args.opponent_tilting_mode,
+        tilting_mode=args.tilting_mode,
         show_level_log=args.show_level_log,
         record_video=args.record_video,
         show_vehicle_ids=args.show_vehicle_ids,
@@ -632,7 +639,7 @@ def main() -> None:
         deterministic=args.deterministic,
         show_progress=args.verbose,
         render=args.render,
-        opponent_tilting_mode=args.opponent_tilting_mode,
+        tilting_mode=args.tilting_mode,
     )
     csv_path = write_metrics_csv(args.output_dir, args.xpid, episode_metrics)
     print(f"Metrics saved to: {csv_path}")
