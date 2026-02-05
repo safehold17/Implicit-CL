@@ -709,7 +709,7 @@ def main() -> None:
 
     print("\nExample:")
     print(
-        "python tools/test_ctrlsim_policy.py \\\n  --scenario_index_path <path> \\\n  --scenario_data_dir <path> \\\n  --preprocess_dir <path> \\\n  --checkpoint_path <path> \\\n  --opponent_tilting_mode per_level \\\n  --output_dir <dir> --xpid <xpid> \\\n  --record_video"
+        "python tools/test_ctrlsim_policy_solving_rate.py \\\n  --scenario_index_path <path> \\\n  --scenario_data_dir <path> \\\n  --preprocess_dir <path> \\\n  --checkpoint_path <path> \\\n  --opponent_tilting_mode per_level \\\n  --output_dir <dir> --xpid <xpid> \\\n  --record_video"
     )
 
 

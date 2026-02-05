@@ -476,11 +476,6 @@ parser.add_argument(
     type=str2bool, nargs='?', const=True, default=True,
     help='Save a screenshot at the start of each evaluation episode.')
 parser.add_argument(
-    '--eval_screenshot_batch_size',
-    type=int,
-    default=2,
-    help='Number of evaluation environments to screenshot each test interval.')
-parser.add_argument(
     '--test_num_processes',
     type=int,
     default=2,

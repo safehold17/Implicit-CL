@@ -289,7 +289,13 @@ if __name__ == '__main__':
             else:
                 venv.reset_agent()
                 images = venv.get_images()
-                if args.use_editor and level_info:
+                if args.env_name.startswith('Nocturne'):
+                    for idx, img in enumerate(images):
+                        save_images(
+                            [img],
+                            os.path.join(screenshot_dir, f'update{j}_process{idx}.png'),
+                            normalize=True, channels_first=False)
+                elif args.use_editor and level_info:
                     save_images(
                         images[:args.screenshot_batch_size], 
                         os.path.join(
