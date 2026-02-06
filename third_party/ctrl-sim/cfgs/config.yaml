@@ -6,6 +6,7 @@ nocturne_waymo_val_folder: ${nocturne_waymo_data_folder}/formatted_json_v2_no_tl
 nocturne_waymo_val_interactive_folder: ${nocturne_waymo_data_folder}/formatted_json_v2_no_tl_valid_interactive
 
 defaults:
+  - _self_
   - dataset/waymo: ctrl_sim
   - train: ctrl_sim
   - datamodule: ctrl_sim

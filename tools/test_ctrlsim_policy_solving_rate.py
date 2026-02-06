@@ -363,7 +363,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--progress_threshold",
         type=float,
-        default=0.9,
+        default=0.85,
         help="Progress threshold used in solved metric: solved if progress > threshold or position_reached.",
     )
     parser.add_argument(

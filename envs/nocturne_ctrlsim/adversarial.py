@@ -14,7 +14,7 @@ import gym
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Union
 
-from nocturne.bicycle_model import BicycleModel
+from tools.safe_bicycle import safe_backward_action_from_states
 
 from .level import ScenarioLevel, PER_VEHICLE_TILTING_LENGTH
 from .vehicle_selection import VehicleSelectionMixin
@@ -1427,19 +1427,15 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         if not veh_exists or veh is None:
             return (0.0, 0.0)
         
-        bike_model = BicycleModel(
-            x=gt_traj[t + 1, 0],
-            y=gt_traj[t + 1, 1],
-            theta=gt_traj[t + 1, 2],
-            vel=gt_traj[t + 1, 3],
-            L=gt_traj[t + 1, -1],
-            dt=self.dt
-        )
-        
-        accel, steer, _, _ = bike_model.backward(
-            prev_pos=np.array([veh.getPosition().x, veh.getPosition().y]),
+        accel, steer = safe_backward_action_from_states(
+            prev_pos=(veh.getPosition().x, veh.getPosition().y),
             prev_theta=veh.getHeading(),
-            prev_vel=veh.getSpeed()
+            prev_vel=veh.getSpeed(),
+            curr_pos=(gt_traj[t + 1, 0], gt_traj[t + 1, 1]),
+            curr_theta=gt_traj[t + 1, 2],
+            curr_vel=gt_traj[t + 1, 3],
+            wheel_base=gt_traj[t + 1, -1],
+            dt=self.dt,
         )
         
         return (float(accel), float(steer))
