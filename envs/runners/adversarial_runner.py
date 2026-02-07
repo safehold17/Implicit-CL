@@ -463,6 +463,12 @@ class AdversarialRunner(object):
         for process_idx, info in enumerate(infos):
             process_log = {'process_idx': process_idx}
             process_log.update(self._filter_nocturne_process_info(info))
+            avg_progress = process_log.get('avg_progress', None)
+            if log_replay_complexity:
+                process_log['avg_progress'] = None
+                process_log['plr_progress'] = avg_progress
+            else:
+                process_log['plr_progress'] = None
             tilting_columns = self._build_nocturne_tilting_columns(info)
             if log_replay_complexity:
                 # In replay logging rows, keep per-process tilting values under plr_* keys.
@@ -521,6 +527,10 @@ class AdversarialRunner(object):
             for k, v in merged_info.items():
                 if isinstance(v, (int, float)) and not np.isnan(v):
                     if k in ('opponent_k', 'scenario_pool_size'):
+                        continue
+                    if k == 'avg_progress':
+                        # Per-process progress is logged as progress/plr_progress;
+                        # skip aggregated scenario_avg_progress to avoid duplication.
                         continue
                     if k == 'seed':
                         # Keep per-process seed only; do not log aggregated scenario_seed.
