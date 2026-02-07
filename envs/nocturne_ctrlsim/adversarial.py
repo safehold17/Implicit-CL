@@ -126,6 +126,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self.seed_value = seed
         self.fixed_environment = fixed_environment
         np.random.seed(seed)
+        # Keep a dedicated RNG stream for level mutation so replay reseeding
+        # does not synchronize mutation outcomes across parallel processes.
+        self._mutation_random_state = np.random.RandomState(seed)
         
         # ========== Scenario index (support dynamic extension) ==========
         self.scenario_index_path = scenario_index_path
@@ -362,6 +365,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         if seed is not None:
             self.level_seed = seed
             self.seed_value = seed
+            # Keep mutation randomness process-specific and reproducible.
+            self._mutation_random_state = np.random.RandomState(seed)
         return [self.level_seed]
     
     # ========== Adversary interface (PAIRED/ACCEL) ==========
@@ -828,8 +833,12 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         if self.tilting_mode == 'none':
             return self.reset_agent()
 
+        from dataclasses import replace
+
         mutated = self._mutate_level_internal(self.current_level)
-        self.level_seed = rand_int_seed()  # new seed
+        # Ensure the mutated level carries a fresh seed for subsequent resets.
+        self.level_seed = rand_int_seed()
+        mutated = replace(mutated, seed=self.level_seed)
         return self.reset_to_level(mutated)
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
@@ -1207,7 +1216,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         if self.tilting_mode == 'none':
             return level
 
-        dims = [np.random.randint(0, 3)] if self.mutation_mode == 'one' else [0, 1, 2]
+        rng = self._mutation_random_state
+        dims = [rng.randint(0, 3)] if self.mutation_mode == 'one' else [0, 1, 2]
         params = ['goal_tilt', 'veh_veh_tilt', 'veh_edge_tilt']
 
         if self.tilting_mode in ('global', 'ego'):
@@ -1215,11 +1225,11 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             if self.mutation_mode == 'one':
                 dim = dims[0]
                 param = params[dim]
-                delta = np.random.uniform(-self.mutation_range, self.mutation_range)
+                delta = rng.uniform(-self.mutation_range, self.mutation_range)
                 new_val = np.clip(getattr(level, param) + delta, *self.tilt_range)
                 mutations[param] = round(float(new_val))
             else:
-                deltas = np.random.uniform(-self.mutation_range, self.mutation_range, size=3)
+                deltas = rng.uniform(-self.mutation_range, self.mutation_range, size=3)
                 for param, delta in zip(params, deltas):
                     new_val = np.clip(getattr(level, param) + delta, *self.tilt_range)
                     mutations[param] = round(float(new_val))
@@ -1230,12 +1240,12 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         num_vehicles = PER_VEHICLE_TILTING_LENGTH // 3
         if self.mutation_mode == 'one':
             dim = dims[0]
-            deltas = np.random.uniform(-self.mutation_range, self.mutation_range, size=num_vehicles)
+            deltas = rng.uniform(-self.mutation_range, self.mutation_range, size=num_vehicles)
             for i, delta in enumerate(deltas):
                 idx = i * 3 + dim
                 per[idx] = round(float(np.clip(per[idx] + delta, *self.tilt_range)))
         else:
-            deltas = np.random.uniform(-self.mutation_range, self.mutation_range, size=PER_VEHICLE_TILTING_LENGTH)
+            deltas = rng.uniform(-self.mutation_range, self.mutation_range, size=PER_VEHICLE_TILTING_LENGTH)
             for idx, delta in enumerate(deltas):
                 per[idx] = round(float(np.clip(per[idx] + delta, *self.tilt_range)))
         return replace(level, per_vehicle_tilting=tuple(per))

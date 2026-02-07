@@ -104,7 +104,7 @@ parser.add_argument(
 parser.add_argument(
     '--num_steps',
     type=int,
-    default=256,
+    default=90,
     help='Rollout horizon for A2C-style algorithms.')
 parser.add_argument(
     '--ppo_epoch',
@@ -178,7 +178,7 @@ parser.add_argument(
 parser.add_argument(
     '--ued_algo',
     type=str,
-    default='paired',
+    default='domain_randomization',
     choices=['domain_randomization', 'minimax', 
              'paired', 'flexible_paired', 
              'alp_gmm'],
@@ -203,7 +203,7 @@ parser.add_argument(
 # PLR arguments.
 parser.add_argument(
     "--use_plr",
-    type=str2bool, nargs='?', const=True, default=False,
+    type=str2bool, nargs='?', const=True, default=True,
     help='Whether to use PLR.'
 )
 parser.add_argument(
@@ -297,12 +297,12 @@ parser.add_argument(
 # ACCEL arguments.
 parser.add_argument(
     "--use_editor",
-    type=str2bool, nargs='?', const=True, default=False,
+    type=str2bool, nargs='?', const=True, default=True,
     help='Turns on ACCEL: Evaluate mutated replay levels for entry in PLR buffer.')
 parser.add_argument(
     "--level_editor_prob",
     type=float,
-    default=0.,
+    default=1.0,
     help="Probability of mutating a replayed level under PLR.")
 parser.add_argument(
     "--level_editor_method",
@@ -440,7 +440,7 @@ parser.add_argument(
     help="Log action-trajectory complexity metrics throughout training.")
 parser.add_argument(
     '--log_replay_complexity',
-    type=str2bool, nargs='?', const=True, default=False,
+    type=str2bool, nargs='?', const=True, default=True,
     help="Log complexity metrics of replay levels.")
 parser.add_argument(
     '--log_plr_buffer_stats',
@@ -464,7 +464,7 @@ parser.add_argument(
     help='Number of test episodes per environment.')
 parser.add_argument(
     '--eval_record_video',
-    type=str2bool, nargs='?', const=True, default=True,
+    type=str2bool, nargs='?', const=True, default=False,
     help='Record rollout videos during evaluation.')
 parser.add_argument(
     '--eval_video_dir',
@@ -483,14 +483,14 @@ parser.add_argument(
 parser.add_argument(
     '--test_env_names',
     type=str,
-    default='MultiGrid-SixteenRooms-v0,MultiGrid-Labyrinth-v0,MultiGrid-Maze-v0',
+    default='Nocturne-CtrlSim-v0',
     help='CSV string of test environments for evaluation during training.')
 
 # Environment arguments.
 parser.add_argument(
     '--env_name',
     type=str,
-    default='MultiGrid-GoalLastAdversarial-v0',
+    default='Nocturne-CtrlSim-v0',
     help='Environment to train on.')
 parser.add_argument(
     '--handle_timelimits',
@@ -600,7 +600,7 @@ parser.add_argument(
     choices=['tanh', 'gelu', 'relu'],
     help='The activation function of the Student network')
 
-# ============== Nocturne environment configuration parameter ==============
+# ============== Nocturne-Ctrlsim environment configuration parameter ==============
 parser.add_argument(
     '--tilting_mode',
     type=str,

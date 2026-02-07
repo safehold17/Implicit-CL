@@ -452,7 +452,7 @@ class AdversarialRunner(object):
             filtered[k] = v
         return filtered
 
-    def _get_nocturne_process_stats(self, infos=None):
+    def _get_nocturne_process_stats(self, infos=None, log_replay_complexity=False):
         if infos is None:
             try:
                 infos = self.venv.get_complexity_info()
@@ -463,7 +463,14 @@ class AdversarialRunner(object):
         for process_idx, info in enumerate(infos):
             process_log = {'process_idx': process_idx}
             process_log.update(self._filter_nocturne_process_info(info))
-            process_log.update(self._build_nocturne_tilting_columns(info))
+            tilting_columns = self._build_nocturne_tilting_columns(info)
+            if log_replay_complexity:
+                # In replay logging rows, keep per-process tilting values under plr_* keys.
+                # Mirror non-plr keys as None so CSV semantics stay unambiguous.
+                process_log.update({k: None for k in tilting_columns})
+                process_log.update({f'plr_{k}': v for k, v in tilting_columns.items()})
+            else:
+                process_log.update(tilting_columns)
             process_stats.append(process_log)
 
         return process_stats
@@ -639,6 +646,34 @@ class AdversarialRunner(object):
             seed_num_edits[idx] = len(value)
         weighted_num_edits = np.dot(level_sampler.sample_weights(), seed_num_edits)
         return weighted_num_edits
+
+    def _resolve_non_plr_base_seed(self, seed):
+        """
+        Resolve the non-PLR base seed (root ancestor) for an edited replay seed.
+
+        Returns:
+            int: root/base seed if resolvable.
+            None: when root seed can no longer be resolved from LevelStore.
+        """
+        if self.level_store is None or seed is None:
+            return None
+
+        seed = int(seed)
+        if seed not in self.level_store.seed2level:
+            return None
+
+        parent_levels = self.level_store.seed2parent.get(seed, [])
+        if not parent_levels:
+            return seed
+
+        root_level = parent_levels[0]
+        root_seed = self.level_store.level2seed.get(root_level)
+        if root_seed is None:
+            return None
+        if root_seed not in self.level_store.seed2level:
+            return None
+
+        return int(root_seed)
 
     def _sample_replay_decision(self):
         return self._default_level_sampler.sample_replay_decision()
@@ -1132,60 +1167,65 @@ class AdversarialRunner(object):
                         easy = np.argmax((agent_info['mean_return'].detach().cpu().numpy() - agent_info['batched_value_loss'].detach().cpu().numpy()).flatten())
                     fixed_seeds = [env_info[easy]] * args.num_processes
 
-            level_sampler, is_updateable = self._get_level_sampler('agent')
+            # Always edit from the non-PLR base level (root ancestor), not from
+            # already edited replay descendants.
+            base_fixed_seeds = [self._resolve_non_plr_base_seed(s) for s in fixed_seeds]
+            if all(s is not None for s in base_fixed_seeds):
+                fixed_seeds = base_fixed_seeds
+                level_sampler, is_updateable = self._get_level_sampler('agent')
 
-            # Edit selected levels
-            self.agent_rollout(
-                agent=None,
-                num_steps=None,
-                is_env=True,
-                edit_level=True,
-                num_edits=args.num_edits,
-                fixed_seeds=fixed_seeds)
+                # Edit selected levels
+                self.agent_rollout(
+                    agent=None,
+                    num_steps=None,
+                    is_env=True,
+                    edit_level=True,
+                    num_edits=args.num_edits,
+                    fixed_seeds=fixed_seeds)
 
-            self.total_num_edits += 1
-            sampled_level_info['num_edits'] = [x+1 for x in sampled_level_info['num_edits']]
+                self.total_num_edits += 1
+                sampled_level_info['num_edits'] = [x+1 for x in sampled_level_info['num_edits']]
 
-            # Evaluate edited levels
-            agent_info_edited_level = self.agent_rollout(
-                agent=agent,
-                num_steps=self.agent_rollout_steps,
-                update=self.is_training,
-                level_replay=False,
-                level_sampler=level_sampler,
-                update_level_sampler=is_updateable,
-                update_agent_separately=self.use_accel_paired,
-                discard_grad=True)
-            
-            if self.use_accel_paired:
-                adversary_agent_info_edited_level = self.agent_rollout(
-                    agent=adversary_agent,
+                # Evaluate edited levels
+                agent_info_edited_level = self.agent_rollout(
+                    agent=agent,
                     num_steps=self.agent_rollout_steps,
                     update=self.is_training,
                     level_replay=False,
-                    level_sampler=None,
-                    update_level_sampler=False,
+                    level_sampler=level_sampler,
+                    update_level_sampler=is_updateable,
                     update_agent_separately=self.use_accel_paired,
                     discard_grad=True)
                 
-                external_scores = self._calculate_paired_regret_scores(agent_info_edited_level, adversary_agent_info_edited_level, type=args.accel_paired_score_function)
-                
-                # update agent level sampler
-                _ = self._update_agent_separately(agent, 
-                                    level_sampler=level_sampler, 
-                                    update_level_sampler=is_updateable,
-                                    discard_grad=True,
-                                    kl_dict=None,
-                                    external_scores=external_scores)
-                
-                
-                # update antagonist agent too
-                _ = self._update_agent_separately(adversary_agent,
-                                    level_sampler=level_sampler, 
-                                    update_level_sampler=is_updateable,
-                                    discard_grad=True,
-                                    kl_dict=None,
-                                    external_scores=external_scores)
+                if self.use_accel_paired:
+                    adversary_agent_info_edited_level = self.agent_rollout(
+                        agent=adversary_agent,
+                        num_steps=self.agent_rollout_steps,
+                        update=self.is_training,
+                        level_replay=False,
+                        level_sampler=None,
+                        update_level_sampler=False,
+                        update_agent_separately=self.use_accel_paired,
+                        discard_grad=True)
+                    
+                    external_scores = self._calculate_paired_regret_scores(agent_info_edited_level, adversary_agent_info_edited_level, type=args.accel_paired_score_function)
+                    
+                    # update agent level sampler
+                    _ = self._update_agent_separately(agent, 
+                                        level_sampler=level_sampler, 
+                                        update_level_sampler=is_updateable,
+                                        discard_grad=True,
+                                        kl_dict=None,
+                                        external_scores=external_scores)
+                    
+                    
+                    # update antagonist agent too
+                    _ = self._update_agent_separately(adversary_agent,
+                                        level_sampler=level_sampler, 
+                                        update_level_sampler=is_updateable,
+                                        discard_grad=True,
+                                        kl_dict=None,
+                                        external_scores=external_scores)
         # ==== ACCEL end ====
 
         if args.use_plr:
@@ -1229,7 +1269,9 @@ class AdversarialRunner(object):
                 log_replay_complexity=log_replay_complexity,
                 nocturne_infos=nocturne_infos)
             if is_nocturne_env:
-                per_process_stats = self._get_nocturne_process_stats(infos=nocturne_infos)
+                per_process_stats = self._get_nocturne_process_stats(
+                    infos=nocturne_infos,
+                    log_replay_complexity=log_replay_complexity)
             stats.update({
                 'mean_env_return': env_return.mean().item(),
                 'adversary_env_pg_loss': adversary_env_info['action_loss'],
