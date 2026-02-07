@@ -85,6 +85,8 @@ def worker(remote, parent_remote, env_fn_wrappers):
                 remote.send(CloudpickleWrapper((envs[0].observation_space, envs[0].action_space, envs[0].spec)))
             elif cmd == 'reset_to_level':
                 remote.send([envs[0].reset_to_level(data)])
+            elif cmd in ('mutate_level_from', 'mutate_level_batch'):
+                remote.send([envs[0].mutate_level(level=data)])
             elif cmd == 'reset_alp_gmm':
                 remote.send([envs[0].reset_alp_gmm(data)])
             elif cmd == 'max_episode_steps':
@@ -368,6 +370,19 @@ class ParallelAdversarialVecEnv(SubprocVecEnv):
         self.waiting = False
         obs = _flatten_list(obs)
         return _flatten_obs(obs)
+
+    def mutate_level_batch(self, levels):
+        self._assert_not_closed()
+        [remote.send(('mutate_level_batch', levels[i])) for i, remote in enumerate(self.remotes)]
+        self.waiting = True
+        obs = [remote.recv() for remote in self.remotes]
+        self.waiting = False
+        obs = _flatten_list(obs)
+        return _flatten_obs(obs)
+
+    # Backward compatible alias
+    def mutate_level_from_batch(self, levels):
+        return self.mutate_level_batch(levels)
 
     # observation_space
     def get_observation_space(self):

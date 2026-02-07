@@ -123,12 +123,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         """
         super().__init__()
 
-        self.seed_value = seed
         self.fixed_environment = fixed_environment
-        np.random.seed(seed)
-        # Keep a dedicated RNG stream for level mutation so replay reseeding
-        # does not synchronize mutation outcomes across parallel processes.
-        self._mutation_random_state = np.random.RandomState(seed)
+        self._set_process_seed(seed)
         
         # ========== Scenario index (support dynamic extension) ==========
         self.scenario_index_path = scenario_index_path
@@ -214,7 +210,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self.current_level: Optional[ScenarioLevel] = None
         self.current_step = 0
         self.adversary_step_count = 0  # Adversary building steps
-        self.level_seed = seed
+        self._set_level_seed(seed)
         
         # Nocturne simulation object
         self.sim = None
@@ -348,25 +344,58 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # ========== Video recording ==========
         self.video_recorder: Optional[NocturneVideoRecorder] = None
         self.recording_video = False
-        
-        # ========== Random seed ==========
-        self.seed_value = seed
 
         # ========== Metrics tracking ==========
         self.episode_reward = 0.0
         self.collision_count = 0
         self.goal_reached = False
         self.reset_metrics()
+
+    def _set_process_seed(self, seed: int, reseed_numpy: bool = True) -> None:
+        """Set process-level RNG streams used by this environment instance."""
+        seed = int(seed)
+        self.seed_value = seed
+        if reseed_numpy:
+            np.random.seed(seed)
+        # Keep mutation randomness process-specific and reproducible.
+        self._mutation_random_state = np.random.RandomState(seed)
+
+    def _set_level_seed(self, seed: int) -> int:
+        """Set the current level seed tracked by the environment."""
+        self.level_seed = int(seed)
+        return self.level_seed
+
+    def _next_level_seed(self) -> int:
+        """Generate and apply a fresh level seed."""
+        return self._set_level_seed(rand_int_seed())
+
+    def _set_current_level(self, level: ScenarioLevel) -> ScenarioLevel:
+        """Set current level and synchronize its seed state."""
+        self.current_level = level
+        self._set_level_seed(level.seed)
+        return self.current_level
+
+    def _coerce_level(self, level: Union[ScenarioLevel, str, np.ndarray]) -> ScenarioLevel:
+        """Convert supported level input formats into a ScenarioLevel."""
+        if isinstance(level, ScenarioLevel):
+            return level
+        if isinstance(level, str):
+            return ScenarioLevel.from_level_string(level)
+        if isinstance(level, np.ndarray):
+            if level.dtype.kind == 'U':  # string array unicode
+                return self._decode_string_encoding(level)
+            return ScenarioLevel.from_encoding(level, self.index_to_scenario_id)
+        raise TypeError(f"Unsupported level type for reset/mutation: {type(level)}")
     
     # ========== Basic environment interface ==========
     
     def seed(self, seed=None):
         """Set the random seed of the environment"""
         if seed is not None:
-            self.level_seed = seed
-            self.seed_value = seed
-            # Keep mutation randomness process-specific and reproducible.
-            self._mutation_random_state = np.random.RandomState(seed)
+            # Keep original behavior: calling env.seed() updates explicit seed
+            # trackers and mutation RNG without forcing global np.random reseed.
+            self._set_process_seed(seed, reseed_numpy=False)
+            self._set_level_seed(seed)
         return [self.level_seed]
     
     # ========== Adversary interface (PAIRED/ACCEL) ==========
@@ -389,7 +418,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
         
         # Generate new level seed
-        self.level_seed = rand_int_seed()
+        self._next_level_seed()
         
         # Return adversary observation
         obs = {
@@ -707,17 +736,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         Returns:
             student initial observation
         """
-        # Convert to ScenarioLevel object
-        if isinstance(level, str):
-            level = ScenarioLevel.from_level_string(level)
-        elif isinstance(level, np.ndarray):
-            # Process string array format
-            if level.dtype.kind == 'U': # string array unicode
-                level = self._decode_string_encoding(level)
-            else:
-                level = ScenarioLevel.from_encoding(level, self.index_to_scenario_id)
-        
-        self.current_level = level
+        level = self._coerce_level(level)
         
         # Update level_params_vec to keep consistent
         scenario_idx = self.scenario_id_to_index.get(level.scenario_id, 0)
@@ -730,7 +749,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 *level.per_vehicle_tilting,
             ]
         elif self.tilting_mode == 'none':
-            self.current_level = ScenarioLevel(
+            level = ScenarioLevel(
                 scenario_id=level.scenario_id,
                 seed=level.seed,
                 goal_tilt=0,
@@ -738,7 +757,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 veh_edge_tilt=0,
                 per_vehicle_tilting=(),
             )
-            level = self.current_level
             self.level_params_vec = [
                 scenario_idx,
             ]
@@ -749,7 +767,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 level.veh_veh_tilt,
                 level.veh_edge_tilt,
             ]
-        self.level_seed = level.seed
+        self._set_current_level(level)
         
         # Initialize simulation
         self._initialize_simulation()
@@ -814,9 +832,16 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         return self._get_student_observation()
     
-    def mutate_level(self) -> np.ndarray:
+    def mutate_level(
+        self,
+        level: Optional[Union[ScenarioLevel, str, np.ndarray]] = None,
+        num_edits: Optional[int] = None,
+    ) -> np.ndarray:
         """
-        Mutate current level and reset
+        Mutate level and reset.
+
+        - If ``level`` is None: mutate current loaded level.
+        - If ``level`` is provided: mutate the provided base level in one pass.
         
         Level editing.
         
@@ -827,18 +852,24 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         Returns:
             student initial observation after mutation
         """
-        if self.current_level is None:
-            raise ValueError("Must call reset_to_level first")
+        # Keep this arg for cross-env API compatibility.
+        del num_edits
+
+        if level is None:
+            if self.current_level is None:
+                raise ValueError("Must call reset_to_level first")
+            base_level = self.current_level
+        else:
+            base_level = self._coerce_level(level)
 
         if self.tilting_mode == 'none':
-            return self.reset_agent()
+            return self.reset_to_level(base_level)
 
         from dataclasses import replace
 
-        mutated = self._mutate_level_internal(self.current_level)
+        mutated = self._mutate_level_internal(base_level)
         # Ensure the mutated level carries a fresh seed for subsequent resets.
-        self.level_seed = rand_int_seed()
-        mutated = replace(mutated, seed=self.level_seed)
+        mutated = replace(mutated, seed=self._next_level_seed())
         return self.reset_to_level(mutated)
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:

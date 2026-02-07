@@ -706,10 +706,12 @@ class AdversarialRunner(object):
         if is_env:
             if edit_level: # Get mutated levels
                 levels = [self.level_store.get_level(seed) for seed in fixed_seeds]
-                self.ued_venv.reset_to_level_batch(levels)
                 if args.env_name.startswith('Nocturne'):
-                    self.ued_venv.mutate_level()
+                    # Single-pass mutation path: avoid reset_to_level_batch + mutate_level
+                    # double initialization in Nocturne editing.
+                    self.ued_venv.mutate_level_batch(levels)
                 else:
+                    self.ued_venv.reset_to_level_batch(levels)
                     self.ued_venv.mutate_level(num_edits=num_edits)
                 self._update_plr_with_current_unseen_levels(parent_seeds=fixed_seeds)
                 return

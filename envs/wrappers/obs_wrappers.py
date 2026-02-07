@@ -165,6 +165,19 @@ class VecPreprocessImageWrapper(VecEnvWrapper):
 		obs = self.venv.reset_to_level_batch(level)
 		return self._preprocess(obs, obs_key=self.obs_key)
 
+	def mutate_level(self, num_edits=None):
+		obs = self.venv.mutate_level(num_edits=num_edits)
+		return self._preprocess(obs, obs_key=self.obs_key)
+
+	def mutate_level_batch(self, levels):
+		obs = self.venv.mutate_level_batch(levels)
+		return self._preprocess(obs, obs_key=self.obs_key)
+
+	# Backward compatible alias
+	def mutate_level_from_batch(self, levels):
+		obs = self.venv.mutate_level_from_batch(levels)
+		return self._preprocess(obs, obs_key=self.obs_key)
+
 	def step_wait(self):
 		obs, rews, dones, infos = self.venv.step_wait()
 		obs = self._preprocess(obs, obs_key=self.obs_key)
