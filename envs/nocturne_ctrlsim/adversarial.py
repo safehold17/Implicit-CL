@@ -392,8 +392,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
     def seed(self, seed=None):
         """Set the random seed of the environment"""
         if seed is not None:
-            # Keep original behavior: calling env.seed() updates explicit seed
-            # trackers and mutation RNG without forcing global np.random reseed.
+            # Keep mutation RNG stream aligned with per-env seed, while
+            # avoiding global numpy reseeding side effects.
+            seed = int(seed)
             self._set_process_seed(seed, reseed_numpy=False)
             self._set_level_seed(seed)
         return [self.level_seed]
