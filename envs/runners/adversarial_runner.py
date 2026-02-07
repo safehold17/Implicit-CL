@@ -99,6 +99,7 @@ class AdversarialRunner(object):
         self.current_level_seeds = None
         self.weighted_num_edits = 0
         self.latest_env_stats = defaultdict(float)
+        self.latest_env_process_stats = []
         if plr_args:
             if self.is_paired:
                 if not args.protagonist_plr and not args.antagonist_plr:
@@ -214,6 +215,7 @@ class AdversarialRunner(object):
             'total_num_edits': self.total_num_edits,
             'student_grad_updates': self.student_grad_updates,
             'latest_env_stats': self.latest_env_stats,
+            'latest_env_process_stats': self.latest_env_process_stats,
             'level_store': self.level_store,
             'level_samplers': self.level_samplers,
         }
@@ -238,6 +240,7 @@ class AdversarialRunner(object):
         self.total_num_edits = state_dict.get('total_num_edits')
         self.student_grad_updates = state_dict.get('student_grad_updates')
         self.latest_env_stats = state_dict.get('latest_env_stats')
+        self.latest_env_process_stats = state_dict.get('latest_env_process_stats', [])
 
         self.level_store = state_dict.get('level_store')
         self.level_samplers = state_dict.get('level_samplers')
@@ -369,7 +372,103 @@ class AdversarialRunner(object):
 
         return stats
 
-    def _get_env_stats_nocturne(self, agent_info, adversary_agent_info):
+    def _build_nocturne_tilting_columns(self, info):
+        tilting_mode = getattr(self.args, 'tilting_mode', 'per_vehicle')
+        opp_count = int(info.get('opponent_k', 7))
+        opp_count = max(0, opp_count)
+
+        tilts = []
+        ego_goal_tilt = 0.0
+        ego_veh_veh_tilt = 0.0
+        ego_veh_edge_tilt = 0.0
+
+        if tilting_mode == 'per_vehicle':
+            for i in range(opp_count):
+                g = float(info.get(f'per_vehicle_goal_tilt_{i}', 0.0))
+                v = float(info.get(f'per_vehicle_veh_tilt_{i}', 0.0))
+                e = float(info.get(f'per_vehicle_edge_tilt_{i}', 0.0))
+                tilts.append((g, v, e))
+        elif tilting_mode == 'global':
+            g = float(info.get('goal_tilt', 0.0))
+            v = float(info.get('veh_veh_tilt', 0.0))
+            e = float(info.get('veh_edge_tilt', 0.0))
+            for _ in range(opp_count):
+                tilts.append((g, v, e))
+        elif tilting_mode == 'ego':
+            ego_goal_tilt = float(info.get('goal_tilt', 0.0))
+            ego_veh_veh_tilt = float(info.get('veh_veh_tilt', 0.0))
+            ego_veh_edge_tilt = float(info.get('veh_edge_tilt', 0.0))
+            for _ in range(opp_count):
+                tilts.append((0.0, 0.0, 0.0))
+        else:
+            for _ in range(opp_count):
+                tilts.append((0.0, 0.0, 0.0))
+
+        # veh_*_avg should include both opponent vehicles and ego tilt values.
+        # Keep the existing rule: only non-zero values are counted.
+        tilts_for_avg = list(tilts)
+        tilts_for_avg.append((ego_goal_tilt, ego_veh_veh_tilt, ego_veh_edge_tilt))
+
+        goal_sum = 0.0
+        goal_valid = 0
+        veh_veh_sum = 0.0
+        veh_veh_valid = 0
+        veh_edge_sum = 0.0
+        veh_edge_valid = 0
+
+        for g, v, e in tilts_for_avg:
+            if g != 0.0:
+                goal_valid += 1
+                goal_sum += g
+            if v != 0.0:
+                veh_veh_valid += 1
+                veh_veh_sum += v
+            if e != 0.0:
+                veh_edge_valid += 1
+                veh_edge_sum += e
+
+        columns = {}
+        for i, (g, v, e) in enumerate(tilts):
+            columns[f'opp{i}_goal_tilt'] = g
+            columns[f'opp{i}_veh_veh_tilt'] = v
+            columns[f'opp{i}_veh_edge_tilt'] = e
+
+        columns['veh_goal_avg'] = float(round(goal_sum / goal_valid, 2)) if goal_valid > 0 else 0.0
+        columns['veh_veh_avg'] = float(round(veh_veh_sum / veh_veh_valid, 2)) if veh_veh_valid > 0 else 0.0
+        columns['veh_edge_avg'] = float(round(veh_edge_sum / veh_edge_valid, 2)) if veh_edge_valid > 0 else 0.0
+        columns['ego_goal_tilt'] = ego_goal_tilt
+        columns['ego_veh_veh_tilt'] = ego_veh_veh_tilt
+        columns['ego_veh_edge_tilt'] = ego_veh_edge_tilt
+
+        return columns
+
+    def _filter_nocturne_process_info(self, info):
+        filtered = {}
+        for k, v in info.items():
+            if k in ('opponent_k', 'scenario_pool_size'):
+                continue
+            if k.startswith('per_vehicle_'):
+                continue
+            filtered[k] = v
+        return filtered
+
+    def _get_nocturne_process_stats(self, infos=None):
+        if infos is None:
+            try:
+                infos = self.venv.get_complexity_info()
+            except AttributeError:
+                return []
+
+        process_stats = []
+        for process_idx, info in enumerate(infos):
+            process_log = {'process_idx': process_idx}
+            process_log.update(self._filter_nocturne_process_info(info))
+            process_log.update(self._build_nocturne_tilting_columns(info))
+            process_stats.append(process_log)
+
+        return process_stats
+
+    def _get_env_stats_nocturne(self, agent_info, adversary_agent_info, infos=None):
         """
         Nocturne environment statistics
         
@@ -379,9 +478,9 @@ class AdversarialRunner(object):
         Expected metrics (to be implemented on the environment side):
         - scenario_id: Scenario ID
         - goal_tilt / veh_veh_tilt / veh_edge_tilt: tilt parameters
-        - collision_rate: collision rate
-        - offroad_rate: offroad rate
-        - goal_reached_rate: goal reached rate
+        - collision_occurred: collision occurred flag (0/1)
+        - offroad_occurred: offroad occurred flag (0/1)
+        - goal_reached_occurred: goal reached flag (0/1)
         - avg_progress: average progress
         - episode_length: average episode length
         
@@ -393,11 +492,12 @@ class AdversarialRunner(object):
             stats: Dictionary containing scenario complexity metrics
         """
         # Retrieve complexity information from the environment
-        try:
-            infos = self.venv.get_complexity_info()
-        except AttributeError:
-            # Environment does not implement get_complexity_info, return empty stats
-            return {}
+        if infos is None:
+            try:
+                infos = self.venv.get_complexity_info()
+            except AttributeError:
+                # Environment does not implement get_complexity_info, return empty stats
+                return {}
         
         num_envs = len(infos)
         if num_envs == 0:
@@ -407,23 +507,31 @@ class AdversarialRunner(object):
         sums = defaultdict(float)
         counts = defaultdict(int)
         for info in infos:
-            for k, v in info.items():
+            # Aggregate derived opp* / veh_* / ego_* fields so PLR keys become
+            # plr_opp*, plr_veh_*, plr_ego_* instead of plr_scenario_per_vehicle_*.
+            merged_info = self._filter_nocturne_process_info(info).copy()
+            merged_info.update(self._build_nocturne_tilting_columns(info))
+            for k, v in merged_info.items():
                 if isinstance(v, (int, float)) and not np.isnan(v):
+                    if k in ('opponent_k', 'scenario_pool_size'):
+                        continue
+                    if k == 'seed':
+                        # Keep per-process seed only; do not log aggregated scenario_seed.
+                        continue
+                    if k.endswith('_occurred'):
+                        # Per-process rows already log binary occurred flags.
+                        # Skip aggregated occurred values to avoid misleading "rate-like" interpretation.
+                        continue
                     sums[k] += v
                     counts[k] += 1
         
-        # Calculate averages
-        # For binary indicators (*_occurred), convert to rates
-        # to indicate they represent aggregated rates across parallel environments
+        # Calculate averages for retained numeric metrics.
         stats = {}
         for k, v in sums.items():
             if counts[k] > 0:
                 avg_value = sums[k] / counts[k]
-                # Convert '*_occurred' to '*_rate' for binary occurrence indicators
-                if k.endswith('_occurred'):
-                    # Remove '_occurred' suffix and add '_rate' suffix
-                    base_name = k[:-9]  # Remove '_occurred'
-                    stats['scenario_' + base_name + '_rate'] = avg_value
+                if k.startswith('opp') or k.startswith('veh_') or k.startswith('ego_'):
+                    stats[k] = avg_value
                 else:
                     stats['scenario_' + k] = avg_value
         
@@ -435,7 +543,7 @@ class AdversarialRunner(object):
         
         return stats
 
-    def _get_env_stats(self, agent_info, adversary_agent_info, log_replay_complexity=False):
+    def _get_env_stats(self, agent_info, adversary_agent_info, log_replay_complexity=False, nocturne_infos=None):
         env_name = self.args.env_name
         if env_name.startswith('MultiGrid'):
             stats = self._get_env_stats_multigrid(agent_info, adversary_agent_info)
@@ -444,7 +552,7 @@ class AdversarialRunner(object):
         elif env_name.startswith('BipedalWalker'):
             stats = self._get_env_stats_bipedalwalker(agent_info, adversary_agent_info)
         elif env_name.startswith('Nocturne') or env_name.startswith('nocturne'):
-            stats = self._get_env_stats_nocturne(agent_info, adversary_agent_info)
+            stats = self._get_env_stats_nocturne(agent_info, adversary_agent_info, infos=nocturne_infos)
         else:
             raise ValueError(f'Unsupported environment, {self.args.env_name}')
 
@@ -1111,9 +1219,17 @@ class AdversarialRunner(object):
         # === LOGGING ===
         # Only update env-related stats when run generates new envs (not level replay)
         log_replay_complexity = level_replay and args.log_replay_complexity
+        is_nocturne_env = args.env_name.startswith('Nocturne') or args.env_name.startswith('nocturne')
+        per_process_stats = []
+        nocturne_infos = None
         if (not level_replay) or log_replay_complexity:
+            if is_nocturne_env:
+                nocturne_infos = self.venv.get_complexity_info()
             stats = self._get_env_stats(agent_info, adversary_agent_info, 
-                log_replay_complexity=log_replay_complexity)
+                log_replay_complexity=log_replay_complexity,
+                nocturne_infos=nocturne_infos)
+            if is_nocturne_env:
+                per_process_stats = self._get_nocturne_process_stats(infos=nocturne_infos)
             stats.update({
                 'mean_env_return': env_return.mean().item(),
                 'adversary_env_pg_loss': adversary_env_info['action_loss'],
@@ -1122,8 +1238,14 @@ class AdversarialRunner(object):
             })
             if args.use_plr:
                 self.latest_env_stats.update(stats) # Log latest UED curriculum stats instead of PLR env stats
+                if is_nocturne_env:
+                    self.latest_env_process_stats = [s.copy() for s in per_process_stats]
         else:
             stats = self.latest_env_stats.copy()
+            if is_nocturne_env:
+                per_process_stats = [s.copy() for s in self.latest_env_process_stats]
+                if not per_process_stats:
+                    per_process_stats = self._get_nocturne_process_stats()
 
         # Log PLR buffer stats
         if args.use_plr and args.log_plr_buffer_stats:
@@ -1181,5 +1303,8 @@ class AdversarialRunner(object):
                 'agent_action_complexity': agent_info['action_complexity'],
                 'adversary_action_complexity': adversary_agent_info['action_complexity']  
             }) 
+
+        if per_process_stats:
+            stats['_per_process_stats'] = per_process_stats
 
         return stats

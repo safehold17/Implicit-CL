@@ -53,8 +53,62 @@ if __name__ == '__main__':
     if not os.path.exists(screenshot_dir):
         os.makedirs(screenshot_dir, exist_ok=True)
 
-    def log_stats(stats):
-        filewriter.log(stats)
+    def log_stats(stats, tick=None):
+        key_aliases = {
+            'collision_occurred': 'collision',
+            'offroad_occurred': 'offroad',
+            'goal_reached_occurred': 'goal_reached',
+            'position_reached_occurred': 'position_reached',
+            'avg_progress': 'progress',
+        }
+        ordered_prefix = [
+            'process_idx',
+            'seed',
+            'scenario_id',
+            'collision',
+            'offroad',
+            'position_reached',
+            'goal_reached',
+            'progress',
+            'steps',
+            'total_episodes',
+            'episode_reward',
+            'total_student_grad_updates',
+            'mean_agent_return',
+            'agent_value_loss',
+            'agent_pg_loss',
+            'agent_dist_entropy',
+        ]
+
+        def normalize_and_reorder(row):
+            normalized = {}
+            for k, v in row.items():
+                normalized[key_aliases.get(k, k)] = v
+
+            reordered = {}
+            for k in ordered_prefix:
+                if k in normalized:
+                    reordered[k] = normalized[k]
+            for k, v in normalized.items():
+                if k not in reordered:
+                    reordered[k] = v
+            return reordered
+
+        per_process_stats = stats.get('_per_process_stats')
+        if per_process_stats:
+            shared_stats = {k: v for k, v in stats.items() if k != '_per_process_stats'}
+            for process_stats in per_process_stats:
+                row = shared_stats.copy()
+                row.update(process_stats)
+                row = normalize_and_reorder(row)
+                filewriter.log(row, tick=tick)
+                if args.verbose:
+                    key_excluded = {k: () for k in row.keys()}
+                    HumanOutputFormat(sys.stdout).write(row, key_excluded=key_excluded, step=0)
+            return
+
+        stats = normalize_and_reorder(stats)
+        filewriter.log(stats, tick=tick)
         if args.verbose:
             # 构造 key_excluded 字典（所有 key 都不排除）
             key_excluded = {k: () for k in stats.keys()}
@@ -247,7 +301,8 @@ if __name__ == '__main__':
             update_start_time = update_end_time
             stats.update({'sps': sps})
             stats.update(test_stats) # Ensures sps column is always before test stats
-            log_stats(stats)
+            log_tick = j if '_per_process_stats' in stats else None
+            log_stats(stats, tick=log_tick)
 
         # === Log PLR level weights ===
         if args.weight_log_interval > 0 and \

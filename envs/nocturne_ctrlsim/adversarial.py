@@ -236,11 +236,13 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self._collision_occurred: bool = False
         self._goal_reached: bool = False
         self._offroad_occurred: bool = False
+        self._position_reached: bool = False
         
         # Episode statistics (for training monitoring)
         self._episode_collision_occurred: bool = False
         self._episode_goal_reached: bool = False
         self._episode_offroad_occurred: bool = False
+        self._episode_position_reached: bool = False
         self._episode_steps: int = 0
         self._episode_progress: float = 0.0  # Target progress [0, 1]
         
@@ -528,11 +530,13 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self._collision_occurred = False
         self._goal_reached = False
         self._offroad_occurred = False
+        self._position_reached = False
         
         # Reset episode statistics
         self._episode_collision_occurred = False
         self._episode_goal_reached = False
         self._episode_offroad_occurred = False
+        self._episode_position_reached = False
         self._episode_steps = 0
         self._episode_progress = 0.0
         
@@ -909,6 +913,9 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             self._episode_goal_reached = True
         if self._offroad_occurred:
             self._episode_offroad_occurred = True
+        self._position_reached = self._is_ego_position_reached()
+        if self._position_reached:
+            self._episode_position_reached = True
         
         # Calculate target progress (current distance vs initial distance)
         if self.ego_vehicle and self._ego_goal_dict and self._ego_goal_dist_normalizer > 0:
@@ -1050,6 +1057,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             info.update({
                 'collision_occurred': 1.0 if self._episode_collision_occurred else 0.0,
                 'goal_reached_occurred': 1.0 if self._episode_goal_reached else 0.0,
+                'position_reached_occurred': 1.0 if self._episode_position_reached else 0.0,
                 'offroad_occurred': 1.0 if self._episode_offroad_occurred else 0.0,
                 'avg_progress': self._episode_progress,
                 'episode_steps': self._episode_steps,
@@ -1806,6 +1814,18 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         while diff < -np.pi:
             diff += 2 * np.pi
         return diff
+
+    def _is_ego_position_reached(self) -> bool:
+        if self.ego_vehicle is None or self._ego_goal_dict is None:
+            return False
+
+        ego_pos = self.ego_vehicle.getPosition()
+        ego_pos_arr = np.array([ego_pos.x, ego_pos.y])
+        goal_pos = self._ego_goal_dict.get('pos')
+        if goal_pos is None:
+            return False
+        dist_to_goal = np.linalg.norm(goal_pos - ego_pos_arr)
+        return dist_to_goal < 1.0
     
     def _check_done(self) -> bool:
         """
@@ -1847,6 +1867,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             self._last_completed_episode_info = {
                 'collision_occurred': 1.0 if self._episode_collision_occurred else 0.0,
                 'goal_reached_occurred': 1.0 if self._episode_goal_reached else 0.0,
+                'position_reached_occurred': 1.0 if self._episode_position_reached else 0.0,
                 'offroad_occurred': 1.0 if self._episode_offroad_occurred else 0.0,
                 'avg_progress': self._episode_progress,
                 'episode_steps': self._episode_steps,
@@ -1859,6 +1880,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             # Diagnostic information (参考 ctrl-sim metrics)
             'collision': self._collision_occurred,
             'goal_reached': self._goal_reached,
+            'position_reached': self._position_reached,
             'offroad': self._offroad_occurred,
             'progress': progress,
         }

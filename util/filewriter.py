@@ -78,6 +78,20 @@ class FileWriter:
             )
         self.xpid = xpid
         self._tick = 0
+        self._wrote_log_header = False
+        self._avg_metric_fields = [
+            "collision",
+            "offroad",
+            "position_reached",
+            "goal_reached",
+            "progress",
+            "episode_reward",
+            "mean_agent_return",
+            "agent_value_loss",
+            "agent_pg_loss",
+            "agent_dist_entropy",
+            "plr_episode_reward",
+        ]
 
         # Metadata gathering.
         if xp_args is None:
@@ -172,6 +186,7 @@ class FileWriter:
             self._logger.warning(
                 "Path to log file already exists. " "New data will be appended."
             )
+            self._wrote_log_header = True
             # Override default fieldnames.
             with open(self.paths["fields"], "r") as csvfile:
                 reader = csv.reader(csvfile)
@@ -182,11 +197,16 @@ class FileWriter:
             with open(self.paths["logs"], "r") as csvfile:
                 reader = csv.reader(csvfile)
                 lines = list(reader)
-                # Need at least two lines in order to read the last tick:
-                # the first is the csv header and the second is the first line
-                # of data.
-                if len(lines) > 1:
-                    self._tick = int(lines[-1][0]) + 1
+                # Skip non-numeric rows (for example trailing avg rows) when
+                # recovering ticks from previous logs.
+                for row in reversed(lines):
+                    if not row:
+                        continue
+                    tick = self._safe_float(row[0])
+                    if tick is None:
+                        continue
+                    self._tick = int(tick) + 1
+                    break
 
         self._fieldfile = open(self.paths["fields"], "a")
         self._fieldwriter = csv.writer(self._fieldfile)
@@ -207,23 +227,75 @@ class FileWriter:
         self._finaltestfile.flush()
 
     def log(self, to_log: Dict, tick: int = None, verbose: bool = False) -> None:
-        if tick is not None:
-            raise NotImplementedError
-        else:
+        prioritized_fields = [
+            '_tick',
+            'process_idx',
+            '_time',
+            'seed',
+            'scenario_id',
+            'collision',
+            'offroad',
+            'position_reached',
+            'goal_reached',
+            'progress',
+            'steps',
+            'total_episodes',
+            'episode_reward',
+            'total_student_grad_updates',
+            'mean_agent_return',
+            'agent_value_loss',
+            'agent_pg_loss',
+            'agent_dist_entropy',
+        ]
+
+        if tick is None:
             to_log["_tick"] = self._tick
             self._tick += 1
+        else:
+            tick = int(tick)
+            to_log["_tick"] = tick
+            # Keep implicit ticks monotonic even when caller explicitly sets ticks.
+            if tick >= self._tick:
+                self._tick = tick + 1
         to_log["_time"] = time.time()
 
-        old_len = len(self.fieldnames)
+        old_fieldnames = list(self.fieldnames)
         for k in to_log:
             if k not in self.fieldnames:
                 self.fieldnames.append(k)
-        if old_len != len(self.fieldnames):
+        # Keep avg-only metric column schema stable during normal logging,
+        # rather than adding a new column at close() time.
+        if "plr_episode_reward" not in self.fieldnames:
+            self.fieldnames.append("plr_episode_reward")
+
+        reordered = []
+        for k in prioritized_fields:
+            if k in self.fieldnames:
+                reordered.append(k)
+        for k in self.fieldnames:
+            if k not in reordered:
+                reordered.append(k)
+        self.fieldnames = self._move_fields_before(
+            reordered,
+            anchor="plr_opp0_goal_tilt",
+            fields=[
+                "plr_veh_goal_avg",
+                "veh_goal_avg",
+                "plr_veh_veh_avg",
+                "veh_veh_avg",
+                "plr_veh_edge_avg",
+                "veh_edge_avg",
+            ],
+        )
+
+        if old_fieldnames != self.fieldnames:
+            self._logwriter = csv.DictWriter(self._logfile, fieldnames=self.fieldnames)
             self._fieldwriter.writerow(self.fieldnames)
             self._logger.info("Updated log fields: %s", self.fieldnames)
 
-        if to_log["_tick"] == 0:
+        if not self._wrote_log_header:
             self._logfile.write("# %s\n" % ",".join(self.fieldnames))
+            self._wrote_log_header = True
 
         if verbose:
             self._logger.info(
@@ -261,6 +333,9 @@ class FileWriter:
         self._finaltestfile.flush()
 
     def close(self, successful: bool = True) -> None:
+        if successful:
+            self._append_avg_row()
+
         self.metadata["date_end"] = datetime.datetime.now().strftime(
             "%Y-%m-%d %H:%M:%S.%f"
         )
@@ -277,9 +352,105 @@ class FileWriter:
     def latest_tick(self):
         with open(self.paths["logs"], "r") as logsfile:
             csvreader = csv.reader(logsfile)
+            latest = None
             for row in csvreader:
-                pass
-            if row:
-                return int(row[0])
-            else:
-                return 0
+                if not row:
+                    continue
+                tick = self._safe_float(row[0])
+                if tick is None:
+                    continue
+                latest = int(tick)
+            return latest if latest is not None else 0
+
+    @staticmethod
+    def _safe_float(value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        if text == "":
+            return None
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _move_fields_before(fieldnames, anchor, fields):
+        if anchor not in fieldnames:
+            return fieldnames
+
+        result = [f for f in fieldnames if f not in fields]
+        anchor_idx = result.index(anchor)
+        to_insert = [f for f in fields if f in fieldnames]
+        if not to_insert:
+            return result
+        return result[:anchor_idx] + to_insert + result[anchor_idx:]
+
+    def _append_avg_row(self):
+        if not os.path.exists(self.paths["logs"]):
+            return
+
+        with open(self.paths["logs"], "r", newline="") as csvfile:
+            rows = list(csv.reader(csvfile))
+
+        if not rows:
+            return
+
+        process_idx = self.fieldnames.index("process_idx") if "process_idx" in self.fieldnames else None
+        plr_marker_idx = self.fieldnames.index("plr_scenario_episode_reward") \
+            if "plr_scenario_episode_reward" in self.fieldnames else None
+        episode_reward_idx = self.fieldnames.index("episode_reward") if "episode_reward" in self.fieldnames else None
+
+        metric_values = {k: [] for k in self._avg_metric_fields if k != "plr_episode_reward"}
+        plr_episode_rewards = []
+
+        for row in rows:
+            if not row:
+                continue
+            if row[0].startswith("#"):
+                continue
+
+            # Only aggregate true per-process data rows.
+            if process_idx is None or process_idx >= len(row):
+                continue
+            process_value = self._safe_float(row[process_idx])
+            if process_value is None:
+                continue
+
+            for metric in metric_values:
+                if metric not in self.fieldnames:
+                    continue
+                metric_idx = self.fieldnames.index(metric)
+                if metric_idx >= len(row):
+                    continue
+                value = self._safe_float(row[metric_idx])
+                if value is not None:
+                    metric_values[metric].append(value)
+
+            # PLR row criterion: non-empty plr_scenario_episode_reward.
+            if plr_marker_idx is not None and plr_marker_idx < len(row):
+                plr_marker = str(row[plr_marker_idx]).strip()
+                if plr_marker != "" and episode_reward_idx is not None and episode_reward_idx < len(row):
+                    ep_reward = self._safe_float(row[episode_reward_idx])
+                    if ep_reward is not None:
+                        plr_episode_rewards.append(ep_reward)
+
+        if not any(metric_values.values()) and not plr_episode_rewards:
+            return
+
+        avg_row = {k: "" for k in self.fieldnames}
+        if "_tick" in avg_row:
+            avg_row["_tick"] = "avg"
+        if "process_idx" in avg_row:
+            avg_row["process_idx"] = "avg"
+        if "_time" in avg_row:
+            avg_row["_time"] = time.time()
+
+        for metric, values in metric_values.items():
+            if values:
+                avg_row[metric] = float(np.mean(values))
+        if plr_episode_rewards and "plr_episode_reward" in avg_row:
+            avg_row["plr_episode_reward"] = float(np.mean(plr_episode_rewards))
+
+        self._logwriter.writerow(avg_row)
+        self._logfile.flush()
