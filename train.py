@@ -186,6 +186,7 @@ if __name__ == '__main__':
                 opponent_checkpoint=args.opponent_checkpoint,
                 scenario_data_dir=args.scenario_data_dir,
                 preprocess_dir=args.preprocess_dir,
+                vehicle_map_path=args.vehicle_map_path,
                 max_episode_steps=args.nocturne_max_episode_steps)
 
     # === Train === 

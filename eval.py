@@ -189,6 +189,7 @@ class Evaluator(object):
 					'opponent_checkpoint',
 					'scenario_data_dir',
 					'preprocess_dir',
+					'vehicle_map_path',
 					'max_episode_steps',
 					'device',
 					'tilting_mode',
@@ -504,6 +505,7 @@ def _collect_nocturne_required_args(flags, cli_args):
 		"opponent_checkpoint",
 		"scenario_data_dir",
 		"preprocess_dir",
+		"vehicle_map_path",
 	]
 	required = {}
 	for key in keys:

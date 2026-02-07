@@ -642,8 +642,13 @@ parser.add_argument(
 parser.add_argument(
     '--preprocess_dir',
     type=str,
-    default='data/preprocess',
+    default='data/preprocess/test',
     help='The directory of the ctrl-sim preprocessed data')
+parser.add_argument(
+    '--vehicle_map_path',
+    type=str,
+    default='data/vehicle_map_valid.json',
+    help='The path to the vehicle map JSON file')
 parser.add_argument(
     '--nocturne_max_episode_steps',
     type=int,

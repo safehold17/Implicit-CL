@@ -164,15 +164,9 @@ def _make_env(args):
             if max_episode_steps is None:
                 max_episode_steps = getattr(args, 'max_episode_steps', 90)
         
-        # Auto-detect vehicle map based on scenario_index_path or scenario_data_dir
         scenario_index_path = getattr(args, 'scenario_index_path', 'data/scenarios_index.json')
         scenario_data_dir = getattr(args, 'scenario_data_dir', 'data/nocturne_waymo/formatted_json_v2_no_tl_train')
-        
-        # Determine which vehicle map to use based on paths
-        if 'valid' in scenario_index_path or 'valid' in scenario_data_dir:
-            vehicle_map_path = 'data/vehicle_map_valid.json'
-        else:
-            vehicle_map_path = 'data/vehicle_map_train.json'
+        vehicle_map_path = getattr(args, 'vehicle_map_path', 'data/vehicle_map_valid.json')
         
         env_kwargs.update({
             'scenario_index_path': scenario_index_path,
