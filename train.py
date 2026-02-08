@@ -17,6 +17,7 @@ import gym
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from stable_baselines3.common.logger import HumanOutputFormat
+from tqdm import tqdm
 
 display = None
 
@@ -247,101 +248,110 @@ if __name__ == '__main__':
     last_checkpoint_idx = getattr(train_runner, args.checkpoint_basis)
     update_start_time = timer()
     num_updates = int(args.num_env_steps) // args.num_steps // args.num_processes
-    for j in range(initial_update_count, num_updates):
-        stats = train_runner.run()
+    train_updates = range(initial_update_count, num_updates)
+    with tqdm(
+        train_updates,
+        total=num_updates,
+        initial=initial_update_count,
+        desc='Training',
+        dynamic_ncols=True,
+        disable=not sys.stderr.isatty(),
+    ) as pbar:
+        for j in pbar:
+            stats = train_runner.run()
 
-        # === Perform logging ===
-        if train_runner.num_updates <= last_logged_update_at_restart:
-            continue
+            # === Perform logging ===
+            if train_runner.num_updates <= last_logged_update_at_restart:
+                continue
 
-        log = (j % args.log_interval == 0) or j == num_updates - 1
-        save_screenshot = \
-            args.screenshot_interval > 0 and \
-                (j % args.screenshot_interval == 0)
+            log = (j % args.log_interval == 0) or j == num_updates - 1
+            save_screenshot = \
+                args.screenshot_interval > 0 and \
+                    (j % args.screenshot_interval == 0)
 
-        if log:
-            # Eval
-            test_stats = {}
-            agent_env_returns = None
-            adv_env_returns = None
-            if evaluator is not None and (j % args.test_interval == 0 or j == num_updates - 1):
-                if j == num_updates - 1:
-                    test_stats, agent_env_returns = evaluator.evaluate(
-                        train_runner.agents['agent'],
-                        return_episode_returns=True)
-                else:
-                    test_stats = evaluator.evaluate(
-                        train_runner.agents['agent'])
-                stats.update(test_stats)
-                if train_runner.agents.get('adversary_agent') is not None and (
-                    args.use_accel_paired or j == num_updates - 1
-                ):
+            if log:
+                # Eval
+                test_stats = {}
+                agent_env_returns = None
+                adv_env_returns = None
+                if evaluator is not None and (j % args.test_interval == 0 or j == num_updates - 1):
                     if j == num_updates - 1:
-                        adv_test_stats, adv_env_returns = evaluator.evaluate(
-                            train_runner.agents['adversary_agent'],
+                        test_stats, agent_env_returns = evaluator.evaluate(
+                            train_runner.agents['agent'],
                             return_episode_returns=True)
                     else:
-                        adv_test_stats = evaluator.evaluate(train_runner.agents['adversary_agent'])
-                    if args.use_accel_paired:
-                        curr_keys = list(adv_test_stats.keys())
-                        for curr_key in curr_keys:
-                            adv_test_stats[f"advagent_{curr_key}"] = adv_test_stats[curr_key]
-                            adv_test_stats.pop(curr_key, None)
-                        stats.update(adv_test_stats)
+                        test_stats = evaluator.evaluate(
+                            train_runner.agents['agent'])
+                    stats.update(test_stats)
+                    if train_runner.agents.get('adversary_agent') is not None and (
+                        args.use_accel_paired or j == num_updates - 1
+                    ):
+                        if j == num_updates - 1:
+                            adv_test_stats, adv_env_returns = evaluator.evaluate(
+                                train_runner.agents['adversary_agent'],
+                                return_episode_returns=True)
+                        else:
+                            adv_test_stats = evaluator.evaluate(train_runner.agents['adversary_agent'])
+                        if args.use_accel_paired:
+                            curr_keys = list(adv_test_stats.keys())
+                            for curr_key in curr_keys:
+                                adv_test_stats[f"advagent_{curr_key}"] = adv_test_stats[curr_key]
+                                adv_test_stats.pop(curr_key, None)
+                            stats.update(adv_test_stats)
 
-                if j == num_updates - 1:
-                    log_final_test_eval(agent_env_returns, 'agent')
-                    log_final_test_eval(adv_env_returns, 'adversary_agent')
-            elif evaluator is not None:
-                stats.update({k:None for k in evaluator.get_stats_keys()})
+                    if j == num_updates - 1:
+                        log_final_test_eval(agent_env_returns, 'agent')
+                        log_final_test_eval(adv_env_returns, 'adversary_agent')
+                elif evaluator is not None:
+                    stats.update({k:None for k in evaluator.get_stats_keys()})
 
-            update_end_time = timer()
-            num_incremental_updates = 1 if j == 0 else args.log_interval
-            sps = num_incremental_updates*(args.num_processes * args.num_steps) / (update_end_time - update_start_time)
-            update_start_time = update_end_time
-            stats.update({'sps': sps})
-            stats.update(test_stats) # Ensures sps column is always before test stats
-            log_tick = j if '_per_process_stats' in stats else None
-            log_stats(stats, tick=log_tick)
+                update_end_time = timer()
+                num_incremental_updates = 1 if j == 0 else args.log_interval
+                sps = num_incremental_updates*(args.num_processes * args.num_steps) / (update_end_time - update_start_time)
+                update_start_time = update_end_time
+                stats.update({'sps': sps})
+                stats.update(test_stats) # Ensures sps column is always before test stats
+                log_tick = j if '_per_process_stats' in stats else None
+                log_stats(stats, tick=log_tick)
 
-        # === Log PLR level weights ===
-        if args.weight_log_interval > 0 and \
-           j % args.weight_log_interval == 0 and \
-           train_runner.level_samplers:
-            # Get the first available level sampler (usually 'agent')
-            level_sampler = train_runner.all_level_samplers[0]
-            if level_sampler is not None:
-                weights = level_sampler.sample_weights()
-                seeds = level_sampler.seeds
-                filewriter.log_level_weights(weights, seeds)
+            # === Log PLR level weights ===
+            if args.weight_log_interval > 0 and \
+               j % args.weight_log_interval == 0 and \
+               train_runner.level_samplers:
+                # Get the first available level sampler (usually 'agent')
+                level_sampler = train_runner.all_level_samplers[0]
+                if level_sampler is not None:
+                    weights = level_sampler.sample_weights()
+                    seeds = level_sampler.seeds
+                    filewriter.log_level_weights(weights, seeds)
 
-        checkpoint_idx = getattr(train_runner, args.checkpoint_basis)
+            checkpoint_idx = getattr(train_runner, args.checkpoint_basis)
 
-        if checkpoint_idx != last_checkpoint_idx:
-            is_last_update = j == num_updates - 1
-            if is_last_update or \
-                (train_runner.num_updates > 0 and checkpoint_idx % args.checkpoint_interval == 0):
-                checkpoint(checkpoint_idx)
-                logging.info(f"\nSaved checkpoint after update {j}")
-                logging.info(f"\nLast update: {is_last_update}")
-            elif train_runner.num_updates > 0 and args.archive_interval > 0 \
-                and checkpoint_idx % args.archive_interval == 0:
-                checkpoint(checkpoint_idx)
-                logging.info(f"\nArchived checkpoint after update {j}")
+            if checkpoint_idx != last_checkpoint_idx:
+                is_last_update = j == num_updates - 1
+                if is_last_update or \
+                    (train_runner.num_updates > 0 and checkpoint_idx % args.checkpoint_interval == 0):
+                    checkpoint(checkpoint_idx)
+                    logging.info(f"\nSaved checkpoint after update {j}")
+                    logging.info(f"\nLast update: {is_last_update}")
+                elif train_runner.num_updates > 0 and args.archive_interval > 0 \
+                    and checkpoint_idx % args.archive_interval == 0:
+                    checkpoint(checkpoint_idx)
+                    logging.info(f"\nArchived checkpoint after update {j}")
 
-        if save_screenshot:
-            level_info = train_runner.sampled_level_info
-            if args.env_name.startswith('BipedalWalker'):
-                encodings = venv.get_level()
-                df = bipedalwalker_df_from_encodings(args.env_name, encodings)
-                if args.use_editor and level_info:
-                    df.to_csv(os.path.join(
-                        screenshot_dir, 
-                        f"update{j}-replay{level_info['level_replay']}-n_edits{level_info['num_edits'][0]}.csv"))
-                else:
-                    df.to_csv(os.path.join(
-                        screenshot_dir, 
-                        f'update{j}.csv'))
+            if save_screenshot:
+                level_info = train_runner.sampled_level_info
+                if args.env_name.startswith('BipedalWalker'):
+                    encodings = venv.get_level()
+                    df = bipedalwalker_df_from_encodings(args.env_name, encodings)
+                    if args.use_editor and level_info:
+                        df.to_csv(os.path.join(
+                            screenshot_dir, 
+                            f"update{j}-replay{level_info['level_replay']}-n_edits{level_info['num_edits'][0]}.csv"))
+                    else:
+                        df.to_csv(os.path.join(
+                            screenshot_dir, 
+                            f'update{j}.csv'))
             else:
                 venv.reset_agent()
                 images = venv.get_images()
