@@ -44,20 +44,16 @@ class DataBridge:
         self.steps = cfg.nocturne.steps
         self.cfg_dataset = cfg.dataset.waymo
 
-        # ctrl-sim preprocessed dataset (align evaluator behavior)
-        self._preprocess_split = 'test'
-        self._preprocess_root: Optional[str] = None
+        # ctrl-sim preprocessed dataset
+        # preprocess_dir must directly point to the directory containing *_physics.pkl files.
         self.preprocessed_dset: Optional[RLWaymoDatasetCtRLSim] = None
         if preprocess_dir:
-            preprocess_root = preprocess_dir
-            if os.path.basename(os.path.normpath(preprocess_dir)) == self._preprocess_split:
-                preprocess_root = os.path.dirname(preprocess_dir)
-            self._preprocess_root = preprocess_root
             try:
-                self.cfg.dataset.waymo.preprocess_dir = preprocess_root
+                self.cfg.dataset.waymo.preprocess_dir = preprocess_dir
             except Exception:
                 pass
-            self.preprocessed_dset = RLWaymoDatasetCtRLSim(cfg, split_name=self._preprocess_split, mode='eval')
+            # Use empty split_name so RLWaymoDataset loads files from preprocess_dir/*.pkl.
+            self.preprocessed_dset = RLWaymoDatasetCtRLSim(cfg, split_name='', mode='eval')
         
         # Preprocessed files cache
         self._preprocessed_files_cache: Optional[Dict[str, str]] = None
@@ -184,7 +180,7 @@ class DataBridge:
                 - 'road_types': Road types information
             file_exists: Whether the file exists
         """
-        if self.preprocessed_dset is None or self._preprocess_root is None:
+        if self.preprocessed_dset is None:
             return None, False
         
         scenario_id = os.path.splitext(scenario_filename)[0]
