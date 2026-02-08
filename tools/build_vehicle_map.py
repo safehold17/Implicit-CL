@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from omegaconf import OmegaConf
+from tqdm import tqdm
 
 # Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -392,7 +393,12 @@ def main() -> None:
     scenarios_filtered = 0
     
     vehicle_map: Dict[str, Dict] = {}
-    for scenario_id in scenario_ids:
+    for scenario_id in tqdm(
+        scenario_ids,
+        desc="Building vehicle map",
+        unit="scenario",
+        dynamic_ncols=True,
+    ):
         total_scenarios += 1
         scenario_filename = f"{scenario_id}.json"
         scenario_path = os.path.join(args.scenario_dir, scenario_filename)
