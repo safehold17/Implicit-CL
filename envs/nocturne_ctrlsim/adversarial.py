@@ -7,32 +7,56 @@ Support DCD framework requirements:
 - dynamic scenario pool size
 - Level mutation and editing
 """
-import json
 import os
 
 import gym
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Union
 
-from tools.safe_bicycle import safe_backward_action_from_states
-
 from .level import ScenarioLevel, PER_VEHICLE_TILTING_LENGTH
-from .vehicle_selection import VehicleSelectionMixin
+
+from .scenario_helpers import (
+    load_scenario,
+    get_vehicle_by_id,
+    remove_background_moving_vehicles,
+)
+
+from .opponent_policy import (
+    initialize_ego_goal_state,
+    get_goal_point_for_vehicle,
+    get_gt_action,
+    apply_student_action,
+    get_student_observation,
+    compute_reward,
+    is_ego_position_reached,
+)
+
+from .simulation_info import (
+    check_done,
+    get_info,
+    get_complexity_info,
+    reset_metrics as sim_reset_metrics,
+)
+
+from .vehicle_map_helpers import (
+    load_vehicle_ids_for_scenario,
+)
+
 from .video_recorder import NocturneVideoRecorder
-from .visualization import VisualizationMixin
-from .local_frame import angle_of_rotation, angle_sub, to_local
+
+from . import visualization as viz
+
 from tools.build_scenario_index import ScenarioIndex
+
 from adapters.ctrl_sim import (
     CtrlSimOpponentAdapter,
     DataBridge,
-    load_ctrl_sim_config,
     create_minimal_config,
 )
 
 
 # ========== Level parameter ranges ==========
 DEFAULT_TILT_RANGE = [-25, 25]  # tilting parameter range
-DEFAULT_TILT_MUTATION_STD = 1.0  # perturbation amplitude when mutating (same as config.yaml)
 DEFAULT_OBS_DIM = 128  # observation dimension
 DEFAULT_ACTION_DIM = 2  # action dimension (accel, steer)
 
@@ -41,12 +65,11 @@ DEFAULT_LEVEL_PARAMS = [0, 0, 0, 0]
 
 
 def rand_int_seed():
-    import os
     # generate 4 bytes (32 bits) random number
     return int.from_bytes(os.urandom(4), byteorder="little")
 
 
-class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.Env):
+class NocturneCtrlSimAdversarial(gym.Env):
     """
     DCD adversarial environment: Nocturne scenario + CtRL-Sim opponent
     
@@ -101,7 +124,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         obs_dim: int = DEFAULT_OBS_DIM,
         action_dim: int = DEFAULT_ACTION_DIM,
         tilt_range: List[int] = None,
-        tilt_mutation_std: float = DEFAULT_TILT_MUTATION_STD,
         **kwargs
     ):
         """
@@ -250,12 +272,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         # Level parameters vector (for adversary building)
         # [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt, per_vehicle_tilts...]
-        if self.tilting_mode == 'per_vehicle':
-            self.level_params_vec = list(DEFAULT_LEVEL_PARAMS) + [0] * PER_VEHICLE_TILTING_LENGTH
-        elif self.tilting_mode == 'none':
-            self.level_params_vec = [0]
-        else:
-            self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
+        self.level_params_vec = self._init_level_params_vec()
         
         # ========== Student observation config (from args) ==========
         # These parameters are used in make_agent, set default values here
@@ -275,7 +292,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self._obs_dim = max(obs_dim, late_fusion_obs_dim)
         self._action_dim = action_dim
         self.tilt_range = tilt_range if tilt_range is not None else list(DEFAULT_TILT_RANGE)
-        self.tilt_mutation_std = tilt_mutation_std
         
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, 
@@ -312,7 +328,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             low=0, 
             high=self.adversary_max_steps, 
             shape=(1,), 
-            dtype='uint8'
+            dtype=np.int32
         )
         self.adversary_randomz_obs_space = gym.spaces.Box(
             low=0, 
@@ -323,7 +339,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # image: current level parameters
         self.adversary_image_obs_space = gym.spaces.Box(
             low=-25.0, 
-            high=max(len(self.scenario_ids), 25.0),
+            high=max(len(self.scenario_ids), 25),
             shape=(len(self.level_params_vec),), 
             dtype=np.float32
         )
@@ -344,12 +360,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # ========== Video recording ==========
         self.video_recorder: Optional[NocturneVideoRecorder] = None
         self.recording_video = False
-
-        # ========== Metrics tracking ==========
-        self.episode_reward = 0.0
-        self.collision_count = 0
-        self.goal_reached = False
-        self.reset_metrics()
 
     def _set_process_seed(self, seed: int, reseed_numpy: bool = True) -> None:
         """Set process-level RNG streams used by this environment instance."""
@@ -386,6 +396,19 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 return self._decode_string_encoding(level)
             return ScenarioLevel.from_encoding(level, self.index_to_scenario_id)
         raise TypeError(f"Unsupported level type for reset/mutation: {type(level)}")
+
+    def _init_level_params_vec(self) -> List[int]:
+        """Build default level parameter vector based on current tilting mode."""
+        if self.tilting_mode == 'per_vehicle':
+            return list(DEFAULT_LEVEL_PARAMS) + [0] * PER_VEHICLE_TILTING_LENGTH
+        if self.tilting_mode == 'none':
+            return [0]
+        return list(DEFAULT_LEVEL_PARAMS)
+
+    # ========== Visualization helpers (bound from visualization module) ==========
+    render = viz.render
+    start_recording = viz.start_recording
+    stop_recording = viz.stop_recording
     
     # ========== Basic environment interface ==========
     
@@ -411,12 +434,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self.adversary_step_count = 0
         
         # Reset level parameters to default values
-        if self.tilting_mode == 'per_vehicle':
-            self.level_params_vec = list(DEFAULT_LEVEL_PARAMS) + [0] * PER_VEHICLE_TILTING_LENGTH
-        elif self.tilting_mode == 'none':
-            self.level_params_vec = [0]
-        else:
-            self.level_params_vec = list(DEFAULT_LEVEL_PARAMS)
+        self.level_params_vec = self._init_level_params_vec()
         
         # Generate new level seed
         self._next_level_seed()
@@ -522,7 +540,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             per_vehicle_tilting = tuple(
                 int(round(float(v))) for v in self.level_params_vec[4:4 + PER_VEHICLE_TILTING_LENGTH]
             )
-            # TODO: no need to convert V anymore, already set tilting parameters as integer
             self.current_level = ScenarioLevel(
                 scenario_id=scenario_id,
                 seed=self.level_seed,
@@ -592,19 +609,16 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         )
         
         # Load Nocturne scenario (must after getting GT data)
-        self._load_scenario(level.scenario_id)
+        load_scenario(self, level.scenario_id)
         
-        # Load vehicle IDs from map (with fallback to dynamic selection)
-        ego_id, opponent_ids, ego_selection_mode = self._load_vehicle_ids_for_scenario(level.scenario_id)
-        
-        if ego_id is not None:
-            # Use pre-computed ego vehicle ID
-            self.ego_vehicle = self._get_vehicle_by_id(ego_id)
-            self.ego_selection_mode = ego_selection_mode
-        else:
-            # Fallback to dynamic selection
-            self.ego_vehicle = self._select_ego_vehicle()
-            self.ego_selection_mode = "unknown"
+        # Load vehicle IDs from map (strict mode: no dynamic fallback)
+        ego_id, opponent_ids, ego_selection_mode = load_vehicle_ids_for_scenario(self, level.scenario_id)
+        self.ego_vehicle = get_vehicle_by_id(self, ego_id)
+        if self.ego_vehicle is None:
+            raise ValueError(
+                f"ego_vehicle_id {ego_id} from vehicle map does not exist in scenario '{level.scenario_id}'."
+            )
+        self.ego_selection_mode = ego_selection_mode
         
         # Load preprocessed data (with check)
         self._preproc_data, file_exists = self.data_bridge.load_preprocessed_data(
@@ -616,25 +630,29 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                 f"Check preprocess_dir: {self.data_bridge.preprocess_dir}"
             )
         
-        # Select opponent vehicles
-        if opponent_ids is not None and len(opponent_ids) > 0:
-            # Use pre-computed opponent vehicle IDs
-            self.opponent_vehicle_ids = opponent_ids
-            self.opponent_vehicles = [
-                self._get_vehicle_by_id(vid) for vid in opponent_ids
-            ]
-            self.opponent_vehicles = [v for v in self.opponent_vehicles if v is not None]
-        else:
-            # Fallback to dynamic selection
-            self._select_opponent_vehicles(k=self.opponent_k)
+        # Select opponent vehicles from map only (strict mode)
+        self.opponent_vehicle_ids = opponent_ids
+        self.opponent_vehicles = []
+        missing_opponent_ids = []
+        for vid in opponent_ids:
+            veh = get_vehicle_by_id(self, vid)
+            if veh is None:
+                missing_opponent_ids.append(vid)
+            else:
+                self.opponent_vehicles.append(veh)
+        if missing_opponent_ids:
+            raise ValueError(
+                f"opponent_vehicle_ids {missing_opponent_ids} from vehicle map do not exist in scenario "
+                f"'{level.scenario_id}'."
+            )
         
         # Initialize ego vehicle's goal and reward related states
-        self._initialize_ego_goal_state()
+        initialize_ego_goal_state(self)
         self._goal_points_by_id = {}
         if self.ego_vehicle is not None and self._ego_goal_dict is not None:
             self._goal_points_by_id[self.ego_vehicle.getID()] = self._ego_goal_dict['pos']
         for veh_id in self.opponent_vehicle_ids:
-            goal_pos = self._get_goal_point_for_vehicle(veh_id)
+            goal_pos = get_goal_point_for_vehicle(self, veh_id)
             if goal_pos is not None:
                 self._goal_points_by_id[veh_id] = goal_pos
 
@@ -648,7 +666,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
                     per[i] = 0
                 self.current_level.per_vehicle_tilting = tuple(per)
                 # Keep level_params_vec in sync if present
-                from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
                 if len(self.level_params_vec) >= 4 + PER_VEHICLE_TILTING_LENGTH:
                     for i in range(PER_VEHICLE_TILTING_LENGTH):
                         self.level_params_vec[4 + i] = per[i]
@@ -684,7 +701,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             self.opponent.set_tilting(0, 0, 0)
 
         if self.remove_background_vehicles:
-            self._remove_background_moving_vehicles()
+            remove_background_moving_vehicles(self)
         
         self.opponent.reset(
             self.scenario,
@@ -721,6 +738,41 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         """
         level = self._sample_random_level()
         return self.reset_to_level(level)
+
+    def _sample_random_level(self) -> ScenarioLevel:
+        """Randomly generate level"""
+        if self.tilting_mode in ('global', 'ego'):
+            # Global mode: sample 3 global tilts, per-vehicle tilting to 0
+            per_vehicle_tilting = tuple([0] * PER_VEHICLE_TILTING_LENGTH)
+            return ScenarioLevel(
+                scenario_id=np.random.choice(self.scenario_ids),
+                seed=rand_int_seed(),
+                goal_tilt=round(float(np.random.uniform(*self.tilt_range))),
+                veh_veh_tilt=round(float(np.random.uniform(*self.tilt_range))),
+                veh_edge_tilt=round(float(np.random.uniform(*self.tilt_range))),
+                per_vehicle_tilting=per_vehicle_tilting,
+            )
+        elif self.tilting_mode == 'none':
+            per_vehicle_tilting = tuple([0] * PER_VEHICLE_TILTING_LENGTH)
+            return ScenarioLevel(
+                scenario_id=np.random.choice(self.scenario_ids),
+                seed=rand_int_seed(),
+                goal_tilt=0,
+                veh_veh_tilt=0,
+                veh_edge_tilt=0,
+                per_vehicle_tilting=per_vehicle_tilting,
+            )
+        else:  # per_vehicle mode
+            # Per-vehicle mode: global tilts to 0, sample 21 per-vehicle tilts
+            per_vehicle_tilts = [round(float(np.random.uniform(*self.tilt_range))) for _ in range(PER_VEHICLE_TILTING_LENGTH)]
+            return ScenarioLevel(
+                scenario_id=np.random.choice(self.scenario_ids),
+                seed=rand_int_seed(),
+                goal_tilt=0,
+                veh_veh_tilt=0,
+                veh_edge_tilt=0,
+                per_vehicle_tilting=tuple(per_vehicle_tilts),
+            )
     
     def reset_to_level(self, level: Union[ScenarioLevel, str, np.ndarray]) -> np.ndarray:
         """
@@ -774,27 +826,21 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self._initialize_simulation()
         
         # Return student observation
-        return self._get_student_observation()
+        return get_student_observation(self)
     
     def _decode_string_encoding(self, encoding: np.ndarray) -> ScenarioLevel:
         """Decode string array encoding to ScenarioLevel"""
-        from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
-        
         # Check if the scenario pool mapping needs to be rebuilt
         if self._scenario_pool_dirty:
             self.rebuild_index_mappings()
-        
-        # Handle backward compatibility: old format has length 5, new has length 26
-        if len(encoding) >= 5 + PER_VEHICLE_TILTING_LENGTH:
-            # New format: [scenario_idx, goal, veh_veh, veh_edge, per_vehicle(21), seed]
-            per_vehicle_tilting = tuple(int(round(float(encoding[i]))) for i in range(4, 4 + PER_VEHICLE_TILTING_LENGTH))
-            seed_idx = 4 + PER_VEHICLE_TILTING_LENGTH
-        else:
-            # Old format: [scenario_idx, goal, veh_veh, veh_edge, seed]
-            per_vehicle_tilting = ()
-            seed_idx = 4
-        
-        scenario_idx = int(float(encoding[0]))
+        (
+            scenario_idx,
+            goal_tilt,
+            veh_veh_tilt,
+            veh_edge_tilt,
+            per_vehicle_tilting,
+            seed,
+        ) = ScenarioLevel.decode_encoding_fields(encoding)
         
         # Check if the scenario ID exists, if not, warning
         if scenario_idx not in self.index_to_scenario_id:
@@ -807,10 +853,10 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         return ScenarioLevel(
             scenario_id=scenario_id,
-            seed=int(float(encoding[seed_idx])),
-            goal_tilt=float(encoding[1]),
-            veh_veh_tilt=float(encoding[2]),
-            veh_edge_tilt=float(encoding[3]),
+            seed=seed,
+            goal_tilt=goal_tilt,
+            veh_veh_tilt=veh_veh_tilt,
+            veh_edge_tilt=veh_edge_tilt,
             per_vehicle_tilting=per_vehicle_tilting,
         )
     
@@ -831,7 +877,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # Reinitialize simulation
         self._initialize_simulation()
         
-        return self._get_student_observation()
+        return get_student_observation(self)
     
     def mutate_level(
         self,
@@ -872,6 +918,60 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         # Ensure the mutated level carries a fresh seed for subsequent resets.
         mutated = replace(mutated, seed=self._next_level_seed())
         return self.reset_to_level(mutated)
+
+    def _mutate_level_internal(
+        self,
+        level: ScenarioLevel
+    ) -> ScenarioLevel:
+        """
+        Execute level mutation
+        
+        Mutation strategy:
+        1. Determine mutation_mode (one/all)
+        2. If one, randomly choose a tilting dimension
+        3. Sample delta(s) from [-mutation_range, mutation_range]
+        4. Apply deltas based on tilting_mode
+
+        Note: only mutate tilt parameters, do not change scenario_id
+        """
+        from dataclasses import replace
+
+        if self.tilting_mode == 'none':
+            return level
+
+        rng = self._mutation_random_state
+        dims = [rng.randint(0, 3)] if self.mutation_mode == 'one' else [0, 1, 2]
+        params = ['goal_tilt', 'veh_veh_tilt', 'veh_edge_tilt']
+
+        if self.tilting_mode in ('global', 'ego'):
+            mutations = {}
+            if self.mutation_mode == 'one':
+                dim = dims[0]
+                param = params[dim]
+                delta = rng.uniform(-self.mutation_range, self.mutation_range)
+                new_val = np.clip(getattr(level, param) + delta, *self.tilt_range)
+                mutations[param] = round(float(new_val))
+            else:
+                deltas = rng.uniform(-self.mutation_range, self.mutation_range, size=3)
+                for param, delta in zip(params, deltas):
+                    new_val = np.clip(getattr(level, param) + delta, *self.tilt_range)
+                    mutations[param] = round(float(new_val))
+            return replace(level, **mutations)
+
+        # per_vehicle mode: update per_vehicle_tilting only
+        per = list(level.per_vehicle_tilting)
+        num_vehicles = PER_VEHICLE_TILTING_LENGTH // 3
+        if self.mutation_mode == 'one':
+            dim = dims[0]
+            deltas = rng.uniform(-self.mutation_range, self.mutation_range, size=num_vehicles)
+            for i, delta in enumerate(deltas):
+                idx = i * 3 + dim
+                per[idx] = round(float(np.clip(per[idx] + delta, *self.tilt_range)))
+        else:
+            deltas = rng.uniform(-self.mutation_range, self.mutation_range, size=PER_VEHICLE_TILTING_LENGTH)
+            for idx, delta in enumerate(deltas):
+                per[idx] = round(float(np.clip(per[idx] + delta, *self.tilt_range)))
+        return replace(level, per_vehicle_tilting=tuple(per))
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
         """
@@ -884,17 +984,17 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         4. Calculate reward and termination conditions
         5. If recording is enabled, capture current frame
         """
-        self.current_step += 1  # TODO：use current step then +1
+        self.current_step += 1
         
         # 1. Opponent policy inference
         opponent_actions = self.opponent.step(self.current_step - 1, self.vehicles)
         
         # 2. Apply student action to ego vehicle
-        self._apply_student_action(action)
+        apply_student_action(self, action)
         
         # 3. Apply opponent action
         for veh_id, (accel, steer) in opponent_actions.items():
-            veh = self._get_vehicle_by_id(veh_id)
+            veh = get_vehicle_by_id(self, veh_id)
             if veh is not None:
                 self.opponent.apply_action(veh, (accel, steer))
         
@@ -907,7 +1007,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         for veh in self.vehicles:
             veh_id = veh.getID()
             if veh_id not in controlled_ids:
-                gt_action = self._get_gt_action(veh_id, self.current_step - 1, veh)
+                gt_action = get_gt_action(self, veh_id, self.current_step - 1, veh)
                 if gt_action is not None:
                     self.opponent.apply_action(veh, gt_action)
         
@@ -943,8 +1043,8 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             )
         
         # 8. Calculate reward and termination conditions
-        obs = self._get_student_observation()
-        reward = self._compute_reward()
+        obs = get_student_observation(self)
+        reward = compute_reward(self)
         
         # Update episode statistics
         self._episode_steps += 1
@@ -954,7 +1054,7 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             self._episode_goal_reached = True
         if self._offroad_occurred:
             self._episode_offroad_occurred = True
-        self._position_reached = self._is_ego_position_reached()
+        self._position_reached = is_ego_position_reached(self)
         if self._position_reached:
             self._episode_position_reached = True
         
@@ -965,10 +1065,10 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
             current_dist = np.linalg.norm(goal_pos - np.array([ego_pos.x, ego_pos.y]))
             self._episode_progress = max(0.0, 1.0 - current_dist / self._ego_goal_dist_normalizer)
         
-        done = self._check_done()
+        done = check_done(self)
         if done:
             self.opponent.finalize(self.vehicles)
-        info = self._get_info()
+        info = get_info(self)
         
         return obs, reward, done, info
     
@@ -998,8 +1098,6 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         
         Used for PLR buffer storage (byte mode)
         """
-        from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
-        
         if self.current_level is None:
             enc = DEFAULT_LEVEL_PARAMS + [0] * PER_VEHICLE_TILTING_LENGTH + [self.level_seed]
         else:
@@ -1061,883 +1159,11 @@ class NocturneCtrlSimAdversarial(VehicleSelectionMixin, VisualizationMixin, gym.
         self._scenario_pool_dirty = False
     
     # ========== Metrics and information ==========
-    
-    def reset_metrics(self):
-        """Reset metrics tracking"""
-        self.episode_reward = 0.0
-        self.collision_count = 0
-        self.goal_reached = False
-
     def get_complexity_info(self) -> Dict[str, Any]:
-        """
-        Return current level complexity information and episode statistics (for logging and analysis)
-        
-        Prioritizes returning cached data from the last completed episode to avoid
-        returning zeros when called immediately after reset.
-        
-        Returns:
-            Dictionary containing level parameters and episode statistics
-        """
-        if self.current_level is None:
-            return {}
-        
-        info = {
-            # Level parameters
-            'scenario_id': self.current_level.scenario_id,
-            'seed': self.current_level.seed,
-            'opponent_k': self.opponent_k,
-            'scenario_pool_size': len(self.scenario_ids),
-        }
-        
-        # Episode statistics: prioritize cached completed episode data
-        if self._last_completed_episode_info is not None:
-            # Use cached data from last completed episode
-            info.update(self._last_completed_episode_info)
-        else:
-            # No cached data yet, use current episode data (may be zeros)
-            info.update({
-                'collision_occurred': 1.0 if self._episode_collision_occurred else 0.0,
-                'goal_reached_occurred': 1.0 if self._episode_goal_reached else 0.0,
-                'position_reached_occurred': 1.0 if self._episode_position_reached else 0.0,
-                'offroad_occurred': 1.0 if self._episode_offroad_occurred else 0.0,
-                'avg_progress': self._episode_progress,
-                'episode_steps': self._episode_steps,
-                'episode_reward': self.episode_reward,
-            })
+        return get_complexity_info(self)
 
-        if self.tilting_mode in ('global', 'ego', 'none'):
-            info.update({
-                'goal_tilt': 0 if self.tilting_mode == 'none' else self.current_level.goal_tilt,
-                'veh_veh_tilt': 0 if self.tilting_mode == 'none' else self.current_level.veh_veh_tilt,
-                'veh_edge_tilt': 0 if self.tilting_mode == 'none' else self.current_level.veh_edge_tilt,
-            })
-        else:
-            per = self.current_level.per_vehicle_tilting
-            for i in range(self.opponent_k):
-                base = 3 * i
-                info[f'per_vehicle_goal_tilt_{i}'] = per[base]
-                info[f'per_vehicle_veh_tilt_{i}'] = per[base + 1]
-                info[f'per_vehicle_edge_tilt_{i}'] = per[base + 2]
-        
-        return info
-    
-    # ========== Internal helper methods ==========
-    
-    def _load_vehicle_map(self) -> Optional[Dict]:
-        """Load vehicle map JSON file (cached)."""
-        if self._vehicle_map_cache is not None:
-            return self._vehicle_map_cache
-        
-        if not self.vehicle_map_path or not os.path.exists(self.vehicle_map_path):
-            return None
-        
-        try:
-            with open(self.vehicle_map_path, "r") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                self._vehicle_map_cache = data
-                return data
-        except Exception as e:
-            print(f"Warning: Failed to load vehicle map {self.vehicle_map_path}: {e}")
-        
-        return None
-    
-    def _load_vehicle_ids_for_scenario(
-        self, scenario_id: str
-    ) -> Tuple[Optional[int], Optional[List[int]], str]:
-        """
-        Load ego vehicle ID and opponent vehicle IDs for a scenario.
-        
-        First tries to load from vehicle map JSON. If the scenario is not found
-        in the map, returns (None, None) to trigger fallback to dynamic selection.
-        
-        Args:
-            scenario_id: The scenario ID to look up
-            
-        Returns:
-            (ego_vehicle_id, opponent_vehicle_ids, ego_selection_mode) tuple:
-            - If found in map: (int, List[int], str)
-            - If not found: (None, None, "unknown") -> triggers fallback
-        """
-        vehicle_map = self._load_vehicle_map()
-        
-        if vehicle_map is None:
-            # No vehicle map loaded, use fallback
-            return None, None, "unknown"
-        
-        scenario_data = vehicle_map.get(scenario_id)
-        
-        if scenario_data is None or not isinstance(scenario_data, dict):
-            # Scenario not in map, use fallback
-            print(
-                f"Warning: Scenario '{scenario_id}' not found in vehicle map. "
-                f"Using dynamic vehicle selection."
-            )
-            return None, None, "unknown"
-        
-        ego_id = scenario_data.get("ego_vehicle_id")
-        opponent_ids = scenario_data.get("opponent_vehicle_ids", [])
-        ego_selection_mode = scenario_data.get("ego_selection_mode", "unknown")
-        if ego_selection_mode not in ("interesting", "dense"):
-            ego_selection_mode = "unknown"
-        
-        # Validate ego_id
-        if ego_id is None:
-            print(
-                f"Warning: ego_vehicle_id not found for scenario '{scenario_id}'. "
-                f"Using dynamic vehicle selection."
-            )
-            return None, None, "unknown"
-        
-        return int(ego_id), list(opponent_ids) if opponent_ids else [], ego_selection_mode
-
-    def _sample_random_level(self) -> ScenarioLevel:
-        """Randomly generate level"""
-        from envs.nocturne_ctrlsim.level import PER_VEHICLE_TILTING_LENGTH
-        
-        if self.tilting_mode in ('global', 'ego'):
-            # Global mode: sample 3 global tilts, per-vehicle tilting to 0
-            per_vehicle_tilting = tuple([0] * PER_VEHICLE_TILTING_LENGTH)
-            return ScenarioLevel(
-                scenario_id=np.random.choice(self.scenario_ids),
-                seed=rand_int_seed(),
-                goal_tilt=round(float(np.random.uniform(*self.tilt_range))),
-                veh_veh_tilt=round(float(np.random.uniform(*self.tilt_range))),
-                veh_edge_tilt=round(float(np.random.uniform(*self.tilt_range))),
-                per_vehicle_tilting=per_vehicle_tilting,
-            )
-        elif self.tilting_mode == 'none':
-            per_vehicle_tilting = tuple([0] * PER_VEHICLE_TILTING_LENGTH)
-            return ScenarioLevel(
-                scenario_id=np.random.choice(self.scenario_ids),
-                seed=rand_int_seed(),
-                goal_tilt=0,
-                veh_veh_tilt=0,
-                veh_edge_tilt=0,
-                per_vehicle_tilting=per_vehicle_tilting,
-            )
-        else:  # per_vehicle mode
-            # Per-vehicle mode: global tilts to 0, sample 21 per-vehicle tilts
-            per_vehicle_tilts = [round(float(np.random.uniform(*self.tilt_range))) for _ in range(PER_VEHICLE_TILTING_LENGTH)]
-            return ScenarioLevel(
-                scenario_id=np.random.choice(self.scenario_ids),
-                seed=rand_int_seed(),
-                goal_tilt=0,
-                veh_veh_tilt=0,
-                veh_edge_tilt=0,
-                per_vehicle_tilting=tuple(per_vehicle_tilts),
-            )
-    
-    def _mutate_level_internal(
-        self,
-        level: ScenarioLevel
-    ) -> ScenarioLevel:
-        """
-        Execute level mutation
-        
-        Mutation strategy:
-        1. Determine mutation_mode (one/all)
-        2. If one, randomly choose a tilting dimension
-        3. Sample delta(s) from [-mutation_range, mutation_range]
-        4. Apply deltas based on tilting_mode
-
-        Note: only mutate tilt parameters, do not change scenario_id
-        """
-        from dataclasses import replace
-
-        if self.tilting_mode == 'none':
-            return level
-
-        rng = self._mutation_random_state
-        dims = [rng.randint(0, 3)] if self.mutation_mode == 'one' else [0, 1, 2]
-        params = ['goal_tilt', 'veh_veh_tilt', 'veh_edge_tilt']
-
-        if self.tilting_mode in ('global', 'ego'):
-            mutations = {}
-            if self.mutation_mode == 'one':
-                dim = dims[0]
-                param = params[dim]
-                delta = rng.uniform(-self.mutation_range, self.mutation_range)
-                new_val = np.clip(getattr(level, param) + delta, *self.tilt_range)
-                mutations[param] = round(float(new_val))
-            else:
-                deltas = rng.uniform(-self.mutation_range, self.mutation_range, size=3)
-                for param, delta in zip(params, deltas):
-                    new_val = np.clip(getattr(level, param) + delta, *self.tilt_range)
-                    mutations[param] = round(float(new_val))
-            return replace(level, **mutations)
-
-        # per_vehicle mode: update per_vehicle_tilting only
-        per = list(level.per_vehicle_tilting)
-        num_vehicles = PER_VEHICLE_TILTING_LENGTH // 3
-        if self.mutation_mode == 'one':
-            dim = dims[0]
-            deltas = rng.uniform(-self.mutation_range, self.mutation_range, size=num_vehicles)
-            for i, delta in enumerate(deltas):
-                idx = i * 3 + dim
-                per[idx] = round(float(np.clip(per[idx] + delta, *self.tilt_range)))
-        else:
-            deltas = rng.uniform(-self.mutation_range, self.mutation_range, size=PER_VEHICLE_TILTING_LENGTH)
-            for idx, delta in enumerate(deltas):
-                per[idx] = round(float(np.clip(per[idx] + delta, *self.tilt_range)))
-        return replace(level, per_vehicle_tilting=tuple(per))
-    
-    def _load_scenario(self, scenario_id: str):
-        """
-        Load Nocturne scenario
-        
-        See: third_party/ctrl-sim/utils/sim.py get_sim() function
-        """
-        import os
-        from nocturne import Simulation
-        from omegaconf import OmegaConf
-        
-        scenario_path = os.path.join(self.scenario_data_dir, f"{scenario_id}.json")
-        
-        # Nocturne Simulation only needs scenario configuration dictionary
-        # See cfgs/config.py get_scenario_dict() function
-        if 'scenario' in self.cfg.nocturne:
-            scenario_dict = OmegaConf.to_container(
-                self.cfg.nocturne.scenario, resolve=True
-            )
-        else:
-            # Fall back to basic configuration
-            scenario_dict = {
-                'start_time': 0,
-                'allow_non_vehicles': False,
-            }
-        
-        self.sim = Simulation(scenario_path, scenario_dict)
-        self.scenario = self.sim.getScenario()
-        self.vehicles = list(self.scenario.vehicles())
-        
-        # Set vehicle control flags (see ctrl-sim evaluator.py line 37-39)
-        for veh in self.vehicles:
-            veh.expert_control = False
-            veh.physics_simulated = True
-        
-        # Note: ego selection is moved to _initialize_simulation() because it needs GT data to select interesting pair
-    
-    def _get_vehicle_by_id(self, veh_id: int):
-        """Get vehicle object by ID"""
-        for veh in self.vehicles:
-            if veh.getID() == veh_id:
-                return veh
-        return None
-
-    def _remove_background_moving_vehicles(self):
-        """
-        Remove moving vehicles other than ego/opponent.
-        Uses preprocessed-filtered moving vehicles and skips removal if
-        preprocessed data is missing (fallback B).
-        """
-        if not hasattr(self, '_preproc_data') or self._preproc_data is None:
-            return
-
-        preproc_ids = self._get_preproc_vehicle_ids()
-        if not preproc_ids:
-            return
-
-        moving_ids = self._get_moving_vehicle_ids(filter_by_preproc=True)
-        if not moving_ids:
-            return
-
-        ego_id = self.ego_vehicle.getID() if self.ego_vehicle else None
-        protected_ids = set(self.opponent_vehicle_ids)
-        if ego_id is not None:
-            protected_ids.add(ego_id)
-
-        remove_ids = [vid for vid in moving_ids if vid not in protected_ids]
-        if not remove_ids:
-            return
-
-        removed_set = set(remove_ids)
-        for veh in self.vehicles:
-            if veh.getID() in removed_set:
-                veh.setPosition(-1000000, -1000000)
-                veh.physics_simulated = False
-                self.opponent.apply_action(veh, (0.0, 0.0))
-                veh.speed = 0.0
-
-        self.vehicles = [veh for veh in self.vehicles if veh.getID() not in removed_set]
-        self.removed_vehicle_ids = remove_ids
-    
-    def _initialize_ego_goal_state(self):
-        """
-        Initialize ego vehicle's target and reward related state
-        
-        See: ctrl-sim evaluator.py initialize_goal_dict() and compute_goal_dist_normalizer()
-        """
-        if self.ego_vehicle is None:
-            return
-        
-        ego_id = self.ego_vehicle.getID()
-        
-        # Get GT trajectory data
-        if ego_id not in self._gt_data_dict:
-            return
-        
-        gt_traj_data = np.array(self._gt_data_dict[ego_id]['traj'])
-        
-        # Calculate target position (see evaluator.py initialize_goal_dict)
-        goal_pos = np.array([
-            self.ego_vehicle.target_position.x,
-            self.ego_vehicle.target_position.y
-        ])
-        goal_heading = self.ego_vehicle.target_heading
-        goal_speed = self.ego_vehicle.target_speed
-        
-        # Check if vehicle disappears before trajectory ends, if so, use last valid position as target
-        existence_mask = gt_traj_data[:, 4]
-        idx_disappear = np.where(existence_mask == 0)[0]
-        if len(idx_disappear) > 0:
-            idx_goal = idx_disappear[0] - 1
-            if idx_goal >= 0 and np.linalg.norm(gt_traj_data[idx_goal, :2] - goal_pos) > 0.0:
-                goal_pos = gt_traj_data[idx_goal, :2]
-                goal_heading = gt_traj_data[idx_goal, 2]
-                goal_speed = gt_traj_data[idx_goal, 3]
-        
-        self._ego_goal_dict = {
-            'pos': goal_pos,
-            'heading': goal_heading,
-            'speed': goal_speed
-        }
-        
-        # Calculate target distance normalization factor
-        ego_pos = self.ego_vehicle.getPosition()
-        ego_pos = np.array([ego_pos.x, ego_pos.y])
-        dist = np.linalg.norm(ego_pos - goal_pos)
-        self._ego_goal_dist_normalizer = dist if dist > 0 else 1.0
-        
-        # Initialize ego's vehicle_data_dict (for reward calculation)
-        self._ego_vehicle_data_dict = {
-            ego_id: {
-                'reward': [],
-                'position': [],
-                'heading': [],
-                'speed': [],
-            }
-        }
-
-    def _get_goal_point_for_vehicle(self, veh_id: int) -> Optional[np.ndarray]:
-        veh = self._get_vehicle_by_id(veh_id)
-        if veh is None:
-            return None
-        if veh_id not in self._gt_data_dict:
-            return None
-
-        gt_traj_data = np.array(self._gt_data_dict[veh_id]['traj'])
-        goal_pos = np.array([veh.target_position.x, veh.target_position.y])
-
-        existence_mask = gt_traj_data[:, 4]
-        idx_disappear = np.where(existence_mask == 0)[0]
-        if len(idx_disappear) > 0:
-            idx_goal = idx_disappear[0] - 1
-            if idx_goal >= 0 and np.linalg.norm(gt_traj_data[idx_goal, :2] - goal_pos) > 0.0:
-                goal_pos = gt_traj_data[idx_goal, :2]
-
-        if not np.isfinite(goal_pos).all():
-            return None
-
-        return goal_pos
-    
-    def _get_gt_action(self, veh_id: int, t: int, veh=None) -> Optional[Tuple[float, float]]:
-        """
-        Get vehicle's action from GT trajectory data at time step t
-        
-        See: ctrl-sim policy_evaluator.py apply_gt_action()
-        
-        Args:
-            veh_id: vehicle ID
-            t: time step
-        
-        Returns:
-            (acceleration, steering) tuple, if data does not exist, return None
-        """
-        if veh_id not in self._gt_data_dict:
-            return None
-        
-        gt_traj = np.array(self._gt_data_dict[veh_id]['traj'])
-        
-        # Check if time step is valid
-        if t < 0 or t >= len(gt_traj) - 1:
-            return (0.0, 0.0)
-        
-        # Check if vehicle exists in current and next time step
-        if veh_id in self.opponent_vehicle_ids and self.opponent is not None:
-            exists = self.opponent.get_opponent_vehicle_exists(veh_id)
-            veh_exists = 1 if exists else 0
-        else:
-            veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
-        # Once missing, remain missing (align ctrl-sim evaluator)
-        ego_data = self.opponent.get_vehicle_data(veh_id) if self.opponent else None
-        if t > 0 and ego_data and ego_data["existence"][-1] == 0:
-            veh_exists = 0
-
-        if not veh_exists or veh is None:
-            return (0.0, 0.0)
-        
-        accel, steer = safe_backward_action_from_states(
-            prev_pos=(veh.getPosition().x, veh.getPosition().y),
-            prev_theta=veh.getHeading(),
-            prev_vel=veh.getSpeed(),
-            curr_pos=(gt_traj[t + 1, 0], gt_traj[t + 1, 1]),
-            curr_theta=gt_traj[t + 1, 2],
-            curr_vel=gt_traj[t + 1, 3],
-            wheel_base=gt_traj[t + 1, -1],
-            dt=self.dt,
-        )
-        
-        return (float(accel), float(steer))
-    
-    def _apply_student_action(self, action: np.ndarray):
-        """
-        Apply student action to ego vehicle
-        
-        Args:
-            action: [acceleration, steering] normalized to [-1, 1]
-        """
-        if self.ego_vehicle is None:
-            return
-        
-        # Convert normalized action to actual values
-        # scaling depends on the simu
-        accel = action[0] * 10.0  # max acc 10 m/s²
-        steer = action[1] * 0.7  # max steer 0.7 rad
-        
-        if accel > 0:
-            self.ego_vehicle.acceleration = accel
-        else:
-            self.ego_vehicle.brake(abs(accel))
-        self.ego_vehicle.steering = steer
-    
-    def _build_road_graph_obs(
-        self, 
-        ego_pos, 
-        ego_heading: float
-    ) -> List[np.ndarray]:
-        """
-        Build Road Graph observation (in gpudrive)
-        
-        Road Graph features (13 dimensions):
-        - pos_x, pos_y (2): position of road point relative to ego
-        - length (1): length of road segment
-        - scale_x, scale_y (2): scale of road point
-        - orientation (1): road direction
-        - type_onehot (7): road type one-hot encoding
-        
-        Args:
-            ego_pos: ego vehicle position
-            ego_heading: ego vehicle heading
-        
-        Returns:
-            road_graph_states: List of road point features (R 13-dimensional vectors)
-        """
-        if self._road_graph_cache is None or len(self._road_graph_cache) == 0:
-            # No road data, return empty road graph
-            return [np.zeros(13, dtype=np.float32) for _ in range(self._top_k_road_points)]
-        
-        angle = angle_of_rotation(ego_heading)
-
-        # Extract road point features
-        road_points = []
-        
-        for road_item in self._road_graph_cache:
-            road_type = road_item['type']
-            geometry = road_item['geometry']
-            
-            # Process different types of geometry data
-            if isinstance(geometry, list) and len(geometry) > 0:
-                # Road line (multiple points)
-                for i, pt in enumerate(geometry):
-                    # Relative position
-                    dx = pt['x'] - ego_pos.x
-                    dy = pt['y'] - ego_pos.y
-                    rel_x, rel_y = to_local(dx, dy, angle)
-                    
-                    # Calculate road segment length
-                    if i < len(geometry) - 1:
-                        next_pt = geometry[i + 1]
-                        seg_length = np.sqrt(
-                            (next_pt['x'] - pt['x'])**2 + 
-                            (next_pt['y'] - pt['y'])**2
-                        )
-                        # Direction: points to next point
-                        orientation = np.arctan2(
-                            next_pt['y'] - pt['y'],
-                            next_pt['x'] - pt['x']
-                        )
-                    else:
-                        seg_length = 1.0  # Default value
-                        orientation = 0.0
-                    orientation = angle_sub(orientation, -angle)
-                    
-                    # Road point scale (default value)
-                    scale_x = 1.0
-                    scale_y = 1.0
-                    
-                    # Road type one-hot (7 dimensions)
-                    # ctrl-sim: {none:0, lane:1, road_line:2, road_edge:3, stop_sign:4, crosswalk:5, speed_bump:6, other:7}
-                    # gpudrive: {None:0, RoadLine:1, RoadEdge:2, RoadLane:3, CrossWalk:4, SpeedBump:5, StopSign:6}
-                    # Map ctrlsim road type to gpudrive order
-                    type_mapping = {
-                        'none': 0,
-                        'road_line': 1,
-                        'road_edge': 2,
-                        'lane': 3,
-                        'crosswalk': 4,
-                        'speed_bump': 5,
-                        'stop_sign': 6,
-                        'other': 0, 
-                    }
-                    type_idx = type_mapping.get(road_type, 0)
-                    type_onehot = np.zeros(7, dtype=np.float32)
-                    type_onehot[type_idx] = 1.0
-                    
-                    # Concatenate features (13 dimensions)
-                    road_feat = np.array([
-                        rel_x,
-                        rel_y,
-                        seg_length,
-                        scale_x,
-                        scale_y,
-                        orientation,
-                        *type_onehot
-                    ], dtype=np.float32)
-                    
-                    road_points.append((np.sqrt(rel_x**2 + rel_y**2), road_feat))
-            
-            elif isinstance(geometry, dict):
-                # Static object (e.g. stop_sign)
-                dx = geometry['x'] - ego_pos.x
-                dy = geometry['y'] - ego_pos.y
-                rel_x, rel_y = to_local(dx, dy, angle)
-                
-                type_mapping = {
-                    'stop_sign': 6,
-                    'crosswalk': 4,
-                    'speed_bump': 5,
-                }
-                type_idx = type_mapping.get(road_type, 0)
-                type_onehot = np.zeros(7, dtype=np.float32)
-                type_onehot[type_idx] = 1.0
-                
-                road_feat = np.array([
-                    rel_x,
-                    rel_y,
-                    0.0,  # length
-                    1.0,  # scale_x
-                    1.0,  # scale_y
-                    0.0,  # orientation
-                    *type_onehot
-                ], dtype=np.float32)
-                
-                road_points.append((np.sqrt(rel_x**2 + rel_y**2), road_feat))
-        
-        # Sort by distance, select top_k nearest points
-        road_points.sort(key=lambda x: x[0])
-        
-        road_graph_states = []
-        num_valid_points = min(len(road_points), self._top_k_road_points)
-        
-        for i in range(num_valid_points):
-            road_graph_states.append(road_points[i][1])
-        
-        # Fill missing road points
-        for _ in range(self._top_k_road_points - num_valid_points):
-            road_graph_states.append(np.zeros(13, dtype=np.float32))
-        
-        return road_graph_states
-
-    def _get_student_observation(self) -> np.ndarray:
-        """
-        Get student policy observation (consistent with gpudrive)
-        
-        Observation vector structure:
-        - Ego state: [speed, length, width, rel_goal_x, rel_goal_y, collision_state] (6 dimensions)
-        - Partners: K vehicles * [speed, rel_pos_x, rel_pos_y, rel_orientation, length, width] (K*6 dimensions)
-        - Road graph: R points * [pos_x, pos_y, length, scale_x, scale_y, orientation, type_onehot(7)] (R*13 dimensions)
-        
-        Returns:
-            Observation vector, shape (obs_dim,)
-        """
-        if self.ego_vehicle is None or self._ego_goal_dict is None:
-            return np.zeros(self._obs_dim, dtype=np.float32)
-        
-        # ========== Ego state (6 dimensions) ==========
-        ego_pos = self.ego_vehicle.getPosition()
-        ego_heading = self.ego_vehicle.getHeading()
-        ego_speed = self.ego_vehicle.getSpeed()
-        
-        # Relative target position (in ego coordinate system)
-        goal_pos = self._ego_goal_dict['pos']
-        angle = angle_of_rotation(ego_heading)
-        rel_goal_x, rel_goal_y = to_local(
-            goal_pos[0] - ego_pos.x,
-            goal_pos[1] - ego_pos.y,
-            angle,
-        )
-        
-        # Collision state
-        collision_state = 1.0 if self._collision_occurred else 0.0
-        
-        ego_state = np.array([
-            ego_speed,
-            self.ego_vehicle.getLength(),
-            self.ego_vehicle.getWidth(),
-            rel_goal_x,
-            rel_goal_y,
-            collision_state,
-        ], dtype=np.float32)
-        
-        # ========== Partner state (K*6 dimensions) ==========
-        # Use num_neighbors configured in args, get from __init__
-        max_neighbors = getattr(self, '_max_observable_agents', 16)
-        partner_states = []
-        
-        # Select nearest K neighboring vehicles
-        num_neighbors = min(len(self.opponent_vehicles), max_neighbors)
-        
-        for i in range(num_neighbors):
-            veh = self.opponent_vehicles[i]
-            veh_pos = veh.getPosition()
-            
-            # Relative position to ego
-            rel_pos_x, rel_pos_y = to_local(
-                veh_pos.x - ego_pos.x,
-                veh_pos.y - ego_pos.y,
-                angle,
-            )
-            
-            # Relative orientation
-            rel_orientation = angle_sub(veh.getHeading(), -angle)
-            
-            partner_state = np.array([
-                veh.getSpeed(),
-                rel_pos_x,
-                rel_pos_y,
-                rel_orientation,
-                veh.getLength(),
-                veh.getWidth(),
-            ], dtype=np.float32)
-            partner_states.append(partner_state)
-        
-        # Fill missing neighbors with zero vector
-        for _ in range(max_neighbors - num_neighbors):
-            partner_states.append(np.zeros(6, dtype=np.float32))
-        
-        # ========== Road Graph (R*13 dimensions) ==========
-        road_graph_states = self._build_road_graph_obs(ego_pos, ego_heading)
-        
-        # ========== Concatenate all observations ==========
-        obs_parts = [ego_state]
-        obs_parts.extend(partner_states)
-        obs_parts.extend(road_graph_states)
-        
-        obs_concat = np.concatenate(obs_parts)
-        
-        # Fill or truncate to obs_dim
-        if len(obs_concat) < self._obs_dim:
-            obs_final = np.zeros(self._obs_dim, dtype=np.float32)
-            obs_final[:len(obs_concat)] = obs_concat
-        else:
-            obs_final = obs_concat[:self._obs_dim]
-        
-        return obs_final
-    
-    def _compute_reward(self) -> float:     
-        """
-        Compute student reward using CtrlSim's compute_reward function
-        
-        Uses the exact same reward calculation as CtrlSim opponents to ensure consistency.
-        Returns a scalar reward by summing the shaped reward components and applying 
-        collision penalties.
-        
-        Returns:
-            Scalar reward value for PPO training
-        """
-        import nocturne
-        
-        if self.ego_vehicle is None or self._ego_goal_dict is None:
-            return 0.0
-        
-        ego_id = self.ego_vehicle.getID()
-        
-        # Import compute_reward from ctrl-sim (same as opponent)
-        import sys
-        import os
-        _CTRLSIM_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'third_party', 'ctrl-sim')
-        if _CTRLSIM_PATH not in sys.path:
-            sys.path.insert(0, _CTRLSIM_PATH)
-        from utils.sim import compute_reward
-        
-        # Use CtrlSim's reward config
-        rew_cfg = {
-            'position_target': True,
-            'position_target_tolerance': 1.0,
-            'speed_target': True,
-            'speed_target_tolerance': 1.0,
-            'heading_target': True,
-            'heading_target_tolerance': 0.3,
-            'shaped_goal_distance': True,
-            'shaped_goal_distance_scaling': 0.2,
-            'reward_scaling': 1.0,
-        }
-        
-        # Call CtrlSim's compute_reward function
-        # Returns 8-dimensional list: 
-        # [pos_achieved, heading_achieved, speed_achieved, 
-        #  pos_shaped, speed_shaped, heading_shaped, 
-        #  veh_veh_collision, veh_edge_collision]
-        reward_vector = compute_reward(
-            rew_cfg,
-            self.ego_vehicle,
-            self._ego_goal_dict,
-            self._ego_goal_dist_normalizer,
-            self._ego_vehicle_data_dict,
-            collision_fix=True
-        )
-        
-        # Extract components
-        # Note: position_achieved from compute_reward has "persistence" logic - 
-        # once reached, it stays True. We use current state for goal_reached check.
-        pos_shaped = reward_vector[3]
-        speed_shaped = reward_vector[4]
-        heading_shaped = reward_vector[5]
-        veh_veh_collision = reward_vector[6]
-        veh_edge_collision = reward_vector[7]
-        
-        # Check goal achieved using current state (not CtrlSim's persistent logic)
-        # This ensures _goal_reached only triggers when currently at goal
-        ego_pos = self.ego_vehicle.getPosition()
-        ego_pos_arr = np.array([ego_pos.x, ego_pos.y])
-        ego_speed = self.ego_vehicle.getSpeed()
-        ego_heading = self.ego_vehicle.getHeading()
-        
-        goal_pos = self._ego_goal_dict['pos']
-        goal_speed = self._ego_goal_dict['speed']
-        goal_heading = self._ego_goal_dict['heading']
-        
-        dist_to_goal = np.linalg.norm(goal_pos - ego_pos_arr)
-        position_achieved_current = dist_to_goal < 1.0  # position_target_tolerance
-        speed_achieved_current = abs(ego_speed - goal_speed) < 1.0  # speed_target_tolerance
-        heading_achieved_current = abs(self._angle_diff(ego_heading, goal_heading)) < 0.3  # heading_target_tolerance
-        
-        # Update goal state: once reached, stay reached (same as before)
-        if self._goal_reached:
-            pass  # Keep achieved state
-        elif position_achieved_current and speed_achieved_current and heading_achieved_current:
-            self._goal_reached = True
-        
-        # Update collision states
-        if veh_veh_collision:
-            self._collision_occurred = True
-        
-        if veh_edge_collision:
-            self._offroad_occurred = True
-        
-        # Store reward vector in vehicle_data_dict (for compute_reward's history check)
-        if ego_id in self._ego_vehicle_data_dict:
-            self._ego_vehicle_data_dict[ego_id]['reward'].append(reward_vector)
-        
-        # Convert to scalar: sum shaped rewards + collision penalties
-        scalar_reward = pos_shaped + speed_shaped + heading_shaped
-        scalar_reward += -veh_veh_collision * self.veh_veh_collision_rew_multiplier
-        scalar_reward += -veh_edge_collision * self.veh_edge_collision_rew_multiplier
-        
-        self.episode_reward += scalar_reward
-        return scalar_reward
-    
-    def _angle_diff(self, a: float, b: float) -> float:
-        """Calculate the difference between two angles (handle wraparound)"""
-        diff = a - b
-        while diff > np.pi:
-            diff -= 2 * np.pi
-        while diff < -np.pi:
-            diff += 2 * np.pi
-        return diff
-
-    def _is_ego_position_reached(self) -> bool:
-        if self.ego_vehicle is None or self._ego_goal_dict is None:
-            return False
-
-        ego_pos = self.ego_vehicle.getPosition()
-        ego_pos_arr = np.array([ego_pos.x, ego_pos.y])
-        goal_pos = self._ego_goal_dict.get('pos')
-        if goal_pos is None:
-            return False
-        dist_to_goal = np.linalg.norm(goal_pos - ego_pos_arr)
-        return dist_to_goal < 1.0
-    
-    def _check_done(self) -> bool:
-        """
-        Check if episode is done
-        
-        终止条件：
-        1. Max steps (timeout)
-        
-        Returns:
-            Whether to terminate
-        """
-        # Max steps (timeout)
-        if self.current_step >= self.max_episode_steps:
-            return True
-
-        # Goal reached (success)
-        if self._goal_reached:
-            return True
-        
-        return False
-    
-    def _get_info(self) -> Dict[str, Any]:
-        """Return additional information"""
-        done = self._check_done()
-
-        # Calculate progress (distance to goal)
-        progress = 0.0
-        if self.ego_vehicle is not None and self._ego_goal_dict is not None:
-            ego_pos = self.ego_vehicle.getPosition()
-            dist_to_goal = np.linalg.norm(
-                self._ego_goal_dict['pos'] - np.array([ego_pos.x, ego_pos.y])
-            )
-            if self._ego_goal_dist_normalizer > 0:
-                progress = 1.0 - dist_to_goal / self._ego_goal_dist_normalizer
-                progress = max(0.0, min(1.0, progress))
-
-        if done:
-            # Cache completed episode statistics for get_complexity_info()
-            self._last_completed_episode_info = {
-                'collision_occurred': 1.0 if self._episode_collision_occurred else 0.0,
-                'goal_reached_occurred': 1.0 if self._episode_goal_reached else 0.0,
-                'position_reached_occurred': 1.0 if self._episode_position_reached else 0.0,
-                'offroad_occurred': 1.0 if self._episode_offroad_occurred else 0.0,
-                'avg_progress': self._episode_progress,
-                'episode_steps': self._episode_steps,
-                'episode_reward': self.episode_reward,
-            }
-        
-        info = {
-            'step': self.current_step,
-            'episode_reward': self.episode_reward,
-            # Diagnostic information (参考 ctrl-sim metrics)
-            'collision': self._collision_occurred,
-            'goal_reached': self._goal_reached,
-            'position_reached': self._position_reached,
-            'offroad': self._offroad_occurred,
-            'progress': progress,
-        }
-        
-        # Always add complexity info (real-time data)
-        info.update(self.get_complexity_info())
-        
-        # Add episode summary when episode ends
-        if done:
-            info['episode'] = {
-                'r': self.episode_reward,
-                'l': self.current_step,
-            }
-        
-        return info
+    def reset_metrics(self):
+        sim_reset_metrics(self)
     
     def close(self):
         """Close environment"""

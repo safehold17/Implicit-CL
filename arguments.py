@@ -231,7 +231,7 @@ parser.add_argument(
 parser.add_argument(
     "--level_replay_temperature", 
     type=float,
-    default=0.1,
+    default=0.3,
     help="PLR replay distribution temperature.")
 parser.add_argument(
     "--level_replay_schedule",
@@ -267,7 +267,7 @@ parser.add_argument(
 parser.add_argument(
     "--staleness_temperature",
     type=float, 
-    default=1.0,
+    default=0.3,
     help="Staleness distribution temperature.")
 parser.add_argument(
     "--train_full_distribution",

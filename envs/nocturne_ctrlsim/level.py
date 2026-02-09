@@ -112,28 +112,57 @@ class ScenarioLevel:
     def from_encoding(
         cls, encoding: np.ndarray, index_to_scenario_id: Dict[int, str]
     ) -> "ScenarioLevel":
-        scenario_index = int(encoding[0])
+        (
+            scenario_index,
+            goal_tilt,
+            veh_veh_tilt,
+            veh_edge_tilt,
+            per_vehicle_tilting,
+            seed,
+        ) = cls.decode_encoding_fields(encoding)
+
         scenario_id = index_to_scenario_id.get(scenario_index)
         if scenario_id is None:
             raise KeyError(f"Unknown scenario_index: {scenario_index}")
-        
-        # Handle backward compatibility: old encoding has length 5, new has length 26
+
+        return cls(
+            scenario_id=scenario_id,
+            seed=seed,
+            goal_tilt=goal_tilt,
+            veh_veh_tilt=veh_veh_tilt,
+            veh_edge_tilt=veh_edge_tilt,
+            per_vehicle_tilting=per_vehicle_tilting,
+        )
+
+    @staticmethod
+    def decode_encoding_fields(
+        encoding: np.ndarray,
+    ) -> Tuple[int, float, float, float, Tuple[int, ...], int]:
+        """
+        Decode encoding array into primitive level fields.
+
+        This method only parses raw values and keeps no scenario mapping logic.
+        """
+        # Handle backward compatibility: old format has length 5, new has length 26
         if len(encoding) >= 5 + PER_VEHICLE_TILTING_LENGTH:
             # New format: [scenario_idx, goal, veh_veh, veh_edge, per_vehicle(21), seed]
-            per_vehicle_tilting = tuple(int(round(float(encoding[i]))) for i in range(4, 4 + PER_VEHICLE_TILTING_LENGTH))
+            per_vehicle_tilting = tuple(
+                int(round(float(encoding[i])))
+                for i in range(4, 4 + PER_VEHICLE_TILTING_LENGTH)
+            )
             seed_idx = 4 + PER_VEHICLE_TILTING_LENGTH
         else:
             # Old format: [scenario_idx, goal, veh_veh, veh_edge, seed]
             per_vehicle_tilting = ()
             seed_idx = 4
 
-        return cls(
-            scenario_id=scenario_id,
-            seed=int(encoding[seed_idx]),
-            goal_tilt=round(float(encoding[1])),
-            veh_veh_tilt=round(float(encoding[2])),
-            veh_edge_tilt=round(float(encoding[3])),
-            per_vehicle_tilting=per_vehicle_tilting,
+        return (
+            int(float(encoding[0])),
+            int(round(float(encoding[1]))),
+            int(round(float(encoding[2]))),
+            int(round(float(encoding[3]))),
+            per_vehicle_tilting,
+            int(float(encoding[seed_idx])),
         )
 
     def __eq__(self, other):

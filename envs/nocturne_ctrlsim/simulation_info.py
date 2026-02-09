@@ -1,0 +1,131 @@
+"""
+Simulation info helper functions for Nocturne CtrlSim adversarial env.
+"""
+
+from typing import Any, Dict
+
+import numpy as np
+
+
+
+def check_done(env) -> bool:
+    """Check if episode is done."""
+    # Max steps (timeout)
+    if env.current_step >= env.max_episode_steps:
+        return True
+
+    # Goal reached (success)
+    if env._goal_reached:
+        return True
+
+    return False
+
+
+
+def get_info(env) -> Dict[str, Any]:
+    """Return additional information."""
+    done = check_done(env)
+
+    # Calculate progress (distance to goal)
+    progress = 0.0
+    if env.ego_vehicle is not None and env._ego_goal_dict is not None:
+        ego_pos = env.ego_vehicle.getPosition()
+        dist_to_goal = np.linalg.norm(
+            env._ego_goal_dict['pos'] - np.array([ego_pos.x, ego_pos.y])
+        )
+        if env._ego_goal_dist_normalizer > 0:
+            progress = 1.0 - dist_to_goal / env._ego_goal_dist_normalizer
+            progress = max(0.0, min(1.0, progress))
+
+    if done:
+        # Cache completed episode statistics for get_complexity_info()
+        env._last_completed_episode_info = build_episode_stats(env)
+
+    info = {
+        'step': env.current_step,
+        'episode_reward': env.episode_reward,
+        # Diagnostic information (参考 ctrl-sim metrics)
+        'collision': env._collision_occurred,
+        'goal_reached': env._goal_reached,
+        'position_reached': env._position_reached,
+        'offroad': env._offroad_occurred,
+        'progress': progress,
+    }
+
+    # Always add complexity info (real-time data)
+    info.update(get_complexity_info(env))
+
+    # Add episode summary when episode ends
+    if done:
+        info['episode'] = {
+            'r': env.episode_reward,
+            'l': env.current_step,
+        }
+
+    return info
+
+
+
+def reset_metrics(env) -> None:
+    """Reset metrics tracking."""
+    env.episode_reward = 0.0
+    env.collision_count = 0
+    env.goal_reached = False
+
+
+def get_complexity_info(env) -> Dict[str, Any]:
+    """
+    Return current level complexity information and episode statistics (for logging and analysis).
+
+    Prioritizes returning cached data from the last completed episode to avoid
+    returning zeros when called immediately after reset.
+    """
+    if env.current_level is None:
+        return {}
+
+    info = {
+        # Level parameters
+        'scenario_id': env.current_level.scenario_id,
+        'seed': env.current_level.seed,
+        'opponent_k': env.opponent_k,
+        'scenario_pool_size': len(env.scenario_ids),
+    }
+
+    # Episode statistics: prioritize cached completed episode data
+    if env._last_completed_episode_info is not None:
+        # Use cached data from last completed episode
+        info.update(env._last_completed_episode_info)
+    else:
+        # No cached data yet, use current episode data (may be zeros)
+        info.update(build_episode_stats(env))
+
+    if env.tilting_mode in ('global', 'ego', 'none'):
+        info.update(
+            {
+                'goal_tilt': 0 if env.tilting_mode == 'none' else env.current_level.goal_tilt,
+                'veh_veh_tilt': 0 if env.tilting_mode == 'none' else env.current_level.veh_veh_tilt,
+                'veh_edge_tilt': 0 if env.tilting_mode == 'none' else env.current_level.veh_edge_tilt,
+            }
+        )
+    else:
+        per = env.current_level.per_vehicle_tilting
+        for i in range(env.opponent_k):
+            base = 3 * i
+            info[f'per_vehicle_goal_tilt_{i}'] = per[base]
+            info[f'per_vehicle_veh_tilt_{i}'] = per[base + 1]
+            info[f'per_vehicle_edge_tilt_{i}'] = per[base + 2]
+
+    return info
+
+
+def build_episode_stats(env) -> Dict[str, float]:
+    """Build episode statistics payload shared by info and complexity APIs."""
+    return {
+        'collision_occurred': 1.0 if env._episode_collision_occurred else 0.0,
+        'goal_reached_occurred': 1.0 if env._episode_goal_reached else 0.0,
+        'position_reached_occurred': 1.0 if env._episode_position_reached else 0.0,
+        'offroad_occurred': 1.0 if env._episode_offroad_occurred else 0.0,
+        'avg_progress': env._episode_progress,
+        'episode_steps': env._episode_steps,
+        'episode_reward': env.episode_reward,
+    }
