@@ -281,6 +281,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._top_k_road_points = kwargs.get('student_top_k_road', 64)
         self.veh_veh_collision_rew_multiplier = kwargs.get('veh_veh_collision_rew_multiplier', 10.0)
         self.veh_edge_collision_rew_multiplier = kwargs.get('veh_edge_collision_rew_multiplier', 10.0)
+        self.reset_random_max_retries = int(kwargs.get('reset_random_max_retries', 10))
         
         # Cache road data (filled after _initialize_simulation)
         self._road_graph_cache: Optional[List[Dict]] = None
@@ -715,6 +716,24 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._road_graph_cache = self.data_bridge.get_road_data(self.scenario)
     
     # ========== PLR/DR interface ==========
+
+    @staticmethod
+    def _is_retryable_vehicle_id_error(error: Exception) -> bool:
+        """Whether reset_random should retry for this strict vehicle-map error."""
+        if not isinstance(error, ValueError):
+            return False
+        msg = str(error)
+        return (
+            "ego_vehicle_id is missing" in msg
+            or (
+                "ego_vehicle_id" in msg
+                and "does not exist in scenario" in msg
+            )
+            or (
+                "opponent_vehicle_ids" in msg
+                and "do not exist in scenario" in msg
+            )
+        )
     
     def reset_random(self) -> np.ndarray:
         """
@@ -726,8 +745,30 @@ class NocturneCtrlSimAdversarial(gym.Env):
         Returns:
             student initial observation
         """
-        level = self._sample_random_level()
-        return self.reset_to_level(level)
+        max_retries = self.reset_random_max_retries
+        last_error: Optional[Exception] = None
+        last_scenario_id: Optional[str] = None
+
+        for attempt in range(1, max_retries + 1):
+            level = self._sample_random_level()
+            last_scenario_id = level.scenario_id
+            try:
+                return self.reset_to_level(level)
+            except Exception as e:
+                if not self._is_retryable_vehicle_id_error(e):
+                    raise
+                last_error = e
+                if attempt < max_retries:
+                    print(
+                        f"Warning: reset_random failed for scenario '{last_scenario_id}' "
+                        f"({attempt}/{max_retries}) due to strict vehicle-map ID mismatch: {e}. "
+                        "Retrying with another random scenario."
+                    )
+
+        raise RuntimeError(
+            f"reset_random failed after {max_retries} retries due to strict vehicle-map ID errors. "
+            f"Last scenario: '{last_scenario_id}'. Last error: {last_error}"
+        ) from last_error
 
     def _sample_random_level(self) -> ScenarioLevel:
         """Randomly generate level"""

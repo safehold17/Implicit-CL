@@ -5,7 +5,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from .scenario_helpers import get_vehicle_by_id
+from envs.nocturne_ctrlsim.scenario_helpers import get_vehicle_by_id
 
 
 def get_preproc_vehicle_ids(env) -> Optional[List[int]]:

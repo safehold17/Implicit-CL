@@ -57,7 +57,7 @@ def remove_background_moving_vehicles(env) -> None:
     if not hasattr(env, '_preproc_data') or env._preproc_data is None:
         return
     
-    from .vehicle_selection import get_moving_vehicle_ids, get_preproc_vehicle_ids
+    from tools.vehicle_selection import get_moving_vehicle_ids, get_preproc_vehicle_ids
 
     preproc_ids = get_preproc_vehicle_ids(env)
     if not preproc_ids:
