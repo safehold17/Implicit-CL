@@ -38,8 +38,14 @@ def get_info(env) -> Dict[str, Any]:
             progress = max(0.0, min(1.0, progress))
 
     if done:
-        # Cache completed episode statistics for get_complexity_info()
+        # Cache completed episode statistics for get_complexity_info().
+        # Keep scenario metadata and episode stats in one atomic snapshot
+        # so downstream logging never mixes new scenario_id with old stats.
         env._last_completed_episode_info = build_episode_stats(env)
+        env._last_completed_complexity_info = build_complexity_snapshot(
+            env,
+            env._last_completed_episode_info,
+        )
 
     info = {
         'step': env.current_step,
@@ -80,42 +86,15 @@ def get_complexity_info(env) -> Dict[str, Any]:
     Prioritizes returning cached data from the last completed episode to avoid
     returning zeros when called immediately after reset.
     """
+    # Episode statistics: prioritize cached completed episode data.
+    # The cache stores a full snapshot, including scenario context.
+    if env._last_completed_complexity_info is not None:
+        return dict(env._last_completed_complexity_info)
+
     if env.current_level is None:
         return {}
 
-    info = {
-        # Level parameters
-        'scenario_id': env.current_level.scenario_id,
-        'seed': env.current_level.seed,
-        'opponent_k': env.opponent_k,
-        'scenario_pool_size': len(env.scenario_ids),
-    }
-
-    # Episode statistics: prioritize cached completed episode data
-    if env._last_completed_episode_info is not None:
-        # Use cached data from last completed episode
-        info.update(env._last_completed_episode_info)
-    else:
-        # No cached data yet, use current episode data (may be zeros)
-        info.update(build_episode_stats(env))
-
-    if env.tilting_mode in ('global', 'ego', 'none'):
-        info.update(
-            {
-                'goal_tilt': 0 if env.tilting_mode == 'none' else env.current_level.goal_tilt,
-                'veh_veh_tilt': 0 if env.tilting_mode == 'none' else env.current_level.veh_veh_tilt,
-                'veh_edge_tilt': 0 if env.tilting_mode == 'none' else env.current_level.veh_edge_tilt,
-            }
-        )
-    else:
-        per = env.current_level.per_vehicle_tilting
-        for i in range(env.opponent_k):
-            base = 3 * i
-            info[f'per_vehicle_goal_tilt_{i}'] = per[base]
-            info[f'per_vehicle_veh_tilt_{i}'] = per[base + 1]
-            info[f'per_vehicle_edge_tilt_{i}'] = per[base + 2]
-
-    return info
+    return build_complexity_snapshot(env, build_episode_stats(env))
 
 
 def build_episode_stats(env) -> Dict[str, float]:
@@ -129,3 +108,41 @@ def build_episode_stats(env) -> Dict[str, float]:
         'episode_steps': env._episode_steps,
         'episode_reward': env.episode_reward,
     }
+
+
+def build_level_context(env) -> Dict[str, Any]:
+    """Build level metadata payload for complexity logging."""
+    if env.current_level is None:
+        return {}
+
+    info = {
+        'scenario_id': env.current_level.scenario_id,
+        'seed': env.current_level.seed,
+        'opponent_k': env.opponent_k,
+        'scenario_pool_size': len(env.scenario_ids),
+    }
+
+    if env.tilting_mode in ('global', 'ego', 'none'):
+        info.update(
+            {
+                'goal_tilt': 0 if env.tilting_mode == 'none' else env.current_level.goal_tilt,
+                'veh_veh_tilt': 0 if env.tilting_mode == 'none' else env.current_level.veh_veh_tilt,
+                'veh_edge_tilt': 0 if env.tilting_mode == 'none' else env.current_level.veh_edge_tilt,
+            }
+        )
+        return info
+
+    per = env.current_level.per_vehicle_tilting
+    for i in range(env.opponent_k):
+        base = 3 * i
+        info[f'per_vehicle_goal_tilt_{i}'] = per[base]
+        info[f'per_vehicle_veh_tilt_{i}'] = per[base + 1]
+        info[f'per_vehicle_edge_tilt_{i}'] = per[base + 2]
+    return info
+
+
+def build_complexity_snapshot(env, episode_stats: Dict[str, float]) -> Dict[str, Any]:
+    """Build atomic complexity snapshot: scenario context + episode stats."""
+    snapshot = build_level_context(env)
+    snapshot.update(episode_stats)
+    return snapshot

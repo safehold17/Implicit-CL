@@ -270,6 +270,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # Cache for last completed episode (for get_complexity_info)
         self._last_completed_episode_info: Optional[Dict] = None
+        self._last_completed_complexity_info: Optional[Dict] = None
         
         # Level parameters vector (for adversary building)
         # [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt, per_vehicle_tilts...]
@@ -1200,6 +1201,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """Close environment"""
         # Clear cached episode statistics
         self._last_completed_episode_info = None
+        self._last_completed_complexity_info = None
         
         # If recording, stop first
         if self.recording_video:
