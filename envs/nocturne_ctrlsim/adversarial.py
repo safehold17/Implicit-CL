@@ -25,10 +25,12 @@ from .opponent_policy import (
     initialize_ego_goal_state,
     get_goal_point_for_vehicle,
     get_gt_action,
-    apply_student_action,
-    get_student_observation,
     compute_reward,
     is_ego_position_reached,
+)
+from .student_env_policy import (
+    apply_student_action,
+    get_student_observation,
 )
 
 from .simulation_info import (
