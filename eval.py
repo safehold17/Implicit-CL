@@ -180,7 +180,7 @@ class Evaluator(object):
 		if env_name in ['BipedalWalker-v3', 'BipedalWalkerHardcore-v3']:
 			env = gym.make(env_name)
 		elif is_nocturne:
-			# make Nocturne env 
+			# make Nocturne env
 			from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 			nocturne_kwargs = {}
 			for k, v in kwargs.items():
@@ -192,6 +192,8 @@ class Evaluator(object):
 					'vehicle_map_path',
 					'max_episode_steps',
 					'device',
+					'student_num_neighbors',
+					'student_top_k_road',
 					'tilting_mode',
 					'show_tilting_params',
 					'show_vehicle_ids',
@@ -506,6 +508,8 @@ def _collect_nocturne_required_args(flags, cli_args):
 		"scenario_data_dir",
 		"preprocess_dir",
 		"vehicle_map_path",
+		"student_num_neighbors",
+		"student_top_k_road",
 	]
 	required = {}
 	for key in keys:

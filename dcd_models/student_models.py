@@ -120,6 +120,16 @@ class LateFusionBase(nn.Module):
             road_objects: (batch_size, max_observable_agents, PARTNER_FEAT_DIM)
             road_graph: (batch_size, top_k_road_points, ROAD_GRAPH_FEAT_DIM)
         """
+        expected_obs_dim = self.expected_obs_dim
+        actual_obs_dim = obs_flat.shape[-1]
+        if actual_obs_dim != expected_obs_dim:
+            raise ValueError(
+                "LateFusion observation dimension mismatch: "
+                f"expected {expected_obs_dim} = 6 + {self.max_observable_agents}*6 + {self.top_k_road_points}*13, "
+                f"got {actual_obs_dim}. "
+                "Please keep student_num_neighbors/student_top_k_road consistent between env and model."
+            )
+
         # Extract different observation parts
         ego_state = obs_flat[:, :self.ego_state_idx]
         partner_obs = obs_flat[:, self.ego_state_idx:self.partner_obs_idx]
@@ -166,6 +176,11 @@ class LateFusionBase(nn.Module):
     def output_size(self):
         """Output feature dimension"""
         return self.hidden_dim
+
+    @property
+    def expected_obs_dim(self):
+        """Expected flattened observation dimension."""
+        return self.partner_obs_idx + self.top_k_road_points * ROAD_GRAPH_FEAT_DIM
 
 
 class StudentPolicy(DeviceAwareModule):
@@ -220,6 +235,21 @@ class StudentPolicy(DeviceAwareModule):
             dropout=dropout,
             act_func=act_func,
         )
+
+        if isinstance(obs_shape, (tuple, list)):
+            if len(obs_shape) != 1:
+                raise ValueError(f"StudentPolicy expects 1D obs_shape, got {obs_shape}")
+            obs_dim = int(obs_shape[0])
+        else:
+            obs_dim = int(obs_shape)
+        expected_obs_dim = self.base.expected_obs_dim
+        if obs_dim != expected_obs_dim:
+            raise ValueError(
+                "StudentPolicy obs_shape mismatch: "
+                f"expected {expected_obs_dim} = 6 + {self.base.max_observable_agents}*6 + {self.base.top_k_road_points}*13, "
+                f"got {obs_dim}. "
+                "Please align student_num_neighbors/student_top_k_road across env and model config."
+            )
         
         # Continuous action dimension (accel, steer, etc.)
         action_dim = action_space.shape[0]

@@ -157,6 +157,21 @@ def _make_env(args):
     
     # Nocturne environment configuration
     if args.env_name.startswith('Nocturne'):
+        explicit_device = getattr(args, 'device', None)
+        if explicit_device is not None:
+            env_device = str(explicit_device)
+        elif hasattr(args, 'cuda'):
+            env_device = 'cuda' if bool(args.cuda) else 'cpu'
+        elif hasattr(args, 'no_cuda'):
+            env_device = 'cpu' if bool(args.no_cuda) else (
+                'cuda' if torch.cuda.is_available() else 'cpu'
+            )
+        else:
+            env_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        if isinstance(env_device, str) and env_device.startswith('cuda') and not torch.cuda.is_available():
+            env_device = 'cpu'
+
         # Prefer the Nocturne-specific flag; fall back for compatibility
         max_episode_steps = getattr(args, 'nocturne_max_episode_steps', None)
         if max_episode_steps is None:
@@ -175,7 +190,7 @@ def _make_env(args):
             'preprocess_dir': getattr(args, 'preprocess_dir', 'data/preprocess'),
             'vehicle_map_path': vehicle_map_path,
             'max_episode_steps': max_episode_steps,
-            'device': getattr(args, 'device', 'cuda'),
+            'device': env_device,
             'tilting_mode': getattr(args, 'tilting_mode', 'per_vehicle'),
             'mutation_mode': getattr(args, 'mutation_mode', 'all'),
             'mutation_range': getattr(args, 'mutation_range', 5.0),
@@ -185,6 +200,8 @@ def _make_env(args):
             'veh_veh_collision_rew_multiplier': getattr(args, 'veh_veh_collision_rew_multiplier', 10.0),
             'veh_edge_collision_rew_multiplier': getattr(args, 'veh_edge_collision_rew_multiplier', 10.0),
             'remove_background_vehicles': getattr(args, 'remove_background_vehicles', True),
+            'student_num_neighbors': getattr(args, 'student_num_neighbors', 16),
+            'student_top_k_road': getattr(args, 'student_top_k_road', 64),
         })
         return gym_make(args.env_name, **env_kwargs)
 
