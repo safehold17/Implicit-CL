@@ -116,6 +116,18 @@ def parse_args():
 		default=100,
 		help='Number of evaluation episodes per xpid per environment.')
 	parser.add_argument(
+		'--tilt_range',
+		type=int,
+		nargs=2,
+		default=[-25, 25],
+		metavar=('MIN', 'MAX'),
+		help='Absolute tilt range for Nocturne, formatted as: MIN MAX (e.g., -25 25).')
+	parser.add_argument(
+		'--opponent_vehicle_number',
+		type=int,
+		default=7,
+		help='Number of opponent vehicles used for per-vehicle tilting (K).')
+	parser.add_argument(
 		'--model_tar',
 		type=str,
 		default='model',
@@ -182,24 +194,28 @@ class Evaluator(object):
 		elif is_nocturne:
 			# make Nocturne env
 			from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
-			nocturne_kwargs = {}
-			for k, v in kwargs.items():
-				if k in [
-					'scenario_index_path',
-					'opponent_checkpoint',
-					'scenario_data_dir',
-					'preprocess_dir',
-					'vehicle_map_path',
-					'max_episode_steps',
-					'device',
-					'student_num_neighbors',
-					'student_top_k_road',
-					'tilting_mode',
-					'show_tilting_params',
-					'show_vehicle_ids',
-					'show_ego_vehicle_selection'
-				]:
-					nocturne_kwargs[k] = v
+			allowed_nocturne_keys = {
+				'scenario_index_path',
+				'opponent_checkpoint',
+				'scenario_data_dir',
+				'preprocess_dir',
+				'vehicle_map_path',
+				'max_episode_steps',
+				'device',
+				'student_num_neighbors',
+				'student_top_k_road',
+				'tilting_mode',
+				'tilt_range',
+				'show_tilting_params',
+				'show_vehicle_ids',
+				'show_ego_vehicle_selection',
+				'opponent_vehicle_number',
+			}
+			nocturne_kwargs = {
+				k: v for k, v in kwargs.items() if k in allowed_nocturne_keys
+			}
+			if 'opponent_vehicle_number' in nocturne_kwargs:
+				nocturne_kwargs['opponent_k'] = int(nocturne_kwargs.pop('opponent_vehicle_number'))
 			# Set default tilting_mode if not provided
 			if 'tilting_mode' not in nocturne_kwargs:
 				nocturne_kwargs['tilting_mode'] = 'per_vehicle'
@@ -505,11 +521,13 @@ def _collect_nocturne_required_args(flags, cli_args):
 	keys = [
 		"scenario_index_path",
 		"opponent_checkpoint",
+		"opponent_vehicle_number",
 		"scenario_data_dir",
 		"preprocess_dir",
 		"vehicle_map_path",
 		"student_num_neighbors",
 		"student_top_k_road",
+		"tilt_range",
 	]
 	required = {}
 	for key in keys:

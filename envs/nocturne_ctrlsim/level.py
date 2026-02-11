@@ -6,10 +6,6 @@ from dataclasses import dataclass
 import numpy as np
 from typing import Tuple, Dict
 
-# Constants for per-vehicle tilting
-OPPONENT_K = 7
-PER_VEHICLE_TILTING_LENGTH = 3 * OPPONENT_K  # 21
-
 
 @dataclass
 class ScenarioLevel:
@@ -36,7 +32,7 @@ class ScenarioLevel:
     veh_veh_tilt: int
     veh_edge_tilt: int
     
-    # Per-vehicle tilting (flattened, length = PER_VEHICLE_TILTING_LENGTH)
+    # Per-vehicle tilting (flattened, variable length)
     per_vehicle_tilting: Tuple[int, ...] = ()
 
     def __post_init__(self):
@@ -49,13 +45,11 @@ class ScenarioLevel:
             if not (-25 <= val <= 25):
                 raise ValueError(f"{name} must be in [-25, 25], got {val}")
         
-        # Normalize per_vehicle_tilting: pad with 0 if too short, truncate if too long
-        if len(self.per_vehicle_tilting) < PER_VEHICLE_TILTING_LENGTH:
-            padded = list(self.per_vehicle_tilting) + [0] * (PER_VEHICLE_TILTING_LENGTH - len(self.per_vehicle_tilting))
-            object.__setattr__(self, 'per_vehicle_tilting', tuple(padded))
-        elif len(self.per_vehicle_tilting) > PER_VEHICLE_TILTING_LENGTH:
-            object.__setattr__(self, 'per_vehicle_tilting', self.per_vehicle_tilting[:PER_VEHICLE_TILTING_LENGTH])
-        
+        normalized_per_vehicle_tilting = tuple(
+            int(round(float(val))) for val in self.per_vehicle_tilting
+        )
+        object.__setattr__(self, 'per_vehicle_tilting', normalized_per_vehicle_tilting)
+
         # Validate per_vehicle_tilting values
         for i, val in enumerate(self.per_vehicle_tilting):
             val = int(round(float(val)))
@@ -143,18 +137,18 @@ class ScenarioLevel:
 
         This method only parses raw values and keeps no scenario mapping logic.
         """
-        # Handle backward compatibility: old format has length 5, new has length 26
-        if len(encoding) >= 5 + PER_VEHICLE_TILTING_LENGTH:
-            # New format: [scenario_idx, goal, veh_veh, veh_edge, per_vehicle(21), seed]
-            per_vehicle_tilting = tuple(
-                int(round(float(encoding[i])))
-                for i in range(4, 4 + PER_VEHICLE_TILTING_LENGTH)
-            )
-            seed_idx = 4 + PER_VEHICLE_TILTING_LENGTH
-        else:
-            # Old format: [scenario_idx, goal, veh_veh, veh_edge, seed]
+        # Old format: [scenario_idx, goal, veh_veh, veh_edge, seed]
+        if len(encoding) <= 5:
             per_vehicle_tilting = ()
             seed_idx = 4
+        else:
+            # New variable-length format:
+            # [scenario_idx, goal, veh_veh, veh_edge, per_vehicle..., seed]
+            seed_idx = len(encoding) - 1
+            per_vehicle_tilting = tuple(
+                int(round(float(encoding[i])))
+                for i in range(4, seed_idx)
+            )
 
         return (
             int(float(encoding[0])),

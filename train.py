@@ -239,10 +239,12 @@ if __name__ == '__main__':
                 device=device,
                 scenario_index_path=args.scenario_index_path,
                 opponent_checkpoint=args.opponent_checkpoint,
+                opponent_vehicle_number=args.opponent_vehicle_number,
                 scenario_data_dir=args.scenario_data_dir,
                 preprocess_dir=args.preprocess_dir,
                 vehicle_map_path=args.vehicle_map_path,
-                max_episode_steps=args.nocturne_max_episode_steps)
+                max_episode_steps=args.nocturne_max_episode_steps,
+                tilt_range=args.tilt_range)
 
     # === Train === 
     last_checkpoint_idx = getattr(train_runner, args.checkpoint_basis)

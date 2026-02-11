@@ -625,6 +625,13 @@ parser.add_argument(
     default=5.0,
     help='Mutation range for tilting parameters (delta sampled from [-range, range]).')
 parser.add_argument(
+    '--tilt_range',
+    type=int,
+    nargs=2,
+    default=[-25, 25],
+    metavar=('MIN', 'MAX'),
+    help='Absolute tilt range for parameters, formatted as: MIN MAX (e.g., -25 25).')
+parser.add_argument(
     '--scenario_index_path',
     type=str,
     default='data/scenarios_index.json',
@@ -634,6 +641,11 @@ parser.add_argument(
     type=str,
     default='checkpoints/model.ckpt',
     help='The path to the ctrl-sim opponent model checkpoint')
+parser.add_argument(
+    '--opponent_vehicle_number',
+    type=int,
+    default=7,
+    help='Number of opponent vehicles used for per-vehicle tilting (K).')
 parser.add_argument(
     '--scenario_data_dir',
     type=str,

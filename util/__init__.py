@@ -179,21 +179,19 @@ def _make_env(args):
             if max_episode_steps is None:
                 max_episode_steps = getattr(args, 'max_episode_steps', 90)
         
-        scenario_index_path = getattr(args, 'scenario_index_path', 'data/scenarios_index.json')
-        scenario_data_dir = getattr(args, 'scenario_data_dir', 'data/nocturne_waymo/formatted_json_v2_no_tl_train')
-        vehicle_map_path = getattr(args, 'vehicle_map_path', 'data/vehicle_map_valid.json')
-        
-        env_kwargs.update({
-            'scenario_index_path': scenario_index_path,
+        nocturne_kwargs = {
+            'scenario_index_path': getattr(args, 'scenario_index_path', 'data/scenarios_index.json'),
             'opponent_checkpoint': getattr(args, 'opponent_checkpoint', 'checkpoints/model.ckpt'),
-            'scenario_data_dir': scenario_data_dir,
+            'scenario_data_dir': getattr(args, 'scenario_data_dir', 'data/nocturne_waymo/formatted_json_v2_no_tl_train'),
             'preprocess_dir': getattr(args, 'preprocess_dir', 'data/preprocess'),
-            'vehicle_map_path': vehicle_map_path,
+            'opponent_k': getattr(args, 'opponent_vehicle_number', 7),
+            'vehicle_map_path': getattr(args, 'vehicle_map_path', 'data/vehicle_map_valid.json'),
             'max_episode_steps': max_episode_steps,
             'device': env_device,
             'tilting_mode': getattr(args, 'tilting_mode', 'per_vehicle'),
             'mutation_mode': getattr(args, 'mutation_mode', 'all'),
             'mutation_range': getattr(args, 'mutation_range', 5.0),
+            'tilt_range': getattr(args, 'tilt_range', None),
             'show_tilting_params': getattr(args, 'show_tilting_params', True),
             'show_vehicle_ids': getattr(args, 'show_vehicle_ids', True),
             'show_ego_vehicle_selection': getattr(args, 'show_ego_vehicle_selection', True),
@@ -202,7 +200,8 @@ def _make_env(args):
             'remove_background_vehicles': getattr(args, 'remove_background_vehicles', True),
             'student_num_neighbors': getattr(args, 'student_num_neighbors', 16),
             'student_top_k_road': getattr(args, 'student_top_k_road', 64),
-        })
+        }
+        env_kwargs.update(nocturne_kwargs)
         return gym_make(args.env_name, **env_kwargs)
 
     if args.env_name.startswith('CarRacing'):
