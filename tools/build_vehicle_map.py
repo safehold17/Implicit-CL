@@ -330,6 +330,72 @@ def _select_opponent_vehicle_ids(
     return [item[1] for item in selected]
 
 
+def _resolve_vehicle_goal_position(
+    veh_id: int,
+    veh,
+    gt_data_dict: Dict,
+    max_episode_steps: int,
+) -> Optional[np.ndarray]:
+    """
+    Resolve vehicle goal position using the same fallback logic as runtime env:
+    use target_position by default, and if GT indicates disappearance, use the
+    last valid GT point when it differs from target.
+    """
+    if veh is None:
+        return None
+
+    goal_pos = np.array([veh.target_position.x, veh.target_position.y], dtype=np.float32)
+    if veh_id not in gt_data_dict:
+        return goal_pos
+
+    gt_traj = np.array(gt_data_dict[veh_id].get("traj", []))
+    if gt_traj.ndim != 2 or gt_traj.shape[0] == 0 or gt_traj.shape[1] < 5:
+        return goal_pos
+
+    existence_mask = gt_traj[:, 4]
+    idx_goal = min(max_episode_steps - 1, gt_traj.shape[0] - 1)
+    idx_disappear = np.where(existence_mask == 0)[0]
+    has_disappear = len(idx_disappear) > 0
+    if has_disappear:
+        idx_goal = idx_disappear[0] - 1
+
+    if has_disappear and idx_goal >= 0:
+        gt_goal_pos = gt_traj[idx_goal, :2]
+        if np.linalg.norm(gt_goal_pos - goal_pos) > 0.0:
+            goal_pos = gt_goal_pos.astype(np.float32)
+
+    return goal_pos
+
+
+def _compute_start_goal_distance(
+    ego_id: Optional[int],
+    vehicles: List,
+    gt_data_dict: Dict,
+    max_episode_steps: int,
+) -> Optional[float]:
+    """Compute ego start->goal distance in meters."""
+    if ego_id is None:
+        return None
+
+    veh_dict = {v.getID(): v for v in vehicles}
+    ego_veh = veh_dict.get(ego_id)
+    if ego_veh is None:
+        return None
+
+    start = ego_veh.getPosition()
+    start_pos = np.array([start.x, start.y], dtype=np.float32)
+    goal_pos = _resolve_vehicle_goal_position(
+        ego_id,
+        ego_veh,
+        gt_data_dict,
+        max_episode_steps=max_episode_steps,
+    )
+    if goal_pos is None:
+        return None
+
+    return float(np.linalg.norm(goal_pos - start_pos))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build vehicle map for scenarios")
     parser.add_argument(
@@ -362,6 +428,17 @@ def main() -> None:
         default=None,
         help="Output file path (default: data/vehicle_map_valid.json or vehicle_map_train.json)",
     )
+    parser.add_argument(
+        "--filter_close_goal_point",
+        action="store_true",
+        help="Filter scenarios where ego start-goal distance is smaller than threshold.",
+    )
+    parser.add_argument(
+        "--close_goal_threshold_m",
+        type=float,
+        default=5.0,
+        help="Threshold in meters for --filter_close_goal_point (default: 5.0).",
+    )
     args = parser.parse_args()
 
     cfg_scenario_dir = _load_config_defaults(args.config)
@@ -391,8 +468,10 @@ def main() -> None:
     total_scenarios = 0
     scenarios_with_preproc = 0
     scenarios_filtered = 0
+    close_goal_filtered_scenarios = 0
     
     vehicle_map: Dict[str, Dict] = {}
+    kept_scenario_ids: List[str] = []
     for scenario_id in tqdm(
         scenario_ids,
         desc="Building vehicle map",
@@ -409,6 +488,7 @@ def main() -> None:
                 "ego_selection_mode": "unknown",
                 "opponent_vehicle_ids": [],
             }
+            kept_scenario_ids.append(scenario_id)
             continue
 
         try:
@@ -451,6 +531,21 @@ def main() -> None:
                 max_episode_steps,
                 history_steps,
             )
+
+            if args.filter_close_goal_point:
+                start_goal_dist = _compute_start_goal_distance(
+                    ego_id=ego_id,
+                    vehicles=vehicles,
+                    gt_data_dict=gt_data_dict,
+                    max_episode_steps=max_episode_steps,
+                )
+                if (
+                    start_goal_dist is not None
+                    and start_goal_dist < args.close_goal_threshold_m
+                ):
+                    close_goal_filtered_scenarios += 1
+                    sim.reset()
+                    continue
             
             opponent_ids = _select_opponent_vehicle_ids(
                 moving_veh_ids,
@@ -467,6 +562,7 @@ def main() -> None:
                 "ego_selection_mode": ego_selection_mode,
                 "opponent_vehicle_ids": opponent_ids,
             }
+            kept_scenario_ids.append(scenario_id)
             sim.reset()
         except Exception as e:
             print(f"Warning: failed to process {scenario_id}: {e}")
@@ -475,6 +571,7 @@ def main() -> None:
                 "ego_selection_mode": "unknown",
                 "opponent_vehicle_ids": [],
             }
+            kept_scenario_ids.append(scenario_id)
 
     # Determine output path
     if args.output:
@@ -492,11 +589,36 @@ def main() -> None:
         raise FileNotFoundError("data directory not found for output")
     with open(output_path, "w") as f:
         json.dump(vehicle_map, f, indent=2)
+
+    if args.filter_close_goal_point:
+        filtered_vehicle_map_path = os.path.join("data", "vehicle_map_filtered.json")
+        filtered_scenario_index_path = os.path.join("data", "scenarios_index_filtered.json")
+
+        filtered_vehicle_map = {
+            sid: vehicle_map[sid] for sid in kept_scenario_ids if sid in vehicle_map
+        }
+        filtered_index_data = {
+            "version": "1.0",
+            "source_dir": index_source_dir or args.scenario_dir,
+            "total_scenarios": len(kept_scenario_ids),
+            "scenario_ids": kept_scenario_ids,
+        }
+
+        with open(filtered_vehicle_map_path, "w") as f:
+            json.dump(filtered_vehicle_map, f, indent=2)
+        with open(filtered_scenario_index_path, "w") as f:
+            json.dump(filtered_index_data, f, indent=2)
     
     print(f"\n{'='*60}")
     print(f"Saved vehicle map to: {output_path}")
+    if args.filter_close_goal_point:
+        print(f"Saved filtered vehicle map to: {filtered_vehicle_map_path}")
+        print(f"Saved filtered scenario index to: {filtered_scenario_index_path}")
     print(f"\nStatistics:")
     print(f"  Total scenarios: {total_scenarios}")
+    if args.filter_close_goal_point:
+        print(f"  Close-goal filtered scenarios: {close_goal_filtered_scenarios}")
+        print(f"  Remaining scenarios after close-goal filter: {len(kept_scenario_ids)}")
     if args.preprocess_dir:
         print(f"  Scenarios with preprocessed data: {scenarios_with_preproc}")
         print(f"  Scenarios with filtered vehicles: {scenarios_filtered}")
