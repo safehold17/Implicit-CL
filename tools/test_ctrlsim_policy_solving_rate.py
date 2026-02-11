@@ -38,6 +38,7 @@ class CtrlSimEgoWrapper:
         opponent_k: int,
         max_episode_steps: int,
         tilting_mode: str,
+        tilt_range,
         show_level_log: bool,
         record_video: bool,
         show_vehicle_ids: bool,
@@ -58,6 +59,7 @@ class CtrlSimEgoWrapper:
             device=device,
             seed=seed,
             tilting_mode=tilting_mode,
+            tilt_range=tilt_range,
         )
         self.tilting_mode = tilting_mode
         self.device = device
@@ -372,6 +374,14 @@ def parse_args() -> argparse.Namespace:
         choices=["global", "per_vehicle", "ego", "none"],
         default="per_vehicle",
     )
+    parser.add_argument(
+        "--tilt_range",
+        type=float,
+        nargs=2,
+        default=[-25.0, 25.0],
+        metavar=("MIN", "MAX"),
+        help="Tilt sampling range for Nocturne, formatted as: MIN MAX (e.g., -25 -10).",
+    )
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--render", action="store_true")
@@ -622,7 +632,9 @@ def write_metrics_csv(output_dir, xpid, episode_metrics):
 def main() -> None:
     args = parse_args()
     base_seed = args.seed if args.seed is not None else int.from_bytes(os.urandom(4), byteorder="little")
+    tilt_range = tuple(sorted((float(args.tilt_range[0]), float(args.tilt_range[1]))))
     print(f"Tilting mode: {args.tilting_mode}")
+    print(f"Tilt range: [{tilt_range[0]}, {tilt_range[1]}]")
     print(f"Checkpoint: {args.checkpoint_path}")
     print(f"Base seed: {base_seed}")
 
@@ -648,6 +660,7 @@ def main() -> None:
         max_episode_steps=args.num_steps,
         opponent_k=7,
         tilting_mode=args.tilting_mode,
+        tilt_range=tilt_range,
         show_level_log=args.show_level_log,
         record_video=args.record_video,
         show_vehicle_ids=args.show_vehicle_ids,
