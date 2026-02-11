@@ -377,10 +377,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.level_seed = int(seed)
         return self.level_seed
 
-    def _next_level_seed(self) -> int:
-        """Generate and apply a fresh level seed."""
-        return self._set_level_seed(rand_int_seed())
-
     def _set_current_level(self, level: ScenarioLevel) -> ScenarioLevel:
         """Set current level and synchronize its seed state."""
         self.current_level = level
@@ -439,7 +435,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.level_params_vec = self._init_level_params_vec()
         
         # Generate new level seed
-        self._next_level_seed()
+        self._set_level_seed(rand_int_seed())
         
         return self._build_adversary_obs()
     
@@ -917,7 +913,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
 
         mutated = self._mutate_level_internal(base_level)
         # Ensure the mutated level carries a fresh seed for subsequent resets.
-        mutated = replace(mutated, seed=self._next_level_seed())
+        mutated = replace(mutated, seed=self._set_level_seed(rand_int_seed()))
         return self.reset_to_level(mutated)
 
     def _mutate_level_internal(
