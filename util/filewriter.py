@@ -294,7 +294,7 @@ class FileWriter:
             self._logger.info("Updated log fields: %s", self.fieldnames)
 
         if not self._wrote_log_header:
-            self._logfile.write("# %s\n" % ",".join(self.fieldnames))
+            self._logwriter.writeheader()
             self._wrote_log_header = True
 
         if verbose:
