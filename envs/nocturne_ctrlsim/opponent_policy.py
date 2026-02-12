@@ -109,12 +109,16 @@ def get_gt_action(env, veh_id: int, t: int, veh=None) -> Optional[Tuple[float, f
     if t < 0 or t >= len(gt_traj) - 1:
         return (0.0, 0.0)
 
-    # Check if vehicle exists in current and next time step
+    # Check if vehicle exists in current and next time step.
+    # In replay mode, opponent may not control this vehicle and adapter can return None;
+    # fall back to GT existence in that case.
+    # gt trajectory: [pos_x, pos_y, heading, speed, existence, goal_x, goal_y, length]
+    gt_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
     if veh_id in env.opponent_vehicle_ids and env.opponent is not None:
         exists = env.opponent.get_opponent_vehicle_exists(veh_id)
-        veh_exists = 1 if exists else 0
+        veh_exists = int(gt_exists if exists is None else bool(exists))
     else:
-        veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
+        veh_exists = int(gt_exists)
     # Once missing, remain missing (align ctrl-sim evaluator)
     ego_data = env.opponent.get_vehicle_data(veh_id) if env.opponent else None
     if t > 0 and ego_data and ego_data["existence"][-1] == 0:

@@ -96,7 +96,7 @@ def worker(remote, parent_remote, env_fn_wrappers):
                 attrs = [getattr(env, cmd) for env in envs]
                 is_callable = hasattr(attrs[0], '__call__')
                 if is_callable:
-                    if not hasattr(data, '__len__'):
+                    if (not hasattr(data, '__len__')) or isinstance(data, (str, bytes)):
                         data = [data]*len(attrs)
                     remote.send([attr(d) if d is not None else attr() for attr, d in zip(attrs, data)])
                 else:
@@ -425,7 +425,7 @@ class ParallelAdversarialVecEnv(SubprocVecEnv):
         else:
             remotes = [self.remotes[i] for i in index]
 
-        if hasattr(data, '__len__'):
+        if hasattr(data, '__len__') and not isinstance(data, (str, bytes)):
             assert len(data) == len(remotes)
             [remote.send((name, d)) for remote, d in zip(remotes, data)]
         else:

@@ -42,6 +42,17 @@ if __name__ == '__main__':
     os.environ["OMP_NUM_THREADS"] = "1"
 
     args = parser.parse_args()
+    warmup_disable_steps = int(args.num_env_steps * args.warmup_opponent_disable_ratio)
+    warmup_replay_steps = int(args.num_env_steps * args.warmup_opponent_replay_ratio)
+
+    # Set opponent vehicle mode
+    def resolve_opponent_runtime_mode_by_steps(total_env_steps: int) -> str:
+        if total_env_steps < warmup_disable_steps:
+            return 'disable'
+        replay_end_step = warmup_disable_steps + warmup_replay_steps
+        if total_env_steps < replay_end_step:
+            return 'replay'
+        return 'tilting'
     
     # === Configure logging ==
     if args.xpid is None:
@@ -250,6 +261,8 @@ if __name__ == '__main__':
     last_checkpoint_idx = getattr(train_runner, args.checkpoint_basis)
     update_start_time = timer()
     num_updates = int(args.num_env_steps) // args.num_steps // args.num_processes
+    env_steps_per_update = args.num_processes * args.num_steps
+    current_opponent_runtime_mode = None
     train_updates = range(initial_update_count, num_updates)
     with tqdm(
         train_updates,
@@ -260,6 +273,22 @@ if __name__ == '__main__':
         disable=not sys.stderr.isatty(),
     ) as pbar:
         for j in pbar:
+            completed_env_steps_before_update = j * env_steps_per_update
+            target_mode = resolve_opponent_runtime_mode_by_steps(completed_env_steps_before_update)
+            if target_mode != current_opponent_runtime_mode:
+                venv.remote_attr(
+                    'set_opponent_runtime_mode',
+                    data=target_mode,
+                    flatten=True,
+                )
+                current_opponent_runtime_mode = target_mode
+                logging.info(
+                    "Opponent runtime mode to %s at env_step=%d (update=%d).",
+                    target_mode,
+                    completed_env_steps_before_update,
+                    j,
+                )
+
             stats = train_runner.run()
 
             # === Perform logging ===
@@ -318,8 +347,8 @@ if __name__ == '__main__':
 
             # === Log PLR level weights ===
             if args.weight_log_interval > 0 and \
-               j % args.weight_log_interval == 0 and \
-               train_runner.level_samplers:
+                j % args.weight_log_interval == 0 and \
+                train_runner.level_samplers:
                 # Get the first available level sampler (usually 'agent')
                 level_sampler = train_runner.all_level_samplers[0]
                 if level_sampler is not None:

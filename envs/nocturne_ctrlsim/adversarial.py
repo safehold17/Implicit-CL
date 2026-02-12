@@ -209,6 +209,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.show_vehicle_ids = show_vehicle_ids
         self.show_ego_vehicle_selection = show_ego_vehicle_selection
         self.remove_background_vehicles = remove_background_vehicles
+        self.opponent_runtime_mode = kwargs.get('opponent_runtime_mode', 'tilting')
         self.removed_vehicle_ids: List[int] = []
         
         # ========== State variables ==========
@@ -509,6 +510,15 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """Generate random condition vector (for adversary observation)."""
         return np.random.uniform(size=(self.random_z_dim,)).astype(np.float32)
 
+    def set_opponent_runtime_mode(self, mode: str) -> str:
+        valid_modes = {'disable', 'replay', 'tilting'}
+        if mode not in valid_modes:
+            raise ValueError(
+                f"opponent_runtime_mode must be one of {sorted(valid_modes)}, got {mode}"
+            )
+        self.opponent_runtime_mode = mode
+        return self.opponent_runtime_mode
+
     @property
     def processed_action_dim(self) -> int:
         """Processed action dimension (compatible with AdversarialRunner)."""
@@ -620,21 +630,27 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 f"Check preprocess_dir: {self.data_bridge.preprocess_dir}"
             )
         
-        # Select opponent vehicles from map only (strict mode)
-        self.opponent_vehicle_ids = opponent_ids
-        self.opponent_vehicles = []
-        missing_opponent_ids = []
-        for vid in opponent_ids:
-            veh = get_vehicle_by_id(self, vid)
-            if veh is None:
-                missing_opponent_ids.append(vid)
-            else:
-                self.opponent_vehicles.append(veh)
-        if missing_opponent_ids:
-            raise ValueError(
-                f"opponent_vehicle_ids {missing_opponent_ids} from vehicle map do not exist in scenario "
-                f"'{level.scenario_id}'."
-            )
+        runtime_mode = getattr(self, 'opponent_runtime_mode', 'tilting')
+
+        # Select opponent vehicles from map only (strict mode), unless runtime mode disables opponents.
+        if runtime_mode == 'disable':
+            self.opponent_vehicle_ids = []
+            self.opponent_vehicles = []
+        else:
+            self.opponent_vehicle_ids = opponent_ids
+            self.opponent_vehicles = []
+            missing_opponent_ids = []
+            for vid in opponent_ids:
+                veh = get_vehicle_by_id(self, vid)
+                if veh is None:
+                    missing_opponent_ids.append(vid)
+                else:
+                    self.opponent_vehicles.append(veh)
+            if missing_opponent_ids:
+                raise ValueError(
+                    f"opponent_vehicle_ids {missing_opponent_ids} from vehicle map do not exist in scenario "
+                    f"'{level.scenario_id}'."
+                )
         
         # Initialize ego vehicle's goal and reward related states
         initialize_ego_goal_state(self)
@@ -660,45 +676,45 @@ class NocturneCtrlSimAdversarial(gym.Env):
                     for i in range(self.per_vehicle_tilting_length):
                         self.level_params_vec[4 + i] = per[i]
         
-        # Set opponent tilting based on tilting_mode
-        if self.tilting_mode == 'global':
-            # Global mode: all opponents share the same tilts
-            self.opponent.set_tilting(
-                level.goal_tilt, 
-                level.veh_veh_tilt, 
-                level.veh_edge_tilt
-            )
-        elif self.tilting_mode == 'per_vehicle':
-            # Per-vehicle mode: each opponent has independent tilts
-            # Sort opponent_vehicle_ids by veh_id (integer, numerical order)
-            sorted_opponent_ids = sorted(self.opponent_vehicle_ids)
-            
-            # Build per-vehicle mapping: veh_id -> (goal_tilt, veh_veh_tilt, veh_edge_tilt)
-            per_vehicle_mapping = {}
-            per = level.per_vehicle_tilting
-            for i, veh_id in enumerate(sorted_opponent_ids):
-                if i * 3 + 2 < len(per):
-                    base = 3 * i
-                    per_vehicle_mapping[veh_id] = (per[base], per[base+1], per[base+2])
-                else:
-                    # If insufficient tilts, use (0, 0, 0)
-                    per_vehicle_mapping[veh_id] = (0, 0, 0)
-            
-            # Set per-vehicle tilts via adapter
-            self.opponent.set_per_vehicle_tilting(per_vehicle_mapping)
+        # Set opponent behavior for current runtime mode.
+        if runtime_mode == 'tilting':
+            if self.tilting_mode == 'global':
+                # Global mode: all opponents share the same tilts
+                self.opponent.set_tilting(
+                    level.goal_tilt,
+                    level.veh_veh_tilt,
+                    level.veh_edge_tilt
+                )
+            elif self.tilting_mode == 'per_vehicle':
+                # Per-vehicle mode: each opponent has independent tilts
+                sorted_opponent_ids = sorted(self.opponent_vehicle_ids)
+                per_vehicle_mapping = {}
+                per = level.per_vehicle_tilting
+                for i, veh_id in enumerate(sorted_opponent_ids):
+                    if i * 3 + 2 < len(per):
+                        base = 3 * i
+                        per_vehicle_mapping[veh_id] = (per[base], per[base+1], per[base+2])
+                    else:
+                        per_vehicle_mapping[veh_id] = (0, 0, 0)
+                self.opponent.set_per_vehicle_tilting(per_vehicle_mapping)
+            else:
+                # Ego/none mode: opponents always use zero tilts
+                self.opponent.set_tilting(0, 0, 0)
         else:
-            # Ego/none mode: opponents always use zero tilts
+            # disable/replay mode: no policy tilting behavior.
             self.opponent.set_tilting(0, 0, 0)
+            self.opponent.per_vehicle_tilting = None
 
         if self.remove_background_vehicles:
             remove_background_moving_vehicles(self)
-        
+        vehicles_to_control = self.opponent_vehicle_ids if runtime_mode == 'tilting' else []
+
         self.opponent.reset(
             self.scenario,
             self.vehicles,
             self._gt_data_dict,
             self._preproc_data,
-            self.opponent_vehicle_ids,
+            vehicles_to_control,
             ego_id=self.ego_vehicle.getID() if self.ego_vehicle else None,
         )
         

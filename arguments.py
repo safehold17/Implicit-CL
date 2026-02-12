@@ -681,6 +681,18 @@ parser.add_argument(
     type=str2bool, nargs='?', const=True, default=True,
     help='Remove moving vehicles other than ego/opponent in Nocturne env.')
 
+# ============== warm-up stage ==============
+parser.add_argument(
+    '--warmup_opponent_disable_ratio',
+    type=float,
+    default=0.1,
+    help='Warmup ratio for opponent-disable stage (fraction of num_env_steps).')
+parser.add_argument(
+    '--warmup_opponent_replay_ratio',
+    type=float,
+    default=0.1,
+    help='Warmup ratio for opponent-replay stage (fraction of num_env_steps).')
+
 # ============== render options ==============
 parser.add_argument(
     '--show_tilting_params',
