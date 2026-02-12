@@ -22,6 +22,7 @@ import time
 from typing import Dict
 
 import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 
 def gather_metadata() -> Dict:
@@ -218,6 +219,28 @@ class FileWriter:
         self._levelseedswriter = csv.DictWriter(self._levelseedsfile, fieldnames=self.level_seeds_fieldnames)
         self._finaltestfile = open(self.paths["final_test_eval"], "a")
         self._finaltestwriter = csv.DictWriter(self._finaltestfile, fieldnames=self.final_test_eval_fieldnames)
+        self.tensor_board_writer: SummaryWriter = SummaryWriter(
+            log_dir=os.path.join(self.basepath, "tb")
+        )
+        self._tb_single_write_metric_map = {
+            "train/mean_agent_return": "mean_agent_return",
+            "train/agent_value_loss": "agent_value_loss",
+            "train/update_reward": "update_reward",
+            "train/plr_update_reward": "plr_update_reward",
+        }
+
+        self._tb_process_avg_metric_map = {
+            "train/progress": "progress",
+            "train/plr_progress": "plr_progress",
+            "env/veh_goal_avg": "veh_goal_avg",
+            "env/plr_veh_goal_avg": "plr_veh_goal_avg",
+            "env/veh_veh_avg": "veh_veh_avg",
+            "env/plr_veh_veh_avg": "plr_veh_veh_avg",
+            "env/veh_edge_avg": "veh_edge_avg",
+            "env/plr_veh_edge_avg": "plr_veh_edge_avg",
+        }
+        self._tb_expected_num_processes = int(xp_args["num_processes"])
+        self._tb_process_avg_buffer = {tag: {} for tag in self._tb_process_avg_metric_map}
 
         if self.seeds and not self.record_seed_diffs:
             self._levelweightsfile.write("# %s\n" % ",".join(self.seeds))
@@ -307,6 +330,7 @@ class FileWriter:
 
         self._logwriter.writerow(to_log)
         self._logfile.flush()
+        self.log_to_tensorboard(to_log)
 
     def log_level_weights(self, weights, seeds=None):
         if self.record_seed_diffs:
@@ -334,6 +358,20 @@ class FileWriter:
         self._finaltestwriter.writerow(to_log)
         self._finaltestfile.flush()
 
+    def log_to_tensorboard(self, stats: Dict) -> None:
+        process_idx = int(stats.get("process_idx", 0))
+        global_step = int(stats["total_student_grad_updates"])
+        if process_idx == 0:
+            for tag, key in self._tb_single_write_metric_map.items():
+                value = self._get_float_stat(stats, key)
+                if value is not None:
+                    self.tensor_board_writer.add_scalar(tag, value, global_step)
+        for tag, key in self._tb_process_avg_metric_map.items():
+            value = self._get_float_stat(stats, key)
+            if value is not None:
+                self._collect_tb_process_avg(tag, global_step, process_idx, value)
+        self.tensor_board_writer.flush()
+
     def close(self, successful: bool = True) -> None:
         if successful:
             self._append_avg_row()
@@ -346,6 +384,8 @@ class FileWriter:
 
         for f in [self._logfile, self._fieldfile]:
             f.close()
+        self._flush_tb_process_avg_buffers()
+        self.tensor_board_writer.close()
 
     def _save_metadata(self) -> None:
         with open(self.paths["meta"], "w") as jsonfile:
@@ -387,6 +427,38 @@ class FileWriter:
         if not to_insert:
             return result
         return result[:anchor_idx] + to_insert + result[anchor_idx:]
+
+    def _collect_tb_process_avg(self, tag, step, process_idx, value):
+        step_buffer = self._tb_process_avg_buffer[tag]
+        stale_steps = [stale_step for stale_step in step_buffer if stale_step < step]
+        for stale_step in sorted(stale_steps):
+            self._write_tb_process_avg(tag, stale_step, step_buffer.pop(stale_step))
+
+        process_values = step_buffer.setdefault(step, {})
+        process_values[process_idx] = value
+
+        if len(process_values) >= self._tb_expected_num_processes:
+            self._write_tb_process_avg(tag, step, process_values)
+            step_buffer.pop(step, None)
+
+    def _write_tb_process_avg(self, tag, step, process_values):
+        if not process_values:
+            return
+        mean_value = float(np.mean(list(process_values.values())))
+        self.tensor_board_writer.add_scalar(tag, mean_value, step)
+
+    def _flush_tb_process_avg_buffers(self):
+        for tag, step_buffer in self._tb_process_avg_buffer.items():
+            for step in sorted(step_buffer):
+                self._write_tb_process_avg(tag, step, step_buffer[step])
+            step_buffer.clear()
+
+    @staticmethod
+    def _get_float_stat(stats: Dict, key: str):
+        value = stats.get(key)
+        if value is None:
+            return None
+        return float(value)
 
     def _append_avg_row(self):
         if not os.path.exists(self.paths["logs"]):

@@ -44,6 +44,8 @@ dependencies:
       - gym_minigrid==1.2.2
       - geopandas==0.13.2
       - PyYAML>=5.3.1
+      - tensorboard==2.16.2
+      - protobuf==4.25.3
 
       # ---- env API (unify) ----
       - gym==0.26.2
