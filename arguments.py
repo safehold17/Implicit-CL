@@ -24,7 +24,7 @@ parser.add_argument(
 parser.add_argument(
     '--lr', 
     type=float, 
-    default=1e-4, 
+    default=3e-4,
     help='Learning rate')
 parser.add_argument(
     '--eps',
@@ -39,7 +39,7 @@ parser.add_argument(
 parser.add_argument(
     '--gamma',
     type=float,
-    default=0.995,
+    default=0.99,
     help='Discount factor for rewards.')
 parser.add_argument(
     '--use_gae',
@@ -109,7 +109,7 @@ parser.add_argument(
 parser.add_argument(
     '--ppo_epoch',
     type=int,
-    default=5,
+    default=4,
     help='Number of PPO epochs.')
 parser.add_argument(
     '--adv_ppo_epoch',
@@ -134,7 +134,7 @@ parser.add_argument(
 parser.add_argument(
     '--clip_value_loss',
     type=str2bool,
-    default=True,
+    default=False,
     help='PPO value loss clipping.')
 parser.add_argument(
     '--clip_reward',
@@ -246,7 +246,7 @@ parser.add_argument(
 parser.add_argument(
     "--level_replay_prob", 
     type=float,
-    default=0.5,
+    default=0.9,
     help="Probability of sampling a replay level instead of a new level.")
 parser.add_argument(
     "--level_replay_alpha",
@@ -667,6 +667,12 @@ parser.add_argument(
     default=None,
     help='The maximum number of steps in the Nocturne environment (None uses num_steps).')
 parser.add_argument(
+    '--remove_background_vehicles',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Remove moving vehicles other than ego/opponent in Nocturne env.')
+
+# ============== reward coefficient ==============
+parser.add_argument(
     '--veh_veh_collision_rew_multiplier',
     type=float,
     default=10.0,
@@ -677,9 +683,14 @@ parser.add_argument(
     default=10.0,
     help='Collision penalty multiplier for vehicle-road-edge collisions (ctrl-sim default).')
 parser.add_argument(
-    '--remove_background_vehicles',
-    type=str2bool, nargs='?', const=True, default=True,
-    help='Remove moving vehicles other than ego/opponent in Nocturne env.')
+    '--pos_target_achieved_rew_multiplier',
+    type=float,
+    default=10.0,
+    help='Goal position achieved reward multiplier for student reward (ctrl-sim default).')
+parser.add_argument(
+    '--use_pos_shaped',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Whether to include shaped position reward in student reward aggregation.')
 
 # ============== warm-up stage ==============
 parser.add_argument(

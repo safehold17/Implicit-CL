@@ -197,6 +197,10 @@ def _make_env(args):
             'show_ego_vehicle_selection': getattr(args, 'show_ego_vehicle_selection', True),
             'veh_veh_collision_rew_multiplier': getattr(args, 'veh_veh_collision_rew_multiplier', 10.0),
             'veh_edge_collision_rew_multiplier': getattr(args, 'veh_edge_collision_rew_multiplier', 10.0),
+            'pos_target_achieved_rew_multiplier': getattr(
+                args, 'pos_target_achieved_rew_multiplier', 10.0
+            ),
+            'use_pos_shaped': getattr(args, 'use_pos_shaped', False),
             'remove_background_vehicles': getattr(args, 'remove_background_vehicles', True),
             'student_num_neighbors': getattr(args, 'student_num_neighbors', 16),
             'student_top_k_road': getattr(args, 'student_top_k_road', 64),

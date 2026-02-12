@@ -23,12 +23,12 @@ from .scenario_helpers import (
 )
 
 from .opponent_policy import (
-    compute_reward,
     get_goal_point_for_vehicle,
     get_gt_action,
     initialize_ego_goal_state,
     is_ego_position_reached,
 )
+from .student_reward import compute_student_reward
 from .student_env_policy import (
     apply_student_action,
     get_student_observation,
@@ -265,6 +265,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._top_k_road_points = kwargs.get('student_top_k_road', 64)
         self.veh_veh_collision_rew_multiplier = kwargs.get('veh_veh_collision_rew_multiplier', 10.0)
         self.veh_edge_collision_rew_multiplier = kwargs.get('veh_edge_collision_rew_multiplier', 10.0)
+        self.pos_target_achieved_rew_multiplier = kwargs.get(
+            'pos_target_achieved_rew_multiplier', 10.0
+        )
+        self.use_pos_shaped = kwargs.get('use_pos_shaped', False)
         self.reset_random_max_retries = int(kwargs.get('reset_random_max_retries', 10))
         
         # Cache road data (filled after _initialize_simulation)
@@ -1067,7 +1071,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # 8. Calculate reward and termination conditions
         obs = get_student_observation(self)
-        reward = compute_reward(self)
+        reward = compute_student_reward(self)
         
         # Update episode statistics
         self._episode_steps += 1
