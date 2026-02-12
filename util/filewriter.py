@@ -238,9 +238,11 @@ class FileWriter:
             'position_reached',
             'goal_reached',
             'progress',
+            'plr_progress',
             'steps',
             'total_episodes',
             'episode_reward',
+            'plr_episode_reward',
             'total_student_grad_updates',
             'mean_agent_return',
             'agent_value_loss',
@@ -397,8 +399,8 @@ class FileWriter:
             return
 
         process_idx = self.fieldnames.index("process_idx") if "process_idx" in self.fieldnames else None
-        plr_marker_idx = self.fieldnames.index("plr_scenario_episode_reward") \
-            if "plr_scenario_episode_reward" in self.fieldnames else None
+        plr_marker_idx = self.fieldnames.index("plr_update_reward") \
+            if "plr_update_reward" in self.fieldnames else None
         episode_reward_idx = self.fieldnames.index("episode_reward") if "episode_reward" in self.fieldnames else None
 
         metric_values = {k: [] for k in self._avg_metric_fields if k != "plr_episode_reward"}
@@ -427,7 +429,7 @@ class FileWriter:
                 if value is not None:
                     metric_values[metric].append(value)
 
-            # PLR row criterion: non-empty plr_scenario_episode_reward.
+            # PLR row criterion: non-empty plr_update_reward.
             if plr_marker_idx is not None and plr_marker_idx < len(row):
                 plr_marker = str(row[plr_marker_idx]).strip()
                 if plr_marker != "" and episode_reward_idx is not None and episode_reward_idx < len(row):

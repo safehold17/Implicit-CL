@@ -72,6 +72,8 @@ if __name__ == '__main__':
             'goal_reached_occurred': 'goal_reached',
             'position_reached_occurred': 'position_reached',
             'avg_progress': 'progress',
+            'scenario_episode_reward': 'update_reward',
+            'plr_scenario_episode_reward': 'plr_update_reward',
         }
         ordered_prefix = [
             'process_idx',
@@ -82,9 +84,11 @@ if __name__ == '__main__':
             'position_reached',
             'goal_reached',
             'progress',
+            'plr_progress',
             'steps',
             'total_episodes',
             'episode_reward',
+            'plr_episode_reward',
             'total_student_grad_updates',
             'mean_agent_return',
             'agent_value_loss',
