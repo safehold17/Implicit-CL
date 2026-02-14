@@ -290,7 +290,7 @@ if __name__ == '__main__':
                     flatten=True,
                 )
                 current_opponent_runtime_mode = target_mode
-                logging.info(
+                logging.getLogger("logs/out").info(
                     "Opponent runtime mode to %s at env_step=%d (update=%d).",
                     target_mode,
                     completed_env_steps_before_update,
@@ -359,7 +359,7 @@ if __name__ == '__main__':
                 train_runner.level_samplers:
                 # Get the first available level sampler (usually 'agent')
                 level_sampler = train_runner.all_level_samplers[0]
-                if level_sampler is not None:
+                if level_sampler is not None and level_sampler._proportion_filled > 0:
                     weights = level_sampler.sample_weights()
                     seeds = level_sampler.seeds
                     filewriter.log_level_weights(weights, seeds)
