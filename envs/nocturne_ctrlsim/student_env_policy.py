@@ -2,8 +2,29 @@
 
 from typing import List
 
+import heapq
 import math
 import numpy as np
+
+
+ROAD_FEATURE_DIM = 13
+ROAD_TYPE_DIM = 7
+ROAD_TYPE_MAPPING = {
+    "none": 0,
+    "road_line": 1,
+    "road_edge": 2,
+    "lane": 3,
+    "crosswalk": 4,
+    "speed_bump": 5,
+    "stop_sign": 6,
+    "other": 0,
+}
+STATIC_ROAD_TYPE_MAPPING = {
+    "stop_sign": 6,
+    "crosswalk": 4,
+    "speed_bump": 5,
+}
+ROAD_TYPE_ONEHOT = np.eye(ROAD_TYPE_DIM, dtype=np.float32)
 
 
 def angle_of_rotation(yaw: float) -> float:
@@ -46,6 +67,24 @@ def apply_student_action(env, action: np.ndarray) -> None:
     env.ego_vehicle.steering = steer
 
 
+def _build_road_feature(
+    rel_x: float,
+    rel_y: float,
+    seg_length: float,
+    orientation: float,
+    type_idx: int,
+) -> np.ndarray:
+    road_feat = np.empty(ROAD_FEATURE_DIM, dtype=np.float32)
+    road_feat[0] = rel_x
+    road_feat[1] = rel_y
+    road_feat[2] = seg_length
+    road_feat[3] = 1.0
+    road_feat[4] = 1.0
+    road_feat[5] = orientation
+    road_feat[6:] = ROAD_TYPE_ONEHOT[type_idx]
+    return road_feat
+
+
 def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
     """
     Build Road Graph observation (in gpudrive).
@@ -53,14 +92,20 @@ def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
     Returns:
         road_graph_states: List of road point features (R 13-dimensional vectors)
     """
+    top_k = env._top_k_road_points
+    if top_k <= 0:
+        return []
+
     if env._road_graph_cache is None or len(env._road_graph_cache) == 0:
         # No road data, return empty road graph
-        return [np.zeros(13, dtype=np.float32) for _ in range(env._top_k_road_points)]
+        return [np.zeros(ROAD_FEATURE_DIM, dtype=np.float32) for _ in range(top_k)]
 
     angle = angle_of_rotation(ego_heading)
 
-    # Extract road point features
-    road_points = []
+    # Keep only nearest top_k points while scanning all road geometries.
+    # Heap item: (-dist_sq, -point_index, rel_x, rel_y, seg_length, orientation, type_idx)
+    topk_heap = []
+    point_index = 0
 
     for road_item in env._road_graph_cache:
         road_type = road_item["type"]
@@ -69,20 +114,27 @@ def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
         # Process different types of geometry data
         if isinstance(geometry, list) and len(geometry) > 0:
             # Road line (multiple points)
+            type_idx = ROAD_TYPE_MAPPING.get(road_type, 0)
+            last_idx = len(geometry) - 1
             for i, pt in enumerate(geometry):
                 # Relative position
                 dx = pt["x"] - ego_pos.x
                 dy = pt["y"] - ego_pos.y
                 rel_x, rel_y = to_local(dx, dy, angle)
+                dist_sq = rel_x * rel_x + rel_y * rel_y
+
+                if len(topk_heap) == top_k and dist_sq >= -topk_heap[0][0]:
+                    point_index += 1
+                    continue
 
                 # Calculate road segment length
-                if i < len(geometry) - 1:
+                if i < last_idx:
                     next_pt = geometry[i + 1]
-                    seg_length = np.sqrt(
+                    seg_length = math.sqrt(
                         (next_pt["x"] - pt["x"]) ** 2 + (next_pt["y"] - pt["y"]) ** 2
                     )
                     # Direction: points to next point
-                    orientation = np.arctan2(
+                    orientation = math.atan2(
                         next_pt["y"] - pt["y"], next_pt["x"] - pt["x"]
                     )
                 else:
@@ -90,83 +142,64 @@ def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
                     orientation = 0.0
                 orientation = angle_sub(orientation, -angle)
 
-                # Road point scale (default value)
-                scale_x = 1.0
-                scale_y = 1.0
-
-                # Road type one-hot (7 dimensions)
-                type_mapping = {
-                    "none": 0,
-                    "road_line": 1,
-                    "road_edge": 2,
-                    "lane": 3,
-                    "crosswalk": 4,
-                    "speed_bump": 5,
-                    "stop_sign": 6,
-                    "other": 0,
-                }
-                type_idx = type_mapping.get(road_type, 0)
-                type_onehot = np.zeros(7, dtype=np.float32)
-                type_onehot[type_idx] = 1.0
-
-                # Concatenate features (13 dimensions)
-                road_feat = np.array(
-                    [
-                        rel_x,
-                        rel_y,
-                        seg_length,
-                        scale_x,
-                        scale_y,
-                        orientation,
-                        *type_onehot,
-                    ],
-                    dtype=np.float32,
+                heap_item = (
+                    -dist_sq,
+                    -point_index,
+                    rel_x,
+                    rel_y,
+                    seg_length,
+                    orientation,
+                    type_idx,
                 )
-
-                road_points.append((np.sqrt(rel_x**2 + rel_y**2), road_feat))
+                if len(topk_heap) < top_k:
+                    heapq.heappush(topk_heap, heap_item)
+                else:
+                    heapq.heapreplace(topk_heap, heap_item)
+                point_index += 1
 
         elif isinstance(geometry, dict):
             # Static object (e.g. stop_sign)
             dx = geometry["x"] - ego_pos.x
             dy = geometry["y"] - ego_pos.y
             rel_x, rel_y = to_local(dx, dy, angle)
+            dist_sq = rel_x * rel_x + rel_y * rel_y
 
-            type_mapping = {
-                "stop_sign": 6,
-                "crosswalk": 4,
-                "speed_bump": 5,
-            }
-            type_idx = type_mapping.get(road_type, 0)
-            type_onehot = np.zeros(7, dtype=np.float32)
-            type_onehot[type_idx] = 1.0
+            if len(topk_heap) == top_k and dist_sq >= -topk_heap[0][0]:
+                point_index += 1
+                continue
 
-            road_feat = np.array(
-                [
-                    rel_x,
-                    rel_y,
-                    0.0,  # length
-                    1.0,  # scale_x
-                    1.0,  # scale_y
-                    0.0,  # orientation
-                    *type_onehot,
-                ],
-                dtype=np.float32,
+            type_idx = STATIC_ROAD_TYPE_MAPPING.get(road_type, 0)
+            heap_item = (
+                -dist_sq,
+                -point_index,
+                rel_x,
+                rel_y,
+                0.0,
+                0.0,
+                type_idx,
             )
+            if len(topk_heap) < top_k:
+                heapq.heappush(topk_heap, heap_item)
+            else:
+                heapq.heapreplace(topk_heap, heap_item)
+            point_index += 1
 
-            road_points.append((np.sqrt(rel_x**2 + rel_y**2), road_feat))
-
-    # Sort by distance, select top_k nearest points
-    road_points.sort(key=lambda x: x[0])
-
-    road_graph_states = []
-    num_valid_points = min(len(road_points), env._top_k_road_points)
-
-    for i in range(num_valid_points):
-        road_graph_states.append(road_points[i][1])
+    # Convert selected top_k points to features, ordered by distance asc.
+    selected_points = sorted(topk_heap, key=lambda item: (-item[0], -item[1]))
+    road_graph_states = [
+        _build_road_feature(
+            rel_x=item[2],
+            rel_y=item[3],
+            seg_length=item[4],
+            orientation=item[5],
+            type_idx=item[6],
+        )
+        for item in selected_points
+    ]
 
     # Fill missing road points
-    for _ in range(env._top_k_road_points - num_valid_points):
-        road_graph_states.append(np.zeros(13, dtype=np.float32))
+    for _ in range(top_k - len(road_graph_states)):
+        road_graph_states.append(np.zeros(ROAD_FEATURE_DIM, dtype=np.float32))
 
     return road_graph_states
 
