@@ -4,6 +4,14 @@ Scenario helper functions for Nocturne CtrlSim adversarial env.
 
 import os
 
+
+def rebuild_vehicle_id_cache(env) -> dict:
+    """Rebuild and store vehicle-id -> vehicle object cache."""
+    cache = {veh.getID(): veh for veh in env.vehicles}
+    env._vehicle_by_id_cache = cache
+    return cache
+
+
 def load_scenario(env, scenario_id: str) -> None:
     """
     Load Nocturne scenario.
@@ -31,6 +39,7 @@ def load_scenario(env, scenario_id: str) -> None:
     env.sim = Simulation(scenario_path, scenario_dict)
     env.scenario = env.sim.getScenario()
     env.vehicles = list(env.scenario.vehicles())
+    rebuild_vehicle_id_cache(env)
 
     # Set vehicle control flags (see ctrl-sim evaluator.py line 37-39)
     for veh in env.vehicles:
@@ -41,10 +50,17 @@ def load_scenario(env, scenario_id: str) -> None:
 
 def get_vehicle_by_id(env, veh_id: int):
     """Get vehicle object by ID."""
-    for veh in env.vehicles:
-        if veh.getID() == veh_id:
-            return veh
-    return None
+    cache = getattr(env, "_vehicle_by_id_cache", None)
+    if cache is None:
+        cache = rebuild_vehicle_id_cache(env)
+
+    veh = cache.get(veh_id)
+    if veh is not None:
+        return veh
+
+    # Fallback refresh in case env.vehicles changed without explicit cache update.
+    cache = rebuild_vehicle_id_cache(env)
+    return cache.get(veh_id)
 
 
 
@@ -85,4 +101,5 @@ def remove_background_moving_vehicles(env) -> None:
             veh.speed = 0.0
 
     env.vehicles = [veh for veh in env.vehicles if veh.getID() not in removed_set]
+    rebuild_vehicle_id_cache(env)
     env.removed_vehicle_ids = remove_ids

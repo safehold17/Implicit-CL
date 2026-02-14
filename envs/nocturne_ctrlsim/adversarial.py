@@ -218,6 +218,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.sim = None
         self.scenario = None
         self.vehicles: List = []
+        self._vehicle_by_id_cache: Dict = {}
         self.ego_vehicle = None
         self.opponent_vehicles: List = []
         self.opponent_vehicle_ids: List[int] = []
