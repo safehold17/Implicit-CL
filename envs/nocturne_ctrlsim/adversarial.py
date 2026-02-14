@@ -76,14 +76,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
        - call reset_random() to randomly generate level
        - or call reset_to_level() to load specified level
     
-    Adversary action space (building steps):
-    - global/ego: 4 steps
-      - Step 0: select scenario_id (discrete: map to scenario pool index)
-      - Step 1: set goal_tilt (continuous: [-1, 1] -> [-25, 25])
-      - Step 2: set veh_veh_tilt (continuous: [-1, 1] -> [-25, 25])
-      - Step 3: set veh_edge_tilt (continuous: [-1, 1] -> [-25, 25])
-    - per_vehicle: 1 + 3 * opponent_k steps
-    - none: 1 step (scenario only, all tilts fixed to 0)
+    Adversary action space (single-step joint action):
+    - none: [scenario_idx]
+    - global/ego: [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt]
+    - per_vehicle: [scenario_idx, per_vehicle_tilt_0, ..., per_vehicle_tilt_N-1]
     """
     
     def __init__(
@@ -295,23 +291,31 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # ========== Adversary space definition ==========
         # Adversary building steps: scenario_id + tilt parameters (or scenario only in 'none' mode)
-        if self.tilting_mode == 'per_vehicle':
-            self.adversary_max_steps = 1 + self.per_vehicle_tilting_length
-        elif self.tilting_mode == 'none':
-            self.adversary_max_steps = 1
+        # set action dimension based on the tilting mode
+
+        if self.tilting_mode == 'none':
+            self.adversary_action_dim = 1
+        elif self.tilting_mode in ('ego', 'global'):
+            self.adversary_action_dim = 4
+        elif self.tilting_mode == 'per_vehicle':
+            self.adversary_action_dim = 1 + self.per_vehicle_tilting_length
         else:
-            self.adversary_max_steps = 4
+            raise ValueError(f"Unsupported tilting_mode: {self.tilting_mode}")
+
+        self.adversary_max_steps = 1
+
         self.random_z_dim = random_z_dim
         self.passable = True  # Driving scenario default passable
-        
+
+
         # Adversary action space: continuous action [-1, 1]
-        # Step 0: map to scenario index
-        # Step 1-3: map to tilt parameters
-        self.adversary_action_dim = 1
         self.adversary_action_space = gym.spaces.Box(
-            low=-1, high=1, shape=(1,), dtype=np.float32
+            low=-1.0,
+            high=1.0,
+            shape=(self.adversary_action_dim,),
+            dtype=np.float32,
         )
-        
+
         # Adversary observation space
         self.adversary_ts_obs_space = gym.spaces.Box(
             low=0, 
@@ -435,6 +439,37 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._set_level_seed(rand_int_seed())
         
         return self._build_adversary_obs()
+
+    def _normalize_adversary_action(self, action: Any) -> np.ndarray:
+        """Normalize adversary action into a clipped 1D float vector."""
+        import torch
+
+        if torch.is_tensor(action):
+            action = action.detach().cpu().numpy()
+
+        raw_action = np.asarray(action, dtype=np.float32)
+        normalized_action = raw_action.reshape(-1)
+
+        if normalized_action.size != self.adversary_action_dim:
+            raise ValueError(
+                f"Adversary action size mismatch: expected {self.adversary_action_dim}, "
+                f"got {normalized_action.size}, raw_shape={raw_action.shape}"
+            )
+
+        return np.clip(normalized_action, -1.0, 1.0)
+
+    def _map_action_to_scenario_idx(self, scenario_action: float) -> int:
+        """Map scenario action from [-1, 1] to scenario index range."""
+        num_scenarios = len(self.scenario_ids)
+        scenario_idx = int((float(scenario_action) + 1.0) / 2.0 * num_scenarios)
+        return int(np.clip(scenario_idx, 0, num_scenarios - 1))
+
+    def _map_action_to_tilt(self, tilt_action: float) -> int:
+        """Map tilt action from [-1, 1] to configured tilt range."""
+        tilt_scale = (self.tilt_range[1] - self.tilt_range[0]) / 2.0
+        tilt_value = float(tilt_action) * tilt_scale
+        tilt_value = np.clip(tilt_value, self.tilt_range[0], self.tilt_range[1])
+        return int(round(float(tilt_value)))
     
     def step_adversary(
         self,
@@ -444,16 +479,14 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # step adversary is only necessary in PAIRED algo
         # PLR could use reset_random()
 
-        """        
-        Action mapping:
-        - Step 0: action -> scenario_index (discretized to scenario pool size)
-        - Step 1..: action -> tilt parameters ([-1,1] -> tilt_range)
-
-        Always start with choosing a scenario, then choosing tilting parameters.
-        In tilting_mode == 'none', there are no tilt steps.
+        """
+        Action mapping (single-step joint action):
+        - none: [scenario_idx]
+        - global/ego: [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt]
+        - per_vehicle: [scenario_idx, per_vehicle_tilt_0, ..., per_vehicle_tilt_N-1]
         
         Args:
-            action: continuous action [-1, 1]
+            action: continuous action vector in [-1, 1]
         
         Returns:
             (obs, reward, done, info)
@@ -462,34 +495,23 @@ class NocturneCtrlSimAdversarial(gym.Env):
             - done: whether the building is completed
             - info: additional information
         """
-        import torch
-        if torch.is_tensor(action):
-            action = action.item()  # convert tensor into flat
-        
-        # Set parameters according to current step
-        if self.adversary_step_count == 0:
-            # Step 0: select scenario
-            num_scenarios = len(self.scenario_ids)
-            # Map [-1, 1] to [0, num_scenarios-1]
-            scenario_idx = int((action + 1) / 2 * num_scenarios)
-            scenario_idx = np.clip(scenario_idx, 0, num_scenarios - 1)
-            self.level_params_vec[0] = scenario_idx
+        action_vec = self._normalize_adversary_action(action)
+        self.level_params_vec[0] = self._map_action_to_scenario_idx(action_vec[0])
+
+        if self.tilting_mode in ('global', 'ego'):
+            self.level_params_vec[1] = self._map_action_to_tilt(action_vec[1])
+            self.level_params_vec[2] = self._map_action_to_tilt(action_vec[2])
+            self.level_params_vec[3] = self._map_action_to_tilt(action_vec[3])
+        elif self.tilting_mode == 'per_vehicle':
+            per_vehicle_values = []
+            for v in action_vec[1:1 + self.per_vehicle_tilting_length]:
+                per_vehicle_values.append(self._map_action_to_tilt(v))
+
+            self.level_params_vec[4:4 + self.per_vehicle_tilting_length] = per_vehicle_values
+        elif self.tilting_mode == 'none':
+            pass
         else:
-            # Step 1+: set tilt parameters
-            # Map [-1, 1] to tilt_range
-            tilt_scale = (self.tilt_range[1] - self.tilt_range[0]) / 2.0
-            tilt_value = action * tilt_scale
-            tilt_value = np.clip(tilt_value, self.tilt_range[0], self.tilt_range[1])
-            if self.tilting_mode == 'none':
-                pass
-            elif self.tilting_mode == 'per_vehicle':
-                # step 0 is for choosing scenario id
-                # start with step 1
-                per_idx = self.adversary_step_count - 1
-                if 0 <= per_idx < self.per_vehicle_tilting_length:
-                    self.level_params_vec[4 + per_idx] = round(float(tilt_value))
-            else:
-                self.level_params_vec[self.adversary_step_count] = round(float(tilt_value))
+            raise ValueError(f"Unsupported tilting_mode: {self.tilting_mode}")
         
         self.adversary_step_count += 1
         
@@ -526,7 +548,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
     @property
     def processed_action_dim(self) -> int:
         """Processed action dimension (compatible with AdversarialRunner)."""
-        return 1
+        return self.adversary_action_dim
     
     def _build_level_from_params(self) -> None:
         """Build ScenarioLevel from level_params_vec and initialize environment"""

@@ -402,14 +402,14 @@ if __name__ == '__main__':
                             normalize=True, channels_first=False)
                 elif args.use_editor and level_info:
                     save_images(
-                        images[:args.screenshot_batch_size], 
+                        images[:args.screenshot_batch_size],
                         os.path.join(
-                            screenshot_dir, 
-                            f"update{j}-replay{level_info['level_replay']}-n_edits{level_info['num_edits'][0]}.png"), 
+                            screenshot_dir,
+                            f"update{j}-replay{level_info['level_replay']}-n_edits{level_info['num_edits'][0]}.png"),
                         normalize=True, channels_first=False)
                 else:
                     save_images(
-                        images[:args.screenshot_batch_size], 
+                        images[:args.screenshot_batch_size],
                         os.path.join(screenshot_dir, f'update{j}.png'),
                         normalize=True, channels_first=False)
                 plt.close()

@@ -322,6 +322,27 @@ def make_agent(name, env, args, device='cpu'):
     storage = None
     agent = None
 
+    # Adversary action dimension consistency check (Nocturne joint action)
+    if (
+        is_adversary_env
+        and (args.env_name.startswith('Nocturne') or args.env_name.startswith('nocturne'))
+        and action_space.__class__.__name__ == 'Box'
+    ):
+        if not hasattr(actor_critic, 'action_dim'):
+            raise ValueError(
+                "Adversary model must expose `action_dim` for Nocturne env."
+            )
+
+        expected_action_dim = int(action_space.shape[0])
+        model_action_dim = int(actor_critic.action_dim)
+        if model_action_dim != expected_action_dim:
+            raise ValueError(
+                f"Adversary action dim mismatch: model={model_action_dim}, "
+                f"env_space={expected_action_dim}. "
+                "Please check env tilting_mode, adversary_action_space, and checkpoint compatibility."
+            )
+
+
     use_proper_time_limits = \
         hasattr(env, 'get_max_episode_steps') \
         and env.get_max_episode_steps() is not None \
