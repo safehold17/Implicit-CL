@@ -685,12 +685,21 @@ parser.add_argument(
 parser.add_argument(
     '--pos_target_achieved_rew_multiplier',
     type=float,
-    default=10.0,
+    default=5.0,
     help='Goal position achieved reward multiplier for student reward (ctrl-sim default).')
 parser.add_argument(
     '--use_pos_shaped',
-    type=str2bool, nargs='?', const=True, default=False,
+    type=str2bool, nargs='?', const=True, default=True,
     help='Whether to include shaped position reward in student reward aggregation.')
+parser.add_argument(
+    '--shaped_goal_distance',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Whether to enable shaped goal reward components in student reward.')
+parser.add_argument(
+    '--shaped_goal_distance_scaling',
+    type=float,
+    default=1.0,
+    help='Scaling factor for shaped goal/speed/heading rewards in student reward.')
 
 # ============== warm-up stage ==============
 parser.add_argument(

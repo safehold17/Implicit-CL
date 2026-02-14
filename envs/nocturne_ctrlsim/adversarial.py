@@ -267,6 +267,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
             'pos_target_achieved_rew_multiplier', 10.0
         )
         self.use_pos_shaped = kwargs.get('use_pos_shaped', False)
+        self.shaped_goal_distance = kwargs.get('shaped_goal_distance', True)
+        self.shaped_goal_distance_scaling = kwargs.get(
+            'shaped_goal_distance_scaling', 0.2
+        )
         self.reset_random_max_retries = int(kwargs.get('reset_random_max_retries', 10))
         
         # Cache road data (filled after _initialize_simulation)

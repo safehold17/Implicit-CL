@@ -201,6 +201,10 @@ def _make_env(args):
                 args, 'pos_target_achieved_rew_multiplier', 10.0
             ),
             'use_pos_shaped': getattr(args, 'use_pos_shaped', False),
+            'shaped_goal_distance': getattr(args, 'shaped_goal_distance', True),
+            'shaped_goal_distance_scaling': getattr(
+                args, 'shaped_goal_distance_scaling', 0.2
+            ),
             'remove_background_vehicles': getattr(args, 'remove_background_vehicles', True),
             'student_num_neighbors': getattr(args, 'student_num_neighbors', 16),
             'student_top_k_road': getattr(args, 'student_top_k_road', 64),

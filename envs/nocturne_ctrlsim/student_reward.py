@@ -52,8 +52,10 @@ def compute_student_reward(env) -> float:
         'speed_target_tolerance': 1.0,
         'heading_target': True,
         'heading_target_tolerance': 0.3,
-        'shaped_goal_distance': True,
-        'shaped_goal_distance_scaling': 0.2,
+        'shaped_goal_distance': getattr(env, 'shaped_goal_distance', True),
+        'shaped_goal_distance_scaling': getattr(
+            env, 'shaped_goal_distance_scaling', 0.2
+        ),
         'reward_scaling': 1.0,
     }
 
