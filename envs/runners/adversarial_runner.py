@@ -141,6 +141,17 @@ class AdversarialRunner(object):
         if self.is_alp_gmm:
             self._init_alp_gmm()
 
+        # warm-up training not using PLR
+        self.plr_active = True  # default as true
+
+    @property
+    def plr_runtime_enabled(self) -> bool:
+        return bool(self.args.use_plr and self.plr_active)
+
+    def set_plr_active(self, active: bool) -> bool:
+        self.plr_active = bool(active)
+        return self.plr_active
+
     @property
     def use_byte_encoding(self): # add support for Nocturne
         env_name = self.args.env_name
@@ -703,6 +714,7 @@ class AdversarialRunner(object):
                       kl_dict=None,
                       update_agent_separately=False):
         args = self.args
+        plr_runtime_enabled = self.plr_runtime_enabled
         if is_env:
             if edit_level: # Get mutated levels
                 levels = [self.level_store.get_level(seed) for seed in fixed_seeds]
@@ -720,11 +732,11 @@ class AdversarialRunner(object):
                 levels = [self.level_store.get_level(seed) for seed in self.current_level_seeds]
                 self.ued_venv.reset_to_level_batch(levels)
                 return self.current_level_seeds
-            elif self.is_dr and not args.use_plr: 
+            elif self.is_dr and not plr_runtime_enabled: 
                 obs = self.ued_venv.reset_random() # don't need obs here
                 self.total_seeds_collected += args.num_processes
                 return
-            elif self.is_dr and args.use_plr and args.use_reset_random_dr:
+            elif self.is_dr and plr_runtime_enabled and args.use_reset_random_dr:
                 obs = self.ued_venv.reset_random() # don't need obs here
                 self._update_plr_with_current_unseen_levels(parent_seeds=fixed_seeds)
                 self.total_seeds_collected += args.num_processes
@@ -767,7 +779,7 @@ class AdversarialRunner(object):
                     action_log_prob = action_log_dist
 
             # Observe reward and next obs
-            reset_random = self.is_dr and not args.use_plr
+            reset_random = self.is_dr and not plr_runtime_enabled
             _action = agent.process_action(action.cpu())
 
             if is_env:
@@ -861,7 +873,7 @@ class AdversarialRunner(object):
                 self.current_level_seeds = next_level_seeds
 
         # Add generated env to level store (as a constructive string representation)
-        if is_env and args.use_plr and not level_replay:
+        if is_env and plr_runtime_enabled and not level_replay:
             self._update_plr_with_current_unseen_levels()
 
         rollout_info.update(self._get_rollout_return_stats(rollout_returns))
@@ -889,12 +901,12 @@ class AdversarialRunner(object):
 
             # Update level sampler and remove any ejected seeds from level store
             if not update_agent_separately:
-                if level_sampler and update_level_sampler:
+                if plr_runtime_enabled and level_sampler and update_level_sampler:
                     level_sampler.update_with_rollouts(agent.storage)
 
                 value_loss, action_loss, dist_entropy, info = agent.update(discard_grad=discard_grad, kl_dict=kl_dict)
 
-                if level_sampler and update_level_sampler:
+                if plr_runtime_enabled and level_sampler and update_level_sampler:
                     level_sampler.after_update()
                 
                 if 'kl_loss' in info.keys():
@@ -921,14 +933,15 @@ class AdversarialRunner(object):
                                  discard_grad=False,
                                  kl_dict=None,
                                  external_scores=None):
+        plr_runtime_enabled = self.plr_runtime_enabled
 
         # Update level sampler and remove any ejected seeds level store
-        if level_sampler and update_level_sampler:
+        if plr_runtime_enabled and level_sampler and update_level_sampler:
             level_sampler.update_with_rollouts(agent.storage, external_scores=external_scores)
 
         value_loss, action_loss, dist_entropy, info = agent.update(discard_grad=discard_grad, kl_dict=kl_dict)
 
-        if level_sampler and update_level_sampler:
+        if plr_runtime_enabled and level_sampler and update_level_sampler:
             level_sampler.after_update()
         
         rollout_info = {
@@ -989,20 +1002,21 @@ class AdversarialRunner(object):
 
     def run(self):
         args = self.args
+        plr_runtime_enabled = self.plr_runtime_enabled
 
         adversary_env = self.agents['adversary_env']
         agent = self.agents['agent']
         adversary_agent = self.agents['adversary_agent']
 
         level_replay = False
-        if args.use_plr and self.is_training:
+        if plr_runtime_enabled and self.is_training:
             level_replay = self._sample_replay_decision()
 
         # Discard student gradients if not level replay (sampling new levels)
         student_discard_grad = False
         no_exploratory_grad_updates = \
             vars(args).get('no_exploratory_grad_updates', False)
-        if args.use_plr and (not level_replay) and no_exploratory_grad_updates:
+        if plr_runtime_enabled and (not level_replay) and no_exploratory_grad_updates:
             student_discard_grad = True
 
         if self.is_training and not student_discard_grad:
@@ -1092,7 +1106,8 @@ class AdversarialRunner(object):
                 update_level_sampler=False,
                 discard_grad=student_discard_grad,
                 kl_dict=None,
-                update_agent_separately=self.use_accel_paired)
+                update_agent_separately=self.use_accel_paired
+            )
             
             # calculate PAIRED regret estimate
             external_scores = self._calculate_paired_regret_scores(agent_info, adversary_agent_info, type=args.accel_paired_score_function)
@@ -1240,7 +1255,7 @@ class AdversarialRunner(object):
                                         external_scores=external_scores)
         # ==== ACCEL end ====
 
-        if args.use_plr:
+        if plr_runtime_enabled:
             self._reconcile_level_store_and_samplers()
             if self.use_editor:
                 self.weighted_num_edits = self._get_weighted_num_edits()

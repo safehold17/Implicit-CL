@@ -209,7 +209,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.show_vehicle_ids = show_vehicle_ids
         self.show_ego_vehicle_selection = show_ego_vehicle_selection
         self.remove_background_vehicles = remove_background_vehicles
-        self.opponent_runtime_mode = kwargs.get('opponent_runtime_mode', 'tilting')
+        self.opponent_runtime_mode = kwargs.get('opponent_runtime_mode', 'normal')
         self.removed_vehicle_ids: List[int] = []
         
         # ========== State variables ==========
@@ -515,7 +515,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         return np.random.uniform(size=(self.random_z_dim,)).astype(np.float32)
 
     def set_opponent_runtime_mode(self, mode: str) -> str:
-        valid_modes = {'disable', 'replay', 'tilting'}
+        valid_modes = {'disable', 'replay', 'normal'}
         if mode not in valid_modes:
             raise ValueError(
                 f"opponent_runtime_mode must be one of {sorted(valid_modes)}, got {mode}"
@@ -634,7 +634,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 f"Check preprocess_dir: {self.data_bridge.preprocess_dir}"
             )
         
-        runtime_mode = getattr(self, 'opponent_runtime_mode', 'tilting')
+        runtime_mode = getattr(self, 'opponent_runtime_mode', 'normal')
 
         # Select opponent vehicles from map only (strict mode), unless runtime mode disables opponents.
         if runtime_mode == 'disable':
@@ -681,7 +681,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
                         self.level_params_vec[4 + i] = per[i]
         
         # Set opponent behavior for current runtime mode.
-        if runtime_mode == 'tilting':
+        if runtime_mode == 'normal':
             if self.tilting_mode == 'global':
                 # Global mode: all opponents share the same tilts
                 self.opponent.set_tilting(
@@ -711,7 +711,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
 
         if self.remove_background_vehicles:
             remove_background_moving_vehicles(self)
-        vehicles_to_control = self.opponent_vehicle_ids if runtime_mode == 'tilting' else []
+        vehicles_to_control = self.opponent_vehicle_ids if runtime_mode == 'normal' else []
 
         self.opponent.reset(
             self.scenario,

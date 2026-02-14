@@ -45,14 +45,14 @@ if __name__ == '__main__':
     warmup_disable_steps = int(args.num_env_steps * args.warmup_opponent_disable_ratio)
     warmup_replay_steps = int(args.num_env_steps * args.warmup_opponent_replay_ratio)
 
-    # Set opponent vehicle mode
+    # Set opponent vehicle runtime mode: disable / replay / normal.
     def resolve_opponent_runtime_mode_by_steps(total_env_steps: int) -> str:
         if total_env_steps < warmup_disable_steps:
             return 'disable'
         replay_end_step = warmup_disable_steps + warmup_replay_steps
         if total_env_steps < replay_end_step:
             return 'replay'
-        return 'tilting'
+        return 'normal'
     
     # === Configure logging ==
     if args.xpid is None:
@@ -278,7 +278,11 @@ if __name__ == '__main__':
     ) as pbar:
         for j in pbar:
             completed_env_steps_before_update = j * env_steps_per_update
+
             target_mode = resolve_opponent_runtime_mode_by_steps(completed_env_steps_before_update)
+
+            train_runner.set_plr_active(target_mode == 'normal')
+
             if target_mode != current_opponent_runtime_mode:
                 venv.remote_attr(
                     'set_opponent_runtime_mode',

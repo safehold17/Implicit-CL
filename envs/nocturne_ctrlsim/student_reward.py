@@ -114,6 +114,7 @@ def compute_student_reward(env) -> float:
     # goal_heading = achieved + shaped
     # goal_speed = achieved + shaped
     pos_shaped_term = pos_shaped if getattr(env, 'use_pos_shaped', False) else 0.0
+
     scalar_reward = (
         position_target_achieved * env.pos_target_achieved_rew_multiplier
         + pos_shaped_term
