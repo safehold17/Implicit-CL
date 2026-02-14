@@ -225,6 +225,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # Ground truth and preprocessed data
         self._gt_data_dict: Dict = {}
+        self._gt_traj_cache: Dict = {}
         self._preproc_data: Optional[Dict] = None
         
         # Ego vehicle's goal and reward related state (for _compute_reward)
@@ -633,6 +634,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
             self.scenario_data_dir, 
             f"{level.scenario_id}.json"
         )
+        self._gt_traj_cache = {
+            veh_id: np.asarray(data["traj"])
+            for veh_id, data in self._gt_data_dict.items()
+            if isinstance(data, dict) and "traj" in data
+        }
         
         # Load Nocturne scenario (must after getting GT data)
         load_scenario(self, level.scenario_id)

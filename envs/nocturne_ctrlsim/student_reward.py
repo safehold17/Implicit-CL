@@ -2,7 +2,19 @@
 Student reward computation for Nocturne CtrlSim adversarial env.
 """
 
+import os
+import sys
 import numpy as np
+
+
+_CTRLSIM_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "third_party",
+    "ctrl-sim",
+)
+if _CTRLSIM_PATH not in sys.path:
+    sys.path.insert(0, _CTRLSIM_PATH)
+from utils.sim import compute_reward
 
 
 def _angle_diff(a: float, b: float) -> float:
@@ -31,19 +43,6 @@ def compute_student_reward(env) -> float:
         return 0.0
 
     ego_id = env.ego_vehicle.getID()
-
-    # Import compute_reward from ctrl-sim (same as opponent)
-    import os
-    import sys
-
-    _CTRLSIM_PATH = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        'third_party',
-        'ctrl-sim',
-    )
-    if _CTRLSIM_PATH not in sys.path:
-        sys.path.insert(0, _CTRLSIM_PATH)
-    from utils.sim import compute_reward
 
     # Use CtrlSim's reward config
     rew_cfg = {

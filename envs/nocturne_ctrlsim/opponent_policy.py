@@ -11,6 +11,20 @@ from tools.safe_bicycle import safe_backward_action_from_states
 from .scenario_helpers import get_vehicle_by_id
 
 
+def _get_gt_traj_array(env, veh_id: int) -> Optional[np.ndarray]:
+    if veh_id not in env._gt_data_dict:
+        return None
+
+    gt_traj_cache = getattr(env, "_gt_traj_cache", None)
+    if gt_traj_cache is not None and veh_id in gt_traj_cache:
+        return gt_traj_cache[veh_id]
+
+    gt_traj_data = np.asarray(env._gt_data_dict[veh_id]["traj"])
+    if gt_traj_cache is not None:
+        gt_traj_cache[veh_id] = gt_traj_data
+    return gt_traj_data
+
+
 def initialize_ego_goal_state(env) -> None:
     """
     Initialize ego vehicle's target and reward related state.
@@ -26,7 +40,9 @@ def initialize_ego_goal_state(env) -> None:
     if ego_id not in env._gt_data_dict:
         return
 
-    gt_traj_data = np.array(env._gt_data_dict[ego_id]['traj'])
+    gt_traj_data = _get_gt_traj_array(env, ego_id)
+    if gt_traj_data is None:
+        return
 
     # Calculate target position (see evaluator.py initialize_goal_dict)
     goal_pos = np.array([
@@ -77,7 +93,9 @@ def get_goal_point_for_vehicle(env, veh_id: int) -> Optional[np.ndarray]:
     if veh_id not in env._gt_data_dict:
         return None
 
-    gt_traj_data = np.array(env._gt_data_dict[veh_id]['traj'])
+    gt_traj_data = _get_gt_traj_array(env, veh_id)
+    if gt_traj_data is None:
+        return None
     goal_pos = np.array([veh.target_position.x, veh.target_position.y])
 
     existence_mask = gt_traj_data[:, 4]
@@ -103,7 +121,9 @@ def get_gt_action(env, veh_id: int, t: int, veh=None) -> Optional[Tuple[float, f
     if veh_id not in env._gt_data_dict:
         return None
 
-    gt_traj = np.array(env._gt_data_dict[veh_id]['traj'])
+    gt_traj = _get_gt_traj_array(env, veh_id)
+    if gt_traj is None:
+        return None
 
     # Check if time step is valid
     if t < 0 or t >= len(gt_traj) - 1:
