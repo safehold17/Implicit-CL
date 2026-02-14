@@ -391,28 +391,28 @@ if __name__ == '__main__':
                         df.to_csv(os.path.join(
                             screenshot_dir, 
                             f'update{j}.csv'))
-            else:
-                venv.reset_agent()
-                images = venv.get_images()
-                if args.env_name.startswith('Nocturne'):
-                    for idx, img in enumerate(images):
-                        save_images(
-                            [img],
-                            os.path.join(screenshot_dir, f'update{j}_process{idx}.png'),
-                            normalize=True, channels_first=False)
-                elif args.use_editor and level_info:
-                    save_images(
-                        images[:args.screenshot_batch_size],
-                        os.path.join(
-                            screenshot_dir,
-                            f"update{j}-replay{level_info['level_replay']}-n_edits{level_info['num_edits'][0]}.png"),
-                        normalize=True, channels_first=False)
                 else:
-                    save_images(
-                        images[:args.screenshot_batch_size],
-                        os.path.join(screenshot_dir, f'update{j}.png'),
-                        normalize=True, channels_first=False)
-                plt.close()
+                    venv.reset_agent()
+                    images = venv.get_images()
+                    if args.env_name.startswith('Nocturne'):
+                        for idx, img in enumerate(images):
+                            save_images(
+                                [img],
+                                os.path.join(screenshot_dir, f'update{j}_process{idx}.png'),
+                                normalize=True, channels_first=False)
+                    elif args.use_editor and level_info:
+                        save_images(
+                            images[:args.screenshot_batch_size],
+                            os.path.join(
+                                screenshot_dir,
+                                f"update{j}-replay{level_info['level_replay']}-n_edits{level_info['num_edits'][0]}.png"),
+                            normalize=True, channels_first=False)
+                    else:
+                        save_images(
+                            images[:args.screenshot_batch_size],
+                            os.path.join(screenshot_dir, f'update{j}.png'),
+                            normalize=True, channels_first=False)
+                    plt.close()
 
     if evaluator is not None:
         evaluator.close()
