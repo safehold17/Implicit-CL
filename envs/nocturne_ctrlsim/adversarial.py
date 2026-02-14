@@ -266,7 +266,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.pos_target_achieved_rew_multiplier = kwargs.get(
             'pos_target_achieved_rew_multiplier', 10.0
         )
-        self.use_pos_shaped = kwargs.get('use_pos_shaped', False)
+        self.use_pos_shaped = kwargs.get('use_pos_shaped', True)
+        self.use_speed_heading_shaped = kwargs.get(
+            'use_speed_heading_shaped', True
+        )
         self.shaped_goal_distance = kwargs.get('shaped_goal_distance', True)
         self.shaped_goal_distance_scaling = kwargs.get(
             'shaped_goal_distance_scaling', 0.2

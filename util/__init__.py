@@ -201,6 +201,9 @@ def _make_env(args):
                 args, 'pos_target_achieved_rew_multiplier', 10.0
             ),
             'use_pos_shaped': getattr(args, 'use_pos_shaped', False),
+            'use_speed_heading_shaped': getattr(
+                args, 'use_speed_heading_shaped', True
+            ),
             'shaped_goal_distance': getattr(args, 'shaped_goal_distance', True),
             'shaped_goal_distance_scaling': getattr(
                 args, 'shaped_goal_distance_scaling', 0.2

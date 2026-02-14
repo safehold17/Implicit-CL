@@ -692,6 +692,10 @@ parser.add_argument(
     type=str2bool, nargs='?', const=True, default=True,
     help='Whether to include shaped position reward in student reward aggregation.')
 parser.add_argument(
+    '--use_speed_heading_shaped',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Whether to include shaped speed/heading rewards in student reward aggregation.')
+parser.add_argument(
     '--shaped_goal_distance',
     type=str2bool, nargs='?', const=True, default=True,
     help='Whether to enable shaped goal reward components in student reward.')
