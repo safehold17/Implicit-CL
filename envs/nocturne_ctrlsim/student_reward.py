@@ -220,21 +220,21 @@ def compute_student_reward(env) -> float:
     use_speed_heading_shaped = getattr(env, 'use_speed_heading_shaped', True)
     speed_shaped_term = speed_shaped if use_speed_heading_shaped else 0.0
     heading_shaped_term = heading_shaped if use_speed_heading_shaped else 0.0
-    veh_veh_shaped_term = _compute_veh_veh_shaped_reward(env, ego_id, ego_pos_arr)
-    veh_edge_shaped_term = _compute_veh_edge_shaped_reward(env, ego_pos_arr)
+    veh_veh_shaped_term = _compute_veh_veh_shaped_reward(env, ego_id, ego_pos_arr)  # [0, 1]
+    veh_edge_shaped_term = _compute_veh_edge_shaped_reward(env, ego_pos_arr)  #[0, 1]
 
     scalar_reward = (
-        position_reward_term
-        + pos_shaped_term
-        + heading_target_achieved
-        + heading_shaped_term
-        + speed_target_achieved
-        + speed_shaped_term
-        + veh_veh_shaped_term
-        + veh_edge_shaped_term
+            position_reward_term
+            + pos_shaped_term          # default once reward
+            + heading_target_achieved  # not using
+            + heading_shaped_term      # not using
+            + speed_target_achieved    # not using
+            + speed_shaped_term        # not using
+            + veh_veh_shaped_term
+            + veh_edge_shaped_term
+            - veh_veh_collision * env.veh_veh_collision_rew_multiplier
+            - veh_edge_collision * env.veh_edge_collision_rew_multiplier
     )
-    scalar_reward += -veh_veh_collision * env.veh_veh_collision_rew_multiplier
-    scalar_reward += -veh_edge_collision * env.veh_edge_collision_rew_multiplier
 
     env.episode_reward += scalar_reward
     return scalar_reward
