@@ -8,6 +8,40 @@ import numpy as np
 
 
 
+def compute_current_progress(env) -> float:
+    """Calculate current normalized progress from ego position to goal."""
+    if env.ego_vehicle is None or env._ego_goal_dict is None:
+        return 0.0
+
+    ego_pos = env.ego_vehicle.getPosition()
+    dist_to_goal = np.linalg.norm(
+        env._ego_goal_dict['pos'] - np.array([ego_pos.x, ego_pos.y])
+    )
+    if env._ego_goal_dist_normalizer <= 0:
+        return 0.0
+
+    progress = 1.0 - dist_to_goal / env._ego_goal_dist_normalizer
+    return float(max(0.0, min(1.0, progress)))
+
+
+def update_episode_progress(
+    previous_progress: float,
+    current_progress: float,
+    position_reached: bool,
+) -> float:
+    """
+    Merge current progress into episode progress.
+
+    Once position threshold has been reached, lock episode progress to 1.0.
+    Otherwise, keep the best progress reached in this episode.
+    """
+    prev = float(max(0.0, min(1.0, previous_progress)))
+    curr = float(max(0.0, min(1.0, current_progress)))
+    if position_reached:
+        return 1.0
+    return max(prev, curr)
+
+
 def check_done(env) -> bool:
     """Check if episode is done."""
     # Max steps (timeout)
@@ -26,16 +60,8 @@ def get_info(env) -> Dict[str, Any]:
     """Return additional information."""
     done = check_done(env)
 
-    # Calculate progress (distance to goal)
-    progress = 0.0
-    if env.ego_vehicle is not None and env._ego_goal_dict is not None:
-        ego_pos = env.ego_vehicle.getPosition()
-        dist_to_goal = np.linalg.norm(
-            env._ego_goal_dict['pos'] - np.array([ego_pos.x, ego_pos.y])
-        )
-        if env._ego_goal_dist_normalizer > 0:
-            progress = 1.0 - dist_to_goal / env._ego_goal_dist_normalizer
-            progress = max(0.0, min(1.0, progress))
+    progress = compute_current_progress(env)
+    progress = max(progress, float(getattr(env, '_episode_progress', 0.0)))
 
     if done:
         # Cache completed episode statistics for get_complexity_info().

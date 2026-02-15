@@ -36,9 +36,11 @@ from .student_env_policy import (
 
 from .simulation_info import (
     check_done,
+    compute_current_progress,
     get_complexity_info,
     get_info,
     reset_metrics as sim_reset_metrics,
+    update_episode_progress,
 )
 
 from .vehicle_map_helpers import load_vehicle_ids_for_scenario
@@ -1121,12 +1123,12 @@ class NocturneCtrlSimAdversarial(gym.Env):
         if self._position_reached:
             self._episode_position_reached = True
         
-        # Calculate target progress (current distance vs initial distance)
-        if self.ego_vehicle and self._ego_goal_dict and self._ego_goal_dist_normalizer > 0:
-            ego_pos = self.ego_vehicle.getPosition()
-            goal_pos = self._ego_goal_dict['pos']
-            current_dist = np.linalg.norm(goal_pos - np.array([ego_pos.x, ego_pos.y]))
-            self._episode_progress = max(0.0, 1.0 - current_dist / self._ego_goal_dist_normalizer)
+        current_progress = compute_current_progress(self)
+        self._episode_progress = update_episode_progress(
+            previous_progress=self._episode_progress,
+            current_progress=current_progress,
+            position_reached=self._position_reached,
+        )
         
         done = check_done(self)
         if done:
