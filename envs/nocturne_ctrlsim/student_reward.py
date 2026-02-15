@@ -15,6 +15,7 @@ _CTRLSIM_PATH = os.path.join(
 if _CTRLSIM_PATH not in sys.path:
     sys.path.insert(0, _CTRLSIM_PATH)
 from utils.sim import compute_reward
+from utils.data import compute_distance_to_road_edge
 
 
 def _angle_diff(a: float, b: float) -> float:
@@ -27,6 +28,87 @@ def _angle_diff(a: float, b: float) -> float:
     return diff
 
 
+def _position_exists(x: float, y: float) -> bool:
+    """Check if a simulation position is valid."""
+    if not (np.isfinite(x) and np.isfinite(y)):
+        return False
+    if (x == -10000.0 and y == -10000.0) or (x == -1000000.0 and y == -1000000.0):
+        return False
+    return True
+
+
+def _compute_veh_veh_shaped_reward(env, ego_id: int, ego_pos_arr: np.ndarray) -> float:
+    """Compute CtrlSim-style veh-veh shaped reward in [0, 1]."""
+    if not getattr(env, 'use_veh_veh_shaped', True):
+        return 0.0
+
+    max_veh_veh_distance = float(getattr(env, 'max_veh_veh_distance', 15.0))
+    if max_veh_veh_distance <= 0.0:
+        return 0.0
+
+    nearest_dist = np.inf
+    for veh in getattr(env, 'vehicles', []):
+        if veh.getID() == ego_id:
+            continue
+        if not getattr(veh, 'physics_simulated', True):
+            continue
+        pos = veh.getPosition()
+        if not _position_exists(pos.x, pos.y):
+            continue
+        dist = float(np.linalg.norm(ego_pos_arr - np.array([pos.x, pos.y])))
+        if dist < nearest_dist:
+            nearest_dist = dist
+
+    if not np.isfinite(nearest_dist):
+        return 0.0
+    return float(np.clip(nearest_dist, 0.0, max_veh_veh_distance) / max_veh_veh_distance)
+
+
+def _extract_road_edge_polylines(env) -> list[np.ndarray]:
+    """Extract road-edge polylines from cached road graph."""
+    roads_data = getattr(env, '_road_graph_cache', None)
+    if not roads_data:
+        return []
+
+    polylines = []
+    for road in roads_data:
+        if road.get('type') != 'road_edge':
+            continue
+        geometry = road.get('geometry')
+        if not isinstance(geometry, list) or len(geometry) < 2:
+            continue
+        polyline = np.array([[pt['x'], pt['y']] for pt in geometry], dtype=np.float32)
+        polylines.append(polyline)
+    return polylines
+
+
+def _compute_veh_edge_shaped_reward(env, ego_pos_arr: np.ndarray) -> float:
+    """Compute CtrlSim-style veh-edge shaped reward in [0, 1]."""
+    if not getattr(env, 'use_veh_edge_shaped', True):
+        return 0.0
+
+    clip_distance = float(getattr(env, 'veh_edge_reward_distance_clip', 5.0))
+    if clip_distance <= 0.0:
+        return 0.0
+
+    road_edge_polylines = _extract_road_edge_polylines(env)
+    if len(road_edge_polylines) == 0:
+        return 0.0
+
+    center_x = np.array([[ego_pos_arr[0]]], dtype=np.float32)
+    center_y = np.array([[ego_pos_arr[1]]], dtype=np.float32)
+    signed_distance = compute_distance_to_road_edge(
+        center_x=center_x,
+        center_y=center_y,
+        road_edge_polylines=road_edge_polylines,
+    )
+    if signed_distance is None or len(signed_distance) == 0:
+        return 0.0
+
+    edge_distance = float(np.abs(signed_distance[0]))
+    return float(np.clip(edge_distance, 0.0, clip_distance) / clip_distance)
+
+
 def compute_student_reward(env) -> float:
     """
     Compute student reward using CtrlSim's compute_reward function.
@@ -37,7 +119,8 @@ def compute_student_reward(env) -> float:
       + pos_goal_shaped (only when use_pos_shaped=True)
       - goal heading: heading_target_achieved + heading_goal_shaped
       - goal speed: speed_target_achieved + speed_goal_shaped
-    Collision penalties keep existing multipliers from env config.
+      - veh-veh: veh_veh_shaped - veh_veh_collision * veh_veh_collision_rew_multiplier
+      - veh-edge: veh_edge_shaped - veh_edge_collision * veh_edge_collision_rew_multiplier
     """
     if env.ego_vehicle is None or env._ego_goal_dict is None:
         return 0.0
@@ -118,6 +201,8 @@ def compute_student_reward(env) -> float:
     use_speed_heading_shaped = getattr(env, 'use_speed_heading_shaped', True)
     speed_shaped_term = speed_shaped if use_speed_heading_shaped else 0.0
     heading_shaped_term = heading_shaped if use_speed_heading_shaped else 0.0
+    veh_veh_shaped_term = _compute_veh_veh_shaped_reward(env, ego_id, ego_pos_arr)
+    veh_edge_shaped_term = _compute_veh_edge_shaped_reward(env, ego_pos_arr)
 
     scalar_reward = (
         position_target_achieved * env.pos_target_achieved_rew_multiplier
@@ -126,6 +211,8 @@ def compute_student_reward(env) -> float:
         + heading_shaped_term
         + speed_target_achieved
         + speed_shaped_term
+        + veh_veh_shaped_term
+        + veh_edge_shaped_term
     )
     scalar_reward += -veh_veh_collision * env.veh_veh_collision_rew_multiplier
     scalar_reward += -veh_edge_collision * env.veh_edge_collision_rew_multiplier

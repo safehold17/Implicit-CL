@@ -685,36 +685,54 @@ parser.add_argument(
 parser.add_argument(
     '--pos_target_achieved_rew_multiplier',
     type=float,
-    default=5.0,
+    default=10.0,
     help='Goal position achieved reward multiplier for student reward (ctrl-sim default).')
-parser.add_argument(
-    '--use_pos_shaped',
-    type=str2bool, nargs='?', const=True, default=True,
-    help='Whether to include shaped position reward in student reward aggregation.')
-parser.add_argument(
-    '--use_speed_heading_shaped',
-    type=str2bool, nargs='?', const=True, default=True,
-    help='Whether to include shaped speed/heading rewards in student reward aggregation.')
-parser.add_argument(
-    '--shaped_goal_distance',
-    type=str2bool, nargs='?', const=True, default=True,
-    help='Whether to enable shaped goal reward components in student reward.')
 parser.add_argument(
     '--shaped_goal_distance_scaling',
     type=float,
     default=1.0,
     help='Scaling factor for shaped goal/speed/heading rewards in student reward.')
+parser.add_argument(
+    '--use_pos_shaped',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Whether to include shaped position reward in student reward aggregation.')
+parser.add_argument(
+    '--use_speed_heading_shaped',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Whether to include shaped speed/heading rewards in student reward aggregation.')
+parser.add_argument(
+    '--shaped_goal_distance',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Whether to enable shaped goal reward components in student reward.')
+parser.add_argument(
+    '--use_veh_veh_shaped',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Whether to include veh-veh shaped reward in student reward aggregation.')
+parser.add_argument(
+    '--use_veh_edge_shaped',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Whether to include veh-edge shaped reward in student reward aggregation.')
+parser.add_argument(
+    '--max_veh_veh_distance',
+    type=float,
+    default=15.0,
+    help='Maximum distance used to normalize veh-veh shaped reward (ctrl-sim default).')
+parser.add_argument(
+    '--veh_edge_reward_distance_clip',
+    type=float,
+    default=5.0,
+    help='Distance clip used to normalize veh-edge shaped reward (ctrl-sim default).')
 
 # ============== warm-up stage ==============
 parser.add_argument(
     '--warmup_opponent_disable_ratio',
     type=float,
-    default=0.1,
+    default=0.15,
     help='Warmup ratio for opponent-disable stage (fraction of num_env_steps).')
 parser.add_argument(
     '--warmup_opponent_replay_ratio',
     type=float,
-    default=0.1,
+    default=0.15,
     help='Warmup ratio for opponent-replay stage (fraction of num_env_steps).')
 
 # ============== render options ==============

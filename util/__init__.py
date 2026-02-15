@@ -208,6 +208,12 @@ def _make_env(args):
             'shaped_goal_distance_scaling': getattr(
                 args, 'shaped_goal_distance_scaling', 0.2
             ),
+            'use_veh_veh_shaped': getattr(args, 'use_veh_veh_shaped', True),
+            'use_veh_edge_shaped': getattr(args, 'use_veh_edge_shaped', True),
+            'max_veh_veh_distance': getattr(args, 'max_veh_veh_distance', 15.0),
+            'veh_edge_reward_distance_clip': getattr(
+                args, 'veh_edge_reward_distance_clip', 5.0
+            ),
             'remove_background_vehicles': getattr(args, 'remove_background_vehicles', True),
             'student_num_neighbors': getattr(args, 'student_num_neighbors', 16),
             'student_top_k_road': getattr(args, 'student_top_k_road', 64),

@@ -210,6 +210,18 @@ class Evaluator(object):
 				'show_vehicle_ids',
 				'show_ego_vehicle_selection',
 				'opponent_vehicle_number',
+				'veh_veh_collision_rew_multiplier',
+				'veh_edge_collision_rew_multiplier',
+				'pos_target_achieved_rew_multiplier',
+				'use_pos_shaped',
+				'use_speed_heading_shaped',
+				'shaped_goal_distance',
+				'shaped_goal_distance_scaling',
+				'use_veh_veh_shaped',
+				'use_veh_edge_shaped',
+				'max_veh_veh_distance',
+				'veh_edge_reward_distance_clip',
+				'remove_background_vehicles',
 			}
 			nocturne_kwargs = {
 				k: v for k, v in kwargs.items() if k in allowed_nocturne_keys
