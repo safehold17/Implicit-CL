@@ -200,6 +200,9 @@ def _make_env(args):
             'pos_target_achieved_rew_multiplier': getattr(
                 args, 'pos_target_achieved_rew_multiplier', 10.0
             ),
+            'use_persistent_position_reward': getattr(
+                args, 'use_persistent_position_reward', False
+            ),
             'use_pos_shaped': getattr(args, 'use_pos_shaped', False),
             'use_speed_heading_shaped': getattr(
                 args, 'use_speed_heading_shaped', True

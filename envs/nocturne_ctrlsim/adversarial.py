@@ -268,6 +268,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.pos_target_achieved_rew_multiplier = kwargs.get(
             'pos_target_achieved_rew_multiplier', 10.0
         )
+        self.use_persistent_position_reward = kwargs.get(
+            'use_persistent_position_reward', False
+        )
         self.use_pos_shaped = kwargs.get('use_pos_shaped', True)
         self.use_speed_heading_shaped = kwargs.get(
             'use_speed_heading_shaped', True

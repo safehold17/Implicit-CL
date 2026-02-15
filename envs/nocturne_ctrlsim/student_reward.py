@@ -175,6 +175,25 @@ def compute_student_reward(env) -> float:
     position_achieved_current = dist_to_goal < 1.0  # position_target_tolerance
     speed_achieved_current = abs(ego_speed - goal_speed) < 1.0  # speed_target_tolerance
     heading_achieved_current = abs(_angle_diff(ego_heading, goal_heading)) < 0.3  # heading_target_tolerance
+    reward_history = []
+    if ego_id in env._ego_vehicle_data_dict:
+        reward_history = env._ego_vehicle_data_dict[ego_id].get('reward', [])
+
+    # Give position bonus only on the first timestep that enters position tolerance.
+    already_position_hit = bool(reward_history) and bool(reward_history[-1][0])
+    position_reward_once = (
+        env.pos_target_achieved_rew_multiplier
+        if position_achieved_current and not already_position_hit
+        else 0.0
+    )
+    use_persistent_position_reward = getattr(
+        env, 'use_persistent_position_reward', False
+    )
+    position_reward_term = (
+        position_target_achieved * env.pos_target_achieved_rew_multiplier
+        if use_persistent_position_reward
+        else position_reward_once
+    )
 
     # Update goal state: once reached, stay reached (same as before)
     if env._goal_reached:
@@ -194,7 +213,7 @@ def compute_student_reward(env) -> float:
         env._ego_vehicle_data_dict[ego_id]['reward'].append(reward_vector)
 
     # Target-term aggregation:
-    # goal_pos = achieved * multiplier (+ pos_shaped if enabled)
+    # goal_pos = persistent or one-time bonus (+ pos_shaped if enabled)
     # goal_heading = achieved + shaped
     # goal_speed = achieved + shaped
     pos_shaped_term = pos_shaped if getattr(env, 'use_pos_shaped', False) else 0.0
@@ -205,7 +224,7 @@ def compute_student_reward(env) -> float:
     veh_edge_shaped_term = _compute_veh_edge_shaped_reward(env, ego_pos_arr)
 
     scalar_reward = (
-        position_target_achieved * env.pos_target_achieved_rew_multiplier
+        position_reward_term
         + pos_shaped_term
         + heading_target_achieved
         + heading_shaped_term

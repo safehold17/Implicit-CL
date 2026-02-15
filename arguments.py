@@ -693,6 +693,10 @@ parser.add_argument(
     default=1.0,
     help='Scaling factor for shaped goal/speed/heading rewards in student reward.')
 parser.add_argument(
+    '--use_persistent_position_reward',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Whether to use persistent position reached reward (CtrlSim-style lock); if False, use one-time position reward.')
+parser.add_argument(
     '--use_pos_shaped',
     type=str2bool, nargs='?', const=True, default=False,
     help='Whether to include shaped position reward in student reward aggregation.')
