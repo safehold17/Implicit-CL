@@ -668,7 +668,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # Load Nocturne scenario (must after getting GT data)
         load_scenario(self, level.scenario_id)
-        
+
         # Freeze preprocessed-row alignment before any vehicle filtering/reordering.
         self._veh_id_to_preproc_idx = {
             veh.getID(): idx for idx, veh in enumerate(self.vehicles)

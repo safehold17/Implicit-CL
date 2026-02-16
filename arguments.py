@@ -701,8 +701,12 @@ parser.add_argument(
     type=str2bool, nargs='?', const=True, default=False,
     help='Whether to use persistent position reached reward (CtrlSim-style lock); if False, use one-time position reward.')
 parser.add_argument(
+    '--shaped_goal_distance',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Whether to enable shaped goal reward components in student reward.')
+parser.add_argument(
     '--use_pos_shaped',
-    type=str2bool, nargs='?', const=True, default=False,
+    type=str2bool, nargs='?', const=True, default=True,
     help='Whether to include shaped position reward in student reward aggregation.')
 parser.add_argument(
     '--use_speed_heading_shaped',
@@ -712,10 +716,6 @@ parser.add_argument(
     '--use_speed_heading_target',
     type=str2bool, nargs='?', const=True, default=False,
     help='Whether to include binary speed/heading target achieved rewards in student reward aggregation.')
-parser.add_argument(
-    '--shaped_goal_distance',
-    type=str2bool, nargs='?', const=True, default=False,
-    help='Whether to enable shaped goal reward components in student reward.')
 parser.add_argument(
     '--use_veh_veh_shaped',
     type=str2bool, nargs='?', const=True, default=False,
