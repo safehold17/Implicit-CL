@@ -233,6 +233,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._gt_data_dict: Dict = {}
         self._gt_traj_cache: Dict = {}
         self._preproc_data: Optional[Dict] = None
+        self._veh_id_to_preproc_idx: Dict[int, int] = {}
         
         # Ego vehicle's goal and reward related state (for _compute_reward)
         self._ego_goal_dict: Optional[Dict] = None
@@ -668,6 +669,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # Load Nocturne scenario (must after getting GT data)
         load_scenario(self, level.scenario_id)
         
+        # Freeze preprocessed-row alignment before any vehicle filtering/reordering.
+        self._veh_id_to_preproc_idx = {
+            veh.getID(): idx for idx, veh in enumerate(self.vehicles)
+        }
+        
         # Load vehicle IDs from map (strict mode: no dynamic fallback)
         ego_id, opponent_ids, ego_selection_mode = load_vehicle_ids_for_scenario(self, level.scenario_id)
         self.ego_vehicle = get_vehicle_by_id(self, ego_id)
@@ -765,6 +771,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
         if self.remove_background_vehicles:
             remove_background_moving_vehicles(self)
         vehicles_to_control = self.opponent_vehicle_ids if runtime_mode == 'normal' else []
+        # Step 1: pass frozen mapping to opponent without changing adapter signature.
+        self.opponent._veh_id_to_preproc_idx = dict(self._veh_id_to_preproc_idx)
 
         self.opponent.reset(
             self.scenario,

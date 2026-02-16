@@ -16,6 +16,7 @@ if _CTRLSIM_PATH not in _sys.path:
 
 import os
 import sys
+import warnings
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -251,6 +252,7 @@ class CtrlSimOpponentAdapter:
         self._goal_dict: Dict = {}
         self._goal_dist_normalizer: Dict = {}
         self._ego_id: Optional[int] = None
+        self._veh_id_to_preproc_idx: Optional[Dict[int, int]] = None
         self._opponent_vehicle_exits: Dict[int, bool] = {}
         self._opponent_last_valid_pos: Dict[int, Tuple[float, float]] = {}
         self._opponent_goal_hold_until: Dict[int, Optional[int]] = {}
@@ -869,16 +871,34 @@ class CtrlSimOpponentAdapter:
                     # 检查索引是否在范围内
                     if hasattr(rtgs_array, 'shape'):
                         num_agents_in_rtg = rtgs_array.shape[0]
-                        if veh_idx < num_agents_in_rtg:
+                        preproc_idx = None
+                        if (
+                            isinstance(self._veh_id_to_preproc_idx, dict)
+                            and veh_id in self._veh_id_to_preproc_idx
+                        ):
+                            preproc_idx = int(self._veh_id_to_preproc_idx[veh_id])
+                        else:
+                            warnings.warn(
+                                f"veh_id_to_preproc_idx missing for veh_id={veh_id}; "
+                                f"fallback to veh_idx={veh_idx}.",
+                                UserWarning,
+                                stacklevel=2,
+                            )
+                            preproc_idx = veh_idx
+
+                        if 0 <= preproc_idx < num_agents_in_rtg:
                             try:
-                                unnormalized_rtg = rtgs_array[veh_idx, t]
+                                unnormalized_rtg = rtgs_array[preproc_idx, t]
                                 # 选择 goal, veh_veh, veh_edge 三个维度
                                 unnormalized_rtg = np.concatenate([
                                     unnormalized_rtg[:1], 
                                     unnormalized_rtg[3:]
                                 ], axis=-1)
                             except (IndexError, KeyError) as e:
-                                print(f"Warning: Failed to get RTG for veh_idx={veh_idx}, veh_id={veh_id}: {e}")
+                                print(
+                                    f"Warning: Failed to get RTG for preproc_idx={preproc_idx}, "
+                                    f"veh_idx={veh_idx}, veh_id={veh_id}: {e}"
+                                )
                                 unnormalized_rtg = None
                 
                 # 使用默认 RTG（如果获取失败或索引越界）
