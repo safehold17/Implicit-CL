@@ -187,6 +187,9 @@ def _make_env(args):
             'opponent_k': getattr(args, 'opponent_vehicle_number', 7),
             'vehicle_map_path': getattr(args, 'vehicle_map_path', 'data/vehicle_map_valid.json'),
             'max_episode_steps': max_episode_steps,
+            'done_on_position_reached_only': getattr(
+                args, 'done_on_position_reached_only', True
+            ),
             'device': env_device,
             'tilting_mode': getattr(args, 'tilting_mode', 'per_vehicle'),
             'mutation_mode': getattr(args, 'mutation_mode', 'all'),

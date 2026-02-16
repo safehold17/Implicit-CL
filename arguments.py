@@ -664,8 +664,12 @@ parser.add_argument(
 parser.add_argument(
     '--nocturne_max_episode_steps',
     type=int,
-    default=None,
-    help='The maximum number of steps in the Nocturne environment (None uses num_steps).')
+    default=90,
+    help='The maximum number of steps in the Nocturne environment (default: 90).')
+parser.add_argument(
+    '--done_on_position_reached_only',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Whether Nocturne check_done should use position_reached as the success condition.')
 parser.add_argument(
     '--remove_background_vehicles',
     type=str2bool, nargs='?', const=True, default=True,
@@ -735,12 +739,12 @@ parser.add_argument(
 parser.add_argument(
     '--warmup_opponent_disable_ratio',
     type=float,
-    default=0.15,
+    default=0,
     help='Warmup ratio for opponent-disable stage (fraction of num_env_steps).')
 parser.add_argument(
     '--warmup_opponent_replay_ratio',
     type=float,
-    default=0.15,
+    default=0.2,
     help='Warmup ratio for opponent-replay stage (fraction of num_env_steps).')
 
 # ============== render options ==============

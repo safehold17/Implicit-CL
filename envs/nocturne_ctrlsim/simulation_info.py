@@ -48,8 +48,16 @@ def check_done(env) -> bool:
     if env.current_step >= env.max_episode_steps:
         return True
 
-    # Goal reached (success)
-    if env._goal_reached:
+    done_on_position_reached_only = bool(
+        getattr(env, 'done_on_position_reached_only', True)
+    )
+    # Success condition is configurable:
+    # - True: only require position reached
+    # - False: keep legacy goal_reached condition
+    if done_on_position_reached_only:
+        if env._position_reached:
+            return True
+    elif env._goal_reached:
         return True
 
     return False

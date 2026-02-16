@@ -181,6 +181,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 f"({cfg.nocturne.steps}); using the passed max_episode_steps for termination."
             )
         self.max_episode_steps = max_episode_steps
+        self.done_on_position_reached_only = bool(
+            kwargs.get('done_on_position_reached_only', True)
+        )
         self.device = device
         self.opponent_k = int(opponent_k)
         if self.opponent_k < 0:
