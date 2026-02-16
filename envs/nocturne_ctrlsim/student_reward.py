@@ -218,6 +218,9 @@ def compute_student_reward(env) -> float:
     # goal_speed = achieved + shaped
     pos_shaped_term = pos_shaped if getattr(env, 'use_pos_shaped', False) else 0.0
     use_speed_heading_shaped = getattr(env, 'use_speed_heading_shaped', True)
+    use_speed_heading_target = getattr(env, 'use_speed_heading_target', True)
+    heading_target_term = heading_target_achieved if use_speed_heading_target else 0.0
+    speed_target_term = speed_target_achieved if use_speed_heading_target else 0.0
     speed_shaped_term = speed_shaped if use_speed_heading_shaped else 0.0
     heading_shaped_term = heading_shaped if use_speed_heading_shaped else 0.0
     veh_veh_shaped_term = _compute_veh_veh_shaped_reward(env, ego_id, ego_pos_arr)  # [0, 1]
@@ -226,12 +229,12 @@ def compute_student_reward(env) -> float:
     scalar_reward = (
             position_reward_term
             + pos_shaped_term          # default once reward
-            + heading_target_achieved  # not using
+            + heading_target_term      # not using
             + heading_shaped_term      # not using
-            + speed_target_achieved    # not using
+            + speed_target_term        # not using
             + speed_shaped_term        # not using
-            + veh_veh_shaped_term
-            + veh_edge_shaped_term
+            + veh_veh_shaped_term      # not using
+            + veh_edge_shaped_term     # not using
             - veh_veh_collision * env.veh_veh_collision_rew_multiplier
             - veh_edge_collision * env.veh_edge_collision_rew_multiplier
     )

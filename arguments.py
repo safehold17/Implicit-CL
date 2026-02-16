@@ -705,16 +705,20 @@ parser.add_argument(
     type=str2bool, nargs='?', const=True, default=False,
     help='Whether to include shaped speed/heading rewards in student reward aggregation.')
 parser.add_argument(
+    '--use_speed_heading_target',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Whether to include binary speed/heading target achieved rewards in student reward aggregation.')
+parser.add_argument(
     '--shaped_goal_distance',
     type=str2bool, nargs='?', const=True, default=False,
     help='Whether to enable shaped goal reward components in student reward.')
 parser.add_argument(
     '--use_veh_veh_shaped',
-    type=str2bool, nargs='?', const=True, default=True,
+    type=str2bool, nargs='?', const=True, default=False,
     help='Whether to include veh-veh shaped reward in student reward aggregation.')
 parser.add_argument(
     '--use_veh_edge_shaped',
-    type=str2bool, nargs='?', const=True, default=True,
+    type=str2bool, nargs='?', const=True, default=False,
     help='Whether to include veh-edge shaped reward in student reward aggregation.')
 parser.add_argument(
     '--max_veh_veh_distance',

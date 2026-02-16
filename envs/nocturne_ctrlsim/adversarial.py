@@ -275,6 +275,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.use_speed_heading_shaped = kwargs.get(
             'use_speed_heading_shaped', True
         )
+        self.use_speed_heading_target = kwargs.get(
+            'use_speed_heading_target', True
+        )
         self.shaped_goal_distance = kwargs.get('shaped_goal_distance', True)
         self.shaped_goal_distance_scaling = kwargs.get(
             'shaped_goal_distance_scaling', 0.2

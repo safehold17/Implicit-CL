@@ -215,6 +215,7 @@ class Evaluator(object):
 				'pos_target_achieved_rew_multiplier',
 				'use_pos_shaped',
 				'use_speed_heading_shaped',
+				'use_speed_heading_target',
 				'shaped_goal_distance',
 				'shaped_goal_distance_scaling',
 				'use_veh_veh_shaped',
@@ -540,6 +541,7 @@ def _collect_nocturne_required_args(flags, cli_args):
 		"student_num_neighbors",
 		"student_top_k_road",
 		"tilt_range",
+		"use_speed_heading_target",
 	]
 	required = {}
 	for key in keys:
