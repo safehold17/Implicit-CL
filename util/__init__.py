@@ -207,13 +207,12 @@ def _make_env(args):
                 args, 'use_persistent_position_reward', False
             ),
             'use_pos_shaped': getattr(args, 'use_pos_shaped', False),
-            'use_speed_heading_shaped': getattr(
-                args, 'use_speed_heading_shaped', True
-            ),
+            'use_speed_shaped': getattr(args, 'use_speed_shaped', True),
+            'use_heading_shaped': getattr(args, 'use_heading_shaped', True),
             'use_speed_heading_target': getattr(
                 args, 'use_speed_heading_target', True
             ),
-            'shaped_goal_distance': getattr(args, 'shaped_goal_distance', True),
+            'shaped_goal_reward': getattr(args, 'shaped_goal_reward', True),
             'shaped_goal_distance_scaling': getattr(
                 args, 'shaped_goal_distance_scaling', 0.2
             ),

@@ -135,7 +135,7 @@ def compute_student_reward(env) -> float:
         'speed_target_tolerance': 1.0,
         'heading_target': True,
         'heading_target_tolerance': 0.3,
-        'shaped_goal_distance': getattr(env, 'shaped_goal_distance', True),
+        'shaped_goal_distance': getattr(env, 'shaped_goal_reward', True),
         'shaped_goal_distance_scaling': getattr(
             env, 'shaped_goal_distance_scaling', 0.2
         ),
@@ -217,12 +217,13 @@ def compute_student_reward(env) -> float:
     # goal_heading = achieved + shaped
     # goal_speed = achieved + shaped
     pos_shaped_term = pos_shaped if getattr(env, 'use_pos_shaped', False) else 0.0
-    use_speed_heading_shaped = getattr(env, 'use_speed_heading_shaped', True)
+    use_speed_shaped = getattr(env, 'use_speed_shaped', True)
+    use_heading_shaped = getattr(env, 'use_heading_shaped', True)
     use_speed_heading_target = getattr(env, 'use_speed_heading_target', True)
     heading_target_term = heading_target_achieved if use_speed_heading_target else 0.0
     speed_target_term = speed_target_achieved if use_speed_heading_target else 0.0
-    speed_shaped_term = speed_shaped if use_speed_heading_shaped else 0.0
-    heading_shaped_term = heading_shaped if use_speed_heading_shaped else 0.0
+    speed_shaped_term = speed_shaped if use_speed_shaped else 0.0
+    heading_shaped_term = heading_shaped if use_heading_shaped else 0.0
     veh_veh_shaped_term = _compute_veh_veh_shaped_reward(env, ego_id, ego_pos_arr)  # [0, 1]
     veh_edge_shaped_term = _compute_veh_edge_shaped_reward(env, ego_pos_arr)  #[0, 1]
 

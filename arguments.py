@@ -53,7 +53,7 @@ parser.add_argument(
 parser.add_argument(
     '--entropy_coef',
     type=float,
-    default=0.0,
+    default=0.03,
     help='Entropy bonus coefficient for student.')
 parser.add_argument(
     '--adv_entropy_coef',
@@ -689,39 +689,43 @@ parser.add_argument(
 parser.add_argument(
     '--veh_veh_collision_rew_multiplier',
     type=float,
-    default=7.5,
+    default=12.0,
     help='Collision penalty multiplier for vehicle-vehicle collisions (ctrl-sim default).')
 parser.add_argument(
     '--veh_edge_collision_rew_multiplier',
     type=float,
-    default=7.5,
+    default=10.0,
     help='Collision penalty multiplier for vehicle-road-edge collisions (ctrl-sim default).')
 parser.add_argument(
     '--pos_target_achieved_rew_multiplier',
     type=float,
-    default=10.0,
+    default=8.0,
     help='Goal position achieved reward multiplier for student reward (ctrl-sim default).')
 parser.add_argument(
     '--shaped_goal_distance_scaling',
     type=float,
-    default=1.0,
+    default=0.25,
     help='Scaling factor for shaped goal/speed/heading rewards in student reward.')
 parser.add_argument(
     '--use_persistent_position_reward',
     type=str2bool, nargs='?', const=True, default=False,
     help='Whether to use persistent position reached reward (CtrlSim-style lock); if False, use one-time position reward.')
 parser.add_argument(
-    '--shaped_goal_distance',
-    type=str2bool, nargs='?', const=True, default=False,
+    '--shaped_goal_reward',
+    type=str2bool, nargs='?', const=True, default=True,
     help='Whether to enable shaped goal reward components in student reward.')
 parser.add_argument(
     '--use_pos_shaped',
-    type=str2bool, nargs='?', const=True, default=False,
+    type=str2bool, nargs='?', const=True, default=True,
     help='Whether to include shaped position reward in student reward aggregation.')
 parser.add_argument(
-    '--use_speed_heading_shaped',
+    '--use_speed_shaped',
     type=str2bool, nargs='?', const=True, default=False,
-    help='Whether to include shaped speed/heading rewards in student reward aggregation.')
+    help='Whether to include shaped speed reward in student reward aggregation.')
+parser.add_argument(
+    '--use_heading_shaped',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Whether to include shaped heading reward in student reward aggregation.')
 parser.add_argument(
     '--use_speed_heading_target',
     type=str2bool, nargs='?', const=True, default=False,
@@ -754,7 +758,7 @@ parser.add_argument(
 parser.add_argument(
     '--warmup_opponent_replay_ratio',
     type=float,
-    default=0.2,
+    default=1.0,
     help='Warmup ratio for opponent-replay stage (fraction of num_env_steps).')
 
 # ============== render options ==============
