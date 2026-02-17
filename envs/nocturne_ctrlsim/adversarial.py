@@ -859,6 +859,24 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """Randomly generate level"""
         scenario_id = np.random.choice(self.scenario_ids)
         seed = rand_int_seed()
+        runtime_mode = getattr(self, 'opponent_runtime_mode', 'normal')
+
+        # In disable/replay runtime modes, tilting is not used by policy.
+        # Keep sampled levels scenario-only to avoid unnecessary tilt sampling.
+        if runtime_mode != 'normal':
+            per_vehicle_tilting = (
+                (0,) * self.per_vehicle_tilting_length
+                if self.tilting_mode == 'per_vehicle'
+                else ()
+            )
+            return ScenarioLevel(
+                scenario_id=scenario_id,
+                seed=seed,
+                goal_tilt=0,
+                veh_veh_tilt=0,
+                veh_edge_tilt=0,
+                per_vehicle_tilting=per_vehicle_tilting,
+            )
 
         def _sample_tilt() -> int:
             return round(float(np.random.uniform(*self.tilt_range)))
@@ -908,6 +926,24 @@ class NocturneCtrlSimAdversarial(gym.Env):
             student initial observation
         """
         level = self._coerce_level(level)
+        runtime_mode = getattr(self, 'opponent_runtime_mode', 'normal')
+
+        # Keep replay/disable behavior robust even when replayed levels
+        # already carry non-zero tilting fields.
+        if runtime_mode != 'normal':
+            per_vehicle_tilting = (
+                (0,) * self.per_vehicle_tilting_length
+                if self.tilting_mode == 'per_vehicle'
+                else ()
+            )
+            level = ScenarioLevel(
+                scenario_id=level.scenario_id,
+                seed=level.seed,
+                goal_tilt=0,
+                veh_veh_tilt=0,
+                veh_edge_tilt=0,
+                per_vehicle_tilting=per_vehicle_tilting,
+            )
         
         # Update level_params_vec to keep consistent
         scenario_idx = self.scenario_id_to_index.get(level.scenario_id, 0)

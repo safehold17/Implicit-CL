@@ -10,6 +10,8 @@
 # https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/common/vec_env/subproc_vec_env.py
 
 import multiprocessing as mp
+import os
+import traceback
 
 import numpy as np
 from .vec_env import VecEnv, CloudpickleWrapper
@@ -105,6 +107,10 @@ def worker(remote, parent_remote, env_fn_wrappers):
                 raise NotImplementedError
     except KeyboardInterrupt:
         print('SubprocVecEnv worker: got KeyboardInterrupt')
+    except Exception:
+        print(f'SubprocVecEnv worker: unhandled exception (pid={os.getpid()})', flush=True)
+        traceback.print_exc()
+        raise
     finally:
         for env in envs:
             env.close()
