@@ -756,6 +756,15 @@ class AdversarialRunner(object):
         
         rollout_info = {}
         rollout_returns = [[] for _ in range(args.num_processes)]
+        is_nocturne_rollout = (
+            (not is_env)
+            and (
+                args.env_name.startswith('Nocturne')
+                or args.env_name.startswith('nocturne')
+            )
+        )
+        done_infos_for_update = [] if is_nocturne_rollout else None
+        latest_done_info_by_process = {} if is_nocturne_rollout else None
         
         if self.use_accel_paired:
             actor_seeds = {i: [] for i in range(args.num_processes)}
@@ -808,6 +817,10 @@ class AdversarialRunner(object):
                 
             for i, info in enumerate(infos):
                 if 'episode' in info.keys():
+                    if is_nocturne_rollout:
+                        done_info = dict(info)
+                        done_infos_for_update.append(done_info)
+                        latest_done_info_by_process[i] = done_info
                     rollout_returns[i].append(info['episode']['r'])
                     
                     if self.use_accel_paired:
@@ -880,6 +893,9 @@ class AdversarialRunner(object):
             self._update_plr_with_current_unseen_levels()
 
         rollout_info.update(self._get_rollout_return_stats(rollout_returns))
+        if is_nocturne_rollout:
+            rollout_info['nocturne_done_infos'] = done_infos_for_update
+            rollout_info['nocturne_latest_done_info_by_process'] = latest_done_info_by_process
         if self.use_accel_paired:
             rollout_info['actor_seeds'] = actor_seeds
 
@@ -1006,10 +1022,37 @@ class AdversarialRunner(object):
     def run(self):
         args = self.args
         plr_runtime_enabled = self.plr_runtime_enabled
+        is_nocturne_env = (
+            args.env_name.startswith('Nocturne') or args.env_name.startswith('nocturne')
+        )
 
         adversary_env = self.agents['adversary_env']
         agent = self.agents['agent']
         adversary_agent = self.agents['adversary_agent']
+        nocturne_done_infos_for_update = []
+        nocturne_latest_done_info_by_process = {}
+        has_merged_first_nocturne_rollout = False
+
+        def merge_nocturne_done_infos(rollout_info):
+            nonlocal has_merged_first_nocturne_rollout
+            if (not is_nocturne_env) or (not isinstance(rollout_info, dict)):
+                return
+            if has_merged_first_nocturne_rollout:
+                return
+
+            done_infos = rollout_info.get('nocturne_done_infos')
+            if done_infos:
+                nocturne_done_infos_for_update.extend(done_infos)
+
+            latest_by_process = rollout_info.get('nocturne_latest_done_info_by_process')
+            if not isinstance(latest_by_process, dict):
+                return
+
+            for process_idx, info in latest_by_process.items():
+                if info is None:
+                    continue
+                nocturne_latest_done_info_by_process[int(process_idx)] = info
+            has_merged_first_nocturne_rollout = True
 
         level_replay = False
         if plr_runtime_enabled and self.is_training:
@@ -1057,6 +1100,7 @@ class AdversarialRunner(object):
             discard_grad=student_discard_grad,
             kl_dict=kl_dict_agent,
             update_agent_separately=self.use_accel_paired)
+        merge_nocturne_done_infos(agent_info)
         
         if kl_dict_agent is not None:
             adversary_agent.train()
@@ -1094,6 +1138,7 @@ class AdversarialRunner(object):
                 update_level_sampler=is_updateable,
                 discard_grad=student_discard_grad,
                 kl_dict=kl_dict_adv_agent)
+            merge_nocturne_done_infos(adversary_agent_info)
             
             if kl_dict_adv_agent is not None:
                 agent.train()
@@ -1111,6 +1156,7 @@ class AdversarialRunner(object):
                 kl_dict=None,
                 update_agent_separately=self.use_accel_paired
             )
+            merge_nocturne_done_infos(adversary_agent_info)
             
             # calculate PAIRED regret estimate
             external_scores = self._calculate_paired_regret_scores(agent_info, adversary_agent_info, type=args.accel_paired_score_function)
@@ -1226,6 +1272,7 @@ class AdversarialRunner(object):
                     update_level_sampler=is_updateable,
                     update_agent_separately=self.use_accel_paired,
                     discard_grad=True)
+                merge_nocturne_done_infos(agent_info_edited_level)
                 
                 if self.use_accel_paired:
                     adversary_agent_info_edited_level = self.agent_rollout(
@@ -1237,6 +1284,7 @@ class AdversarialRunner(object):
                         update_level_sampler=False,
                         update_agent_separately=self.use_accel_paired,
                         discard_grad=True)
+                    merge_nocturne_done_infos(adversary_agent_info_edited_level)
                     
                     external_scores = self._calculate_paired_regret_scores(agent_info_edited_level, adversary_agent_info_edited_level, type=args.accel_paired_score_function)
                     
@@ -1289,18 +1337,41 @@ class AdversarialRunner(object):
         # === LOGGING ===
         # Only update env-related stats when run generates new envs (not level replay)
         log_replay_complexity = level_replay and args.log_replay_complexity
-        is_nocturne_env = args.env_name.startswith('Nocturne') or args.env_name.startswith('nocturne')
         per_process_stats = []
         nocturne_infos = None
+        nocturne_process_infos = None
         if (not level_replay) or log_replay_complexity:
             if is_nocturne_env:
-                nocturne_infos = self.venv.get_complexity_info()
+                cached_venv_infos = None
+
+                def get_venv_infos():
+                    nonlocal cached_venv_infos
+                    if cached_venv_infos is None:
+                        cached_venv_infos = self.venv.get_complexity_info()
+                    return cached_venv_infos
+
+                if nocturne_done_infos_for_update:
+                    nocturne_infos = nocturne_done_infos_for_update
+                else:
+                    nocturne_infos = get_venv_infos()
+
+                if nocturne_latest_done_info_by_process:
+                    fallback_infos = get_venv_infos()
+                    nocturne_process_infos = []
+                    for process_idx in range(args.num_processes):
+                        process_info = nocturne_latest_done_info_by_process.get(process_idx)
+                        if process_info is None and process_idx < len(fallback_infos):
+                            process_info = fallback_infos[process_idx]
+                        nocturne_process_infos.append(dict(process_info) if process_info else {})
+                else:
+                    nocturne_process_infos = get_venv_infos()
+
             stats = self._get_env_stats(agent_info, adversary_agent_info, 
                 log_replay_complexity=log_replay_complexity,
                 nocturne_infos=nocturne_infos)
             if is_nocturne_env:
                 per_process_stats = self._get_nocturne_process_stats(
-                    infos=nocturne_infos,
+                    infos=nocturne_process_infos,
                     log_replay_complexity=log_replay_complexity)
             stats.update({
                 'mean_env_return': env_return.mean().item(),
