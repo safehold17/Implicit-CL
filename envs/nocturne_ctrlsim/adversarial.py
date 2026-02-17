@@ -1089,8 +1089,12 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """
         self.current_step += 1
         
-        # 1. Opponent policy inference
-        opponent_actions = self.opponent.step(self.current_step - 1, self.vehicles)
+        # 1. Opponent policy inference (normal mode only)
+        runtime_mode = getattr(self, "opponent_runtime_mode", "normal")
+        if runtime_mode == "normal" and len(self.opponent_vehicle_ids) > 0:
+            opponent_actions = self.opponent.step(self.current_step - 1, self.vehicles)
+        else:
+            opponent_actions = {}
         
         # 2. Apply student action to ego vehicle
         apply_student_action(self, action)

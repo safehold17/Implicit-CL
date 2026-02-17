@@ -141,8 +141,10 @@ def get_gt_action(env, veh_id: int, t: int, veh=None) -> Optional[Tuple[float, f
         veh_exists = int(gt_exists)
     # Once missing, remain missing (align ctrl-sim evaluator)
     ego_data = env.opponent.get_vehicle_data(veh_id) if env.opponent else None
-    if t > 0 and ego_data and ego_data["existence"][-1] == 0:
-        veh_exists = 0
+    if t > 0 and ego_data:
+        existence_history = ego_data.get("existence")
+        if existence_history and existence_history[-1] == 0:
+            veh_exists = 0
 
     if not veh_exists or veh is None:
         return (0.0, 0.0)
