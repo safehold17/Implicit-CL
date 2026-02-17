@@ -204,6 +204,7 @@ class CtrlSimOpponentAdapter:
         action_temperature: float = 1.0,
         nucleus_sampling: bool = False,
         nucleus_threshold: float = 0.8,
+        load_on_init: bool = True,
     ):
         """
         Args:
@@ -213,21 +214,15 @@ class CtrlSimOpponentAdapter:
             action_temperature: 动作采样温度（参考: cfgs/policy/ctrl_sim.yaml）
             nucleus_sampling: 是否使用 nucleus sampling
             nucleus_threshold: nucleus sampling 阈值
+            load_on_init: 是否在初始化时立即加载模型/数据集
         """
         self.cfg = cfg
         self.device = device
         self.checkpoint_path = checkpoint_path
-        
-        # 加载模型（参考: eval_sim.py 第 35 行）
-        print(f"Loading CtRL-Sim model from {checkpoint_path}...")
-        self.model = CtRLSim.load_from_checkpoint(checkpoint_path)
-        self.model.to(device)
-        self.model.eval()
-        print("Model loaded successfully.")
-        
-        # 初始化数据集（用于数据处理，参考: policy_evaluator.py 第 40 行）
-        # 注：mode='eval' 用于推理时的数据预处理
-        self.dataset = RLWaymoDatasetCtRLSim(cfg, split_name='test', mode='eval')
+        self.model = None
+        self.dataset = None
+        if load_on_init:
+            self._load_model_and_dataset()
         
         # 策略配置
         self.action_temperature = action_temperature
@@ -265,6 +260,18 @@ class CtrlSimOpponentAdapter:
         self.dt = cfg.nocturne.dt
         self.steps = cfg.nocturne.steps
         self.history_steps = getattr(cfg.nocturne, 'history_steps', 10)
+
+    def _load_model_and_dataset(self):
+        # 加载模型（参考: eval_sim.py 第 35 行）
+        print(f"Loading CtRL-Sim model from {self.checkpoint_path}...")
+        self.model = CtRLSim.load_from_checkpoint(self.checkpoint_path)
+        self.model.to(self.device)
+        self.model.eval()
+        print("Model loaded successfully.")
+
+        # 初始化数据集（用于数据处理，参考: policy_evaluator.py 第 40 行）
+        # 注：mode='eval' 用于推理时的数据预处理
+        self.dataset = RLWaymoDatasetCtRLSim(self.cfg, split_name='test', mode='eval')
     
     def _create_policy(self) -> AutoregressivePolicy:
         """
@@ -277,6 +284,8 @@ class CtrlSimOpponentAdapter:
             'next_steering': 'next_steering',
             'rtgs': 'rtgs'
         }
+        if self.model is None:
+            raise RuntimeError('CtrlSim model is not loaded.')
         
         # 根据是否有 per_vehicle_tilting 决定使用哪个 policy 类
         if self.per_vehicle_tilting is not None:
@@ -407,8 +416,13 @@ class CtrlSimOpponentAdapter:
             preproc_data: 预处理数据（包含 RTG 和道路信息）
             vehicles_to_control: 要控制的车辆 ID 列表（对手车辆）
         """
-        # 创建新的策略实例
-        self._policy = self._create_policy()
+        # 仅在有对手车辆时才需要策略；若前序以非 normal 启动，首次转 normal 时在此加载。
+        if vehicles_to_control:
+            if self.model is None or self.dataset is None:
+                self._load_model_and_dataset()
+            self._policy = self._create_policy()
+        else:
+            self._policy = None
         
         # 存储运行时状态
         self._gt_data_dict = gt_data_dict
@@ -453,7 +467,8 @@ class CtrlSimOpponentAdapter:
                 self._opponent_goal_hold_until[veh_id] = None
         
         # 重置策略内部状态（参考: policy.py 第 45-58 行）
-        self._policy.reset(self._vehicle_data_dict)
+        if self._policy is not None:
+            self._policy.reset(self._vehicle_data_dict)
 
     def cache_last_valid_positions(self, vehicles: List):
         for veh in vehicles:

@@ -198,6 +198,7 @@ def _make_env(args):
             'show_tilting_params': getattr(args, 'show_tilting_params', True),
             'show_vehicle_ids': getattr(args, 'show_vehicle_ids', True),
             'show_ego_vehicle_selection': getattr(args, 'show_ego_vehicle_selection', True),
+            'opponent_runtime_mode': getattr(args, 'opponent_runtime_mode', 'normal'),
             'veh_veh_collision_rew_multiplier': getattr(args, 'veh_veh_collision_rew_multiplier', 10.0),
             'veh_edge_collision_rew_multiplier': getattr(args, 'veh_edge_collision_rew_multiplier', 10.0),
             'pos_target_achieved_rew_multiplier': getattr(

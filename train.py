@@ -160,6 +160,9 @@ if __name__ == '__main__':
         torch.backends.cudnn.benchmark = True
         print('Using CUDA\n')
 
+    # Set initial opponent runtime mode before env construction.
+    args.opponent_runtime_mode = resolve_opponent_runtime_mode_by_steps(0)
+
     # === Create parallel envs ===
     venv, ued_venv = create_parallel_env(args)
 

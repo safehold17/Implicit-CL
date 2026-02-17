@@ -163,6 +163,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.cfg = cfg
         self.scenario_data_dir = scenario_data_dir
         self.preprocess_dir = preprocess_dir
+        opponent_runtime_mode = kwargs.get('opponent_runtime_mode', 'normal')
         
         # Vehicle map path (for loading pre-computed ego/opponent IDs)
         if vehicle_map_path:
@@ -185,6 +186,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             cfg=cfg,
             checkpoint_path=opponent_checkpoint,
             device=device,
+            load_on_init=(opponent_runtime_mode == 'normal'),
         )
         
         # ========== Environment config ==========
@@ -225,7 +227,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.show_vehicle_ids = show_vehicle_ids
         self.show_ego_vehicle_selection = show_ego_vehicle_selection
         self.remove_background_vehicles = remove_background_vehicles
-        self.opponent_runtime_mode = kwargs.get('opponent_runtime_mode', 'normal')
+        self.opponent_runtime_mode = opponent_runtime_mode
         self.removed_vehicle_ids: List[int] = []
         
         # ========== State variables ==========
@@ -458,7 +460,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             # Keep mutation RNG stream aligned with per-env seed, while
             # avoiding global numpy reseeding side effects.
             seed = int(seed)
-            self._set_process_seed(seed, reseed_numpy=False)
+            self._set_process_seed(seed, reseed_numpy=True)
             self._set_level_seed(seed)
         return [self.level_seed]
     
