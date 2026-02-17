@@ -10,8 +10,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .common import DeviceAwareModule, init, init_tanh_
-from .walker_models import DiagGaussian, FixedNormal
+from .common import DeviceAwareModule
+from .distributions import Categorical
 
 # ============== observation ==============
 # same as in  gpudrive/env/constants.py
@@ -251,9 +251,13 @@ class StudentPolicy(DeviceAwareModule):
                 "Please align student_num_neighbors/student_top_k_road across env and model config."
             )
         
-        # Continuous action dimension (accel, steer, etc.)
-        action_dim = action_space.shape[0]
-        self.dist = DiagGaussian(hidden_dim, action_dim)
+        if action_space.__class__.__name__ != "Discrete":
+            raise ValueError(
+                "StudentPolicy expects a Discrete action space, "
+                f"got {action_space.__class__.__name__}"
+            )
+        self.action_dim = int(action_space.n)
+        self.dist = Categorical(hidden_dim, self.action_dim)
         
         # Critic: output state value
         self.critic = self._layer_init(
@@ -302,8 +306,8 @@ class StudentPolicy(DeviceAwareModule):
         
         Returns:
             value: State value (batch_size, 1)
-            action: Action (batch_size, action_dim)
-            action_log_probs: Action log probabilities (batch_size, 1)
+            action: Action ids (batch_size, 1)
+            action_log_dist: Action logits (batch_size, action_dim)
             rnn_hxs: Updated hidden states
         """
         # Feature extraction
@@ -312,7 +316,7 @@ class StudentPolicy(DeviceAwareModule):
         # Critic: state value
         value = self.critic(hidden)
         
-        # Actor: continuous action
+        # Actor: discrete action
         dist = self.dist(hidden)
         
         if deterministic:
@@ -320,9 +324,9 @@ class StudentPolicy(DeviceAwareModule):
         else:
             action = dist.sample()
         
-        action_log_probs = dist.log_probs(action)
+        action_log_dist = dist.logits
         
-        return value, action, action_log_probs, rnn_hxs
+        return value, action, action_log_dist, rnn_hxs
     
     def get_value(self, inputs, rnn_hxs=None, masks=None):
         """

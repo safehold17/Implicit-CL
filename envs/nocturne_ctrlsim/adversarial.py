@@ -120,7 +120,22 @@ class NocturneCtrlSimAdversarial(gym.Env):
         show_ego_vehicle_selection = kwargs.get('show_ego_vehicle_selection', True)
         remove_background_vehicles = kwargs.get('remove_background_vehicles', True)
         obs_dim = kwargs.get('obs_dim', 128)
-        action_dim = kwargs.get('action_dim', 2)
+        student_accel_discretization = int(
+            kwargs.get('student_accel_discretization', 7)
+        )
+        student_steer_discretization = int(
+            kwargs.get('student_steer_discretization', 13)
+        )
+        if student_accel_discretization < 2:
+            raise ValueError(
+                "student_accel_discretization must be >= 2, "
+                f"got {student_accel_discretization}"
+            )
+        if student_steer_discretization < 2:
+            raise ValueError(
+                "student_steer_discretization must be >= 2, "
+                f"got {student_steer_discretization}"
+            )
         tilt_range = kwargs.get('tilt_range', None)
 
         self.fixed_environment = fixed_environment
@@ -303,18 +318,18 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # Use config obs_dim or calculated dimension (take larger one for compatibility)
         self._obs_dim = max(obs_dim, late_fusion_obs_dim)
-        self._action_dim = action_dim
+        self.student_accel_discretization = student_accel_discretization
+        self.student_steer_discretization = student_steer_discretization
+        self.student_num_actions = (
+            self.student_accel_discretization * self.student_steer_discretization
+        )
         
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, 
             shape=(self._obs_dim,), 
             dtype=np.float32
         )
-        self.action_space = gym.spaces.Box(
-            low=-1.0, high=1.0, 
-            shape=(self._action_dim,), 
-            dtype=np.float32
-        )
+        self.action_space = gym.spaces.Discrete(self.student_num_actions)
         
         # ========== Adversary space definition ==========
         # Adversary building steps: scenario_id + tilt parameters (or scenario only in 'none' mode)

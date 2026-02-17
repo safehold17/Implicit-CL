@@ -773,8 +773,11 @@ class AdversarialRunner(object):
                 obs_id = agent.storage.get_obs(step)
                 value, action, action_log_dist, recurrent_hidden_states = agent.act(
                     obs_id, agent.storage.get_recurrent_hidden_state(step), agent.storage.masks[step])
-                if self.is_discrete_actions:
-                    action_log_prob = action_log_dist.gather(-1, action)
+                is_discrete_action = (
+                    self.is_discrete_adversary_env_actions if is_env else self.is_discrete_actions
+                )
+                if is_discrete_action:
+                    action_log_prob = action_log_dist.gather(-1, action.long())
                 else:
                     action_log_prob = action_log_dist
 

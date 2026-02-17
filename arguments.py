@@ -589,6 +589,16 @@ parser.add_argument(
     default=64,
     help='The number of nearest road points in the observation (number of nearest road points)')
 parser.add_argument(
+    '--student_accel_discretization',
+    type=int,
+    default=7,
+    help='Number of acceleration bins for student discrete action space.')
+parser.add_argument(
+    '--student_steer_discretization',
+    type=int,
+    default=13,
+    help='Number of steering bins for student discrete action space.')
+parser.add_argument(
     '--student_dropout',
     type=float,
     default=0.0,
@@ -679,12 +689,12 @@ parser.add_argument(
 parser.add_argument(
     '--veh_veh_collision_rew_multiplier',
     type=float,
-    default=10.0,
+    default=7.5,
     help='Collision penalty multiplier for vehicle-vehicle collisions (ctrl-sim default).')
 parser.add_argument(
     '--veh_edge_collision_rew_multiplier',
     type=float,
-    default=10.0,
+    default=7.5,
     help='Collision penalty multiplier for vehicle-road-edge collisions (ctrl-sim default).')
 parser.add_argument(
     '--pos_target_achieved_rew_multiplier',
@@ -702,11 +712,11 @@ parser.add_argument(
     help='Whether to use persistent position reached reward (CtrlSim-style lock); if False, use one-time position reward.')
 parser.add_argument(
     '--shaped_goal_distance',
-    type=str2bool, nargs='?', const=True, default=True,
+    type=str2bool, nargs='?', const=True, default=False,
     help='Whether to enable shaped goal reward components in student reward.')
 parser.add_argument(
     '--use_pos_shaped',
-    type=str2bool, nargs='?', const=True, default=True,
+    type=str2bool, nargs='?', const=True, default=False,
     help='Whether to include shaped position reward in student reward aggregation.')
 parser.add_argument(
     '--use_speed_heading_shaped',
@@ -744,7 +754,7 @@ parser.add_argument(
 parser.add_argument(
     '--warmup_opponent_replay_ratio',
     type=float,
-    default=0.2,
+    default=0,
     help='Warmup ratio for opponent-replay stage (fraction of num_env_steps).')
 
 # ============== render options ==============

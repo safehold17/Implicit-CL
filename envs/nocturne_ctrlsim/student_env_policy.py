@@ -51,14 +51,27 @@ def apply_student_action(env, action: np.ndarray) -> None:
     Apply student action to ego vehicle.
 
     Args:
-        action: [acceleration, steering] normalized to [-1, 1]
+        action: Discrete student action id.
     """
     if env.ego_vehicle is None:
         return
 
+    accel_bins = int(getattr(env, "student_accel_discretization", 7))
+    steer_bins = int(getattr(env, "student_steer_discretization", 13))
+    num_actions = int(accel_bins * steer_bins)
+
+    action_id = int(np.asarray(action).reshape(-1)[0])
+    action_id = int(np.clip(action_id, 0, num_actions - 1))
+
+    accel_idx = action_id // steer_bins
+    steer_idx = action_id % steer_bins
+
+    accel_norm = (2.0 * accel_idx / (accel_bins - 1)) - 1.0
+    steer_norm = (2.0 * steer_idx / (steer_bins - 1)) - 1.0
+
     # Convert normalized action to actual values
-    accel = action[0] * 10.0  # max acc 10 m/s^2
-    steer = action[1] * 0.7  # max steer 0.7 rad
+    accel = accel_norm * 10.0  # max acc 10 m/s^2
+    steer = steer_norm * 0.7  # max steer 0.7 rad
 
     if accel > 0:
         env.ego_vehicle.acceleration = accel
