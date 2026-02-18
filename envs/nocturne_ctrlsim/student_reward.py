@@ -117,6 +117,7 @@ def compute_student_reward(env) -> float:
     using target-term style:
       - goal position: position_target_achieved * pos_target_achieved_rew_multiplier
       + pos_goal_shaped (only when use_pos_shaped=True)
+      + approaching_goal (only when use_approaching_goal=True)
       - goal heading: heading_target_achieved + heading_goal_shaped
       - goal speed: speed_target_achieved + speed_goal_shaped
       - veh-veh: veh_veh_shaped - veh_veh_collision * veh_veh_collision_rew_multiplier
@@ -172,6 +173,15 @@ def compute_student_reward(env) -> float:
     goal_heading = env._ego_goal_dict['heading']
 
     dist_to_goal = np.linalg.norm(goal_pos - ego_pos_arr)
+
+    # best_goal_distance: the closest distance to the goal so far.
+    best_goal_distance = float(getattr(env, '_best_goal_distance', np.inf))
+    # Keep state in reward logic: initialize once per episode (or when state missing).
+    if getattr(env, 'current_step', 0) <= 1 or not np.isfinite(best_goal_distance):
+        best_goal_distance = float(dist_to_goal)
+    goal_improve = max(0.0, best_goal_distance - float(dist_to_goal))
+    env._best_goal_distance = min(best_goal_distance, float(dist_to_goal))
+
     position_achieved_current = dist_to_goal < 1.0  # position_target_tolerance
     speed_achieved_current = abs(ego_speed - goal_speed) < 1.0  # speed_target_tolerance
     heading_achieved_current = abs(_angle_diff(ego_heading, goal_heading)) < 0.3  # heading_target_tolerance
@@ -217,6 +227,11 @@ def compute_student_reward(env) -> float:
     # goal_heading = achieved + shaped
     # goal_speed = achieved + shaped
     pos_shaped_term = pos_shaped if getattr(env, 'use_pos_shaped', False) else 0.0
+    use_approaching_goal = getattr(env, 'use_approaching_goal', True)
+    approaching_goal_scaling = getattr(env, 'approaching_goal_scaling', 1.0)
+    approaching_goal_term = (
+        approaching_goal_scaling * goal_improve if use_approaching_goal else 0.0
+    )
     use_speed_shaped = getattr(env, 'use_speed_shaped', True)
     use_heading_shaped = getattr(env, 'use_heading_shaped', True)
     use_speed_heading_target = getattr(env, 'use_speed_heading_target', True)
@@ -230,6 +245,7 @@ def compute_student_reward(env) -> float:
     scalar_reward = (
             position_reward_term
             + pos_shaped_term          # default once reward
+            + approaching_goal_term
             + heading_target_term      # not using
             + heading_shaped_term      # not using
             + speed_target_term        # not using

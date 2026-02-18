@@ -299,6 +299,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             'use_persistent_position_reward', False
         )
         self.use_pos_shaped = kwargs.get('use_pos_shaped', True)
+        self.use_approaching_goal = kwargs.get('use_approaching_goal', True)
         self.use_speed_shaped = kwargs.get('use_speed_shaped', True)
         self.use_heading_shaped = kwargs.get('use_heading_shaped', True)
         self.use_speed_heading_target = kwargs.get(
@@ -308,6 +309,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.shaped_goal_distance_scaling = kwargs.get(
             'shaped_goal_distance_scaling', 0.2
         )
+        self.approaching_goal_scaling = kwargs.get('approaching_goal_scaling', 1.0)
         self.use_veh_veh_shaped = kwargs.get('use_veh_veh_shaped', True)
         self.use_veh_edge_shaped = kwargs.get('use_veh_edge_shaped', True)
         self.max_veh_veh_distance = kwargs.get('max_veh_veh_distance', 15.0)

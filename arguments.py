@@ -712,6 +712,15 @@ parser.add_argument(
     default=0.5,
     help='Scaling factor for shaped goal/speed/heading rewards in student reward.')
 parser.add_argument(
+    '--approaching_goal_scaling',
+    type=float,
+    default=1.0,
+    help='Scaling factor for approaching-goal reward in student reward.')
+parser.add_argument(
+    '--use_approaching_goal',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Whether to include approaching-goal reward in student reward aggregation.')
+parser.add_argument(
     '--use_persistent_position_reward',
     type=str2bool, nargs='?', const=True, default=False,
     help='Whether to use persistent position reached reward (CtrlSim-style lock); if False, use one-time position reward.')
@@ -720,17 +729,17 @@ parser.add_argument(
     type=str2bool, nargs='?', const=True, default=True,
     help='Whether to enable shaped goal reward components in student reward.')
 parser.add_argument(
-    '--use_pos_shaped',
+    '--use_heading_shaped',
     type=str2bool, nargs='?', const=True, default=True,
+    help='Whether to include shaped heading reward in student reward aggregation.')
+parser.add_argument(
+    '--use_pos_shaped',
+    type=str2bool, nargs='?', const=True, default=False,
     help='Whether to include shaped position reward in student reward aggregation.')
 parser.add_argument(
     '--use_speed_shaped',
     type=str2bool, nargs='?', const=True, default=False,
     help='Whether to include shaped speed reward in student reward aggregation.')
-parser.add_argument(
-    '--use_heading_shaped',
-    type=str2bool, nargs='?', const=True, default=True,
-    help='Whether to include shaped heading reward in student reward aggregation.')
 parser.add_argument(
     '--use_speed_heading_target',
     type=str2bool, nargs='?', const=True, default=False,

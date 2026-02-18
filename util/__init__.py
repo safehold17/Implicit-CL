@@ -209,6 +209,7 @@ def _make_env(args):
                 args, 'use_persistent_position_reward', False
             ),
             'use_pos_shaped': getattr(args, 'use_pos_shaped', False),
+            'use_approaching_goal': getattr(args, 'use_approaching_goal', True),
             'use_speed_shaped': getattr(args, 'use_speed_shaped', True),
             'use_heading_shaped': getattr(args, 'use_heading_shaped', True),
             'use_speed_heading_target': getattr(
@@ -217,6 +218,9 @@ def _make_env(args):
             'shaped_goal_reward': getattr(args, 'shaped_goal_reward', True),
             'shaped_goal_distance_scaling': getattr(
                 args, 'shaped_goal_distance_scaling', 0.2
+            ),
+            'approaching_goal_scaling': getattr(
+                args, 'approaching_goal_scaling', 1.0
             ),
             'use_veh_veh_shaped': getattr(args, 'use_veh_veh_shaped', True),
             'use_veh_edge_shaped': getattr(args, 'use_veh_edge_shaped', True),
