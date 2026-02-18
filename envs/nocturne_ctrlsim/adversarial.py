@@ -546,21 +546,39 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """
         action_vec = self._normalize_adversary_action(action)
         self.level_params_vec[0] = self._map_action_to_scenario_idx(action_vec[0])
+        runtime_mode = getattr(self, 'opponent_runtime_mode', 'normal')
 
-        if self.tilting_mode in ('global', 'ego'):
-            self.level_params_vec[1] = self._map_action_to_tilt(action_vec[1])
-            self.level_params_vec[2] = self._map_action_to_tilt(action_vec[2])
-            self.level_params_vec[3] = self._map_action_to_tilt(action_vec[3])
-        elif self.tilting_mode == 'per_vehicle':
-            per_vehicle_values = []
-            for v in action_vec[1:1 + self.per_vehicle_tilting_length]:
-                per_vehicle_values.append(self._map_action_to_tilt(v))
-
-            self.level_params_vec[4:4 + self.per_vehicle_tilting_length] = per_vehicle_values
-        elif self.tilting_mode == 'none':
-            pass
+        if runtime_mode != 'normal':
+            if self.tilting_mode in ('global', 'ego'):
+                self.level_params_vec[1] = 0
+                self.level_params_vec[2] = 0
+                self.level_params_vec[3] = 0
+            elif self.tilting_mode == 'per_vehicle':
+                self.level_params_vec[1] = 0
+                self.level_params_vec[2] = 0
+                self.level_params_vec[3] = 0
+                self.level_params_vec[4:4 + self.per_vehicle_tilting_length] = (
+                    [0] * self.per_vehicle_tilting_length
+                )
+            elif self.tilting_mode == 'none':
+                pass
+            else:
+                raise ValueError(f"Unsupported tilting_mode: {self.tilting_mode}")
         else:
-            raise ValueError(f"Unsupported tilting_mode: {self.tilting_mode}")
+            if self.tilting_mode in ('global', 'ego'):
+                self.level_params_vec[1] = self._map_action_to_tilt(action_vec[1])
+                self.level_params_vec[2] = self._map_action_to_tilt(action_vec[2])
+                self.level_params_vec[3] = self._map_action_to_tilt(action_vec[3])
+            elif self.tilting_mode == 'per_vehicle':
+                per_vehicle_values = []
+                for v in action_vec[1:1 + self.per_vehicle_tilting_length]:
+                    per_vehicle_values.append(self._map_action_to_tilt(v))
+
+                self.level_params_vec[4:4 + self.per_vehicle_tilting_length] = per_vehicle_values
+            elif self.tilting_mode == 'none':
+                pass
+            else:
+                raise ValueError(f"Unsupported tilting_mode: {self.tilting_mode}")
         
         self.adversary_step_count += 1
         
