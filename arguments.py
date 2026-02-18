@@ -667,6 +667,11 @@ parser.add_argument(
     default='data/preprocess/test',
     help='The directory of the ctrl-sim preprocessed data')
 parser.add_argument(
+    '--preproc_cache_size',
+    type=int,
+    default=64,
+    help='LRU cache size for preprocessed scenario data in each Nocturne worker.')
+parser.add_argument(
     '--vehicle_map_path',
     type=str,
     default='data/vehicle_map_valid.json',
@@ -704,7 +709,7 @@ parser.add_argument(
 parser.add_argument(
     '--shaped_goal_distance_scaling',
     type=float,
-    default=0.25,
+    default=0.5,
     help='Scaling factor for shaped goal/speed/heading rewards in student reward.')
 parser.add_argument(
     '--use_persistent_position_reward',

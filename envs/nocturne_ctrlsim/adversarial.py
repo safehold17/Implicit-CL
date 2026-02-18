@@ -103,6 +103,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         super().__init__()
 
         vehicle_map_path = kwargs.get('vehicle_map_path', "data/vehicle_map_valid.json")
+        preproc_cache_size = int(kwargs.get('preproc_cache_size', 64))
         opponent_k = kwargs.get('opponent_k', 7)
         max_episode_steps = kwargs.get('max_episode_steps', 90)
         device = kwargs.get('device', 'cuda')
@@ -163,6 +164,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.cfg = cfg
         self.scenario_data_dir = scenario_data_dir
         self.preprocess_dir = preprocess_dir
+        self.preproc_cache_size = preproc_cache_size
         opponent_runtime_mode = kwargs.get('opponent_runtime_mode', 'normal')
         
         # Vehicle map path (for loading pre-computed ego/opponent IDs)
@@ -179,7 +181,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._vehicle_map_cache = None
         
         # ========== Data bridge ==========
-        self.data_bridge = DataBridge(cfg, preprocess_dir)
+        self.data_bridge = DataBridge(
+            cfg,
+            preprocess_dir,
+            preproc_cache_size=preproc_cache_size,
+        )
         
         # ========== Opponent policy adapter ==========
         self.opponent = CtrlSimOpponentAdapter(

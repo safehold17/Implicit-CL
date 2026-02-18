@@ -11,6 +11,7 @@ import os
 import sys
 import glob
 import pickle
+from collections import OrderedDict
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
@@ -32,7 +33,12 @@ class DataBridge:
     - evaluators/policy_evaluator.py: load test_filenames.pkl to index scenarios
     """
     
-    def __init__(self, cfg: Any, preprocess_dir: str):
+    def __init__(
+        self,
+        cfg: Any,
+        preprocess_dir: str,
+        preproc_cache_size: int = 64,
+    ):
         """
         Args:
             cfg: Hydra
@@ -40,6 +46,7 @@ class DataBridge:
         """
         self.cfg = cfg
         self.preprocess_dir = preprocess_dir
+        self.preproc_cache_size = max(0, int(preproc_cache_size))
         self.dt = cfg.nocturne.dt
         self.steps = cfg.nocturne.steps
         self.cfg_dataset = cfg.dataset.waymo
@@ -57,7 +64,7 @@ class DataBridge:
         
         # Preprocessed files cache
         self._preprocessed_files_cache: Optional[Dict[str, str]] = None
-        self._preproc_data_cache: Dict[str, Dict] = {}
+        self._preproc_data_cache: OrderedDict[str, Dict] = OrderedDict()
     
     def _ensure_preprocessed_files_cache(self):
         """Lazy initialize preprocessed files cache, mapping scenario_id -> file_path"""
@@ -186,9 +193,11 @@ class DataBridge:
         scenario_id = os.path.splitext(scenario_filename)[0]
         self._ensure_preprocessed_files_cache()
         
-        # Check cache
-        if scenario_id in self._preproc_data_cache:
-            return self._preproc_data_cache[scenario_id], True
+        # Check LRU cache
+        if self.preproc_cache_size > 0 and scenario_id in self._preproc_data_cache:
+            preproc_data = self._preproc_data_cache.pop(scenario_id)
+            self._preproc_data_cache[scenario_id] = preproc_data
+            return preproc_data, True
         
         # Look for preprocessed file
         if scenario_id not in self._preprocessed_files_cache:
@@ -201,8 +210,13 @@ class DataBridge:
             idx = self.preprocessed_dset.files.index(filepath)
             preproc_data = self.preprocessed_dset[idx]
             
-            # cache results
-            self._preproc_data_cache[scenario_id] = preproc_data
+            # cache results with LRU eviction
+            if self.preproc_cache_size > 0:
+                if scenario_id in self._preproc_data_cache:
+                    self._preproc_data_cache.pop(scenario_id)
+                self._preproc_data_cache[scenario_id] = preproc_data
+                if len(self._preproc_data_cache) > self.preproc_cache_size:
+                    self._preproc_data_cache.popitem(last=False)
             
             return preproc_data, True
             

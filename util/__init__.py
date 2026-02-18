@@ -184,6 +184,7 @@ def _make_env(args):
             'opponent_checkpoint': getattr(args, 'opponent_checkpoint', 'checkpoints/model.ckpt'),
             'scenario_data_dir': getattr(args, 'scenario_data_dir', 'data/nocturne_waymo/formatted_json_v2_no_tl_train'),
             'preprocess_dir': getattr(args, 'preprocess_dir', 'data/preprocess'),
+            'preproc_cache_size': getattr(args, 'preproc_cache_size', 64),
             'opponent_k': getattr(args, 'opponent_vehicle_number', 7),
             'vehicle_map_path': getattr(args, 'vehicle_map_path', 'data/vehicle_map_valid.json'),
             'max_episode_steps': max_episode_steps,
