@@ -225,6 +225,8 @@ class FileWriter:
         self._tb_single_write_metric_map = {
             "train/mean_agent_return": "mean_agent_return",
             "train/agent_value_loss": "agent_value_loss",
+            "train/agent_pg_loss": "agent_pg_loss",
+            "train/agent_dist_entropy": "agent_dist_entropy",
             "train/update_reward": "update_reward",
             "train/plr_update_reward": "plr_update_reward",
         }
@@ -232,6 +234,8 @@ class FileWriter:
         self._tb_process_avg_metric_map = {
             "train/progress": "progress",
             "train/plr_progress": "plr_progress",
+            "env/opponent_vehicle_num": "opponent_vehicle_num",
+            "env/plr_opponent_vehicle_num": "plr_opponent_vehicle_num",
             "env/veh_goal_avg": "veh_goal_avg",
             "env/plr_veh_goal_avg": "plr_veh_goal_avg",
             "env/veh_veh_avg": "veh_veh_avg",
