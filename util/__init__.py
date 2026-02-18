@@ -307,7 +307,11 @@ def is_dense_reward_env(env_name):
         return False
 
 
-def make_plr_args(args, obs_space, action_space):
+def make_plr_args(args, obs_space, action_space, use_warmup_buffer: bool=False):
+    seed_buffer_size = args.level_replay_seed_buffer_size
+    if use_warmup_buffer:
+        seed_buffer_size = args.warm_up_level_replay_seed_buffer_size
+
     return dict( 
         seeds=[], 
         obs_space=obs_space, 
@@ -325,7 +329,7 @@ def make_plr_args(args, obs_space, action_space):
         staleness_transform=args.staleness_transform,
         staleness_temperature=args.staleness_temperature,
         sample_full_distribution=args.train_full_distribution,
-        seed_buffer_size=args.level_replay_seed_buffer_size,
+        seed_buffer_size=seed_buffer_size,
         seed_buffer_priority=args.level_replay_seed_buffer_priority,
         use_dense_rewards=is_dense_reward_env(args.env_name),
         gamma=args.gamma

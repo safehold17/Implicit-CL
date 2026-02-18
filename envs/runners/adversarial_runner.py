@@ -94,55 +94,83 @@ class AdversarialRunner(object):
         self.use_accel_paired = args.use_accel_paired
 
         # Set up PLR
+        self._plr_args = plr_args
         self.level_store = None
         self.level_samplers = {}
         self.current_level_seeds = None
+        self._default_level_sampler = None
         self.weighted_num_edits = 0
         self.latest_env_stats = defaultdict(float)
         self.latest_env_process_stats = []
-        if plr_args:
-            if self.is_paired:
-                if not args.protagonist_plr and not args.antagonist_plr:
-                    self.level_samplers.update({
-                        'agent': LevelSampler(**plr_args),
-                        'adversary_agent': LevelSampler(**plr_args)
-                    })
-                elif args.protagonist_plr:
-                    self.level_samplers['agent'] = LevelSampler(**plr_args)
-                elif args.antagonist_plr:
-                    self.level_samplers['adversary_agent'] = LevelSampler(**plr_args)
-            else:
-                self.level_samplers['agent'] = LevelSampler(**plr_args)
-
-            if self.use_byte_encoding:
-                example = self.ued_venv.get_encodings()[0]
-                data_info = {
-                    'numpy': True,
-                    'dtype': example.dtype,
-                    'shape': example.shape
-                }
-                self.level_store = LevelStore(data_info=data_info)
-            else:
-                self.level_store = LevelStore()
-
-            self.current_level_seeds = [-1 for i in range(args.num_processes)]
-
-            self._default_level_sampler = self.all_level_samplers[0]
-
-            self.use_editor = args.use_editor
-            self.edit_prob = args.level_editor_prob
-            self.base_levels = args.base_levels
-        else:
-            self.use_editor = False
-            self.edit_prob = 0
-            self.base_levels = None
+        self._init_or_reset_plr_state(self._plr_args)
 
         # Set up ALP-GMM
         if self.is_alp_gmm:
             self._init_alp_gmm()
 
-        # warm-up training not using PLR
-        self.plr_active = True  # default as true
+        # Runtime gate for PLR (enabled by default across stages).
+        self.plr_active = True
+
+    def _build_level_samplers(self, plr_args):
+        level_samplers = {}
+
+        if self.is_paired:
+            if not self.args.protagonist_plr and not self.args.antagonist_plr:
+                level_samplers.update({
+                    'agent': LevelSampler(**plr_args),
+                    'adversary_agent': LevelSampler(**plr_args)
+                })
+            elif self.args.protagonist_plr:
+                level_samplers['agent'] = LevelSampler(**plr_args)
+            elif self.args.antagonist_plr:
+                level_samplers['adversary_agent'] = LevelSampler(**plr_args)
+        else:
+            level_samplers['agent'] = LevelSampler(**plr_args)
+
+        return level_samplers
+
+    def _build_level_store(self):
+        if self.use_byte_encoding:
+            example = self.ued_venv.get_encodings()[0]
+            data_info = {
+                'numpy': True,
+                'dtype': example.dtype,
+                'shape': example.shape
+            }
+            return LevelStore(data_info=data_info)
+        return LevelStore()
+
+    def _init_or_reset_plr_state(self, plr_args):
+        self.level_store = None
+        self.level_samplers = {}
+        self.current_level_seeds = None
+        self._default_level_sampler = None
+
+        if not plr_args:
+            self.use_editor = False
+            self.edit_prob = 0
+            self.base_levels = None
+            return False
+
+        self.level_samplers = self._build_level_samplers(plr_args)
+        self.level_store = self._build_level_store()
+        self.current_level_seeds = [-1 for _ in range(self.args.num_processes)]
+
+        all_level_samplers = self.all_level_samplers
+        if all_level_samplers:
+            self._default_level_sampler = all_level_samplers[0]
+
+        self.use_editor = self.args.use_editor
+        self.edit_prob = self.args.level_editor_prob
+        self.base_levels = self.args.base_levels
+        return True
+
+    def reset_plr_buffers(self, plr_args=None):
+        if not self.args.use_plr:
+            return False
+        if plr_args is not None:
+            self._plr_args = plr_args
+        return self._init_or_reset_plr_state(self._plr_args)
 
     @property
     def plr_runtime_enabled(self) -> bool:

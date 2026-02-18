@@ -694,7 +694,7 @@ parser.add_argument(
 parser.add_argument(
     '--veh_veh_collision_rew_multiplier',
     type=float,
-    default=12.0,
+    default=10.0,
     help='Collision penalty multiplier for vehicle-vehicle collisions (ctrl-sim default).')
 parser.add_argument(
     '--veh_edge_collision_rew_multiplier',
@@ -704,7 +704,7 @@ parser.add_argument(
 parser.add_argument(
     '--pos_target_achieved_rew_multiplier',
     type=float,
-    default=8.0,
+    default=10.0,
     help='Goal position achieved reward multiplier for student reward (ctrl-sim default).')
 parser.add_argument(
     '--shaped_goal_distance_scaling',
@@ -765,6 +765,11 @@ parser.add_argument(
     type=float,
     default=1.0,
     help='Warmup ratio for opponent-replay stage (fraction of num_env_steps).')
+parser.add_argument(
+    '--warm_up_level_replay_seed_buffer_size',
+    type=int,
+    default=4000,
+    help='PLR level buffer size used during warm-up stages (disable/replay).')
 
 # ============== render options ==============
 parser.add_argument(

@@ -233,6 +233,7 @@ if __name__ == '__main__':
         'level_replay_prob': 0.0,
         'level_replay_rho': 1.0,
         'level_replay_seed_buffer_size': 5000,
+        'warm_up_level_replay_seed_buffer_size': 4000,
         'level_replay_score_transform': "rank",
         'level_replay_temperature': 0.1,
         'staleness_coef': 0.3,
@@ -297,4 +298,3 @@ if __name__ == '__main__':
 
     if args.count:
         print(f'Generated {len(unique_xpids)} unique commands.')
-
