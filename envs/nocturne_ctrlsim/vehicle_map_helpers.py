@@ -29,7 +29,7 @@ def load_vehicle_map(env) -> Optional[Dict]:
 
 def load_vehicle_ids_for_scenario(
     env, scenario_id: str
-) -> Tuple[int, List[int], str]:
+) -> Tuple[int, List[int], str, int]:
     """
     Load ego vehicle ID and opponent vehicle IDs for a scenario.
 
@@ -53,6 +53,7 @@ def load_vehicle_ids_for_scenario(
 
     ego_id = scenario_data.get("ego_vehicle_id")
     opponent_ids = scenario_data.get("opponent_vehicle_ids", [])
+    opponent_vehicle_num = scenario_data.get("opponent_vehicle_num")
     ego_selection_mode = scenario_data.get("ego_selection_mode", "unknown")
     if ego_selection_mode not in ("interesting", "dense"):
         ego_selection_mode = "unknown"
@@ -70,5 +71,15 @@ def load_vehicle_ids_for_scenario(
         raise ValueError(
             f"opponent_vehicle_ids for scenario '{scenario_id}' must be a list, got {type(opponent_ids)}."
         )
+    if opponent_vehicle_num is None:
+        raise ValueError(
+            f"opponent_vehicle_num is missing for scenario '{scenario_id}' "
+            f"in vehicle map '{env.vehicle_map_path}'."
+        )
 
-    return int(ego_id), [int(vid) for vid in opponent_ids], ego_selection_mode
+    return (
+        int(ego_id),
+        [int(vid) for vid in opponent_ids],
+        ego_selection_mode,
+        int(opponent_vehicle_num),
+    )

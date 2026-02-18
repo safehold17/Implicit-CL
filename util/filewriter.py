@@ -262,6 +262,8 @@ class FileWriter:
             'goal_reached',
             'progress',
             'plr_progress',
+            'opponent_vehicle_num',
+            'plr_opponent_vehicle_num',
             'steps',
             'total_episodes',
             'episode_reward',

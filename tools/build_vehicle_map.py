@@ -7,7 +7,8 @@ Output format:
         "scenario_id": {
             "ego_vehicle_id": int or null,
             "ego_selection_mode": "interesting" | "dense" | "unknown",
-            "opponent_vehicle_ids": [int, ...] or []
+            "opponent_vehicle_ids": [int, ...] or [],
+            "opponent_vehicle_num": int
         },
         ...
     }
@@ -49,6 +50,50 @@ def _load_scenario_index(index_path: str) -> Tuple[List[str], Optional[str]]:
     if not isinstance(scenario_ids, list):
         raise ValueError("scenarios_index.json missing 'scenario_ids' list")
     return scenario_ids, source_dir
+
+
+def _find_degenerate_road_edge_segment(
+    scenario_path: str,
+    eps: float = 1e-12,
+) -> Optional[Tuple[int, int, Tuple[float, float], Tuple[float, float], float]]:
+    """
+    Find the first degenerate road_edge segment in one scenario file.
+
+    A segment is considered degenerate when two adjacent geometry points are
+    identical (or near-identical within eps).
+    """
+    with open(scenario_path, "r") as f:
+        scenario_data = json.load(f)
+
+    roads = scenario_data.get("roads")
+    if not isinstance(roads, list):
+        return None
+
+    eps_sq = eps * eps
+    for road_idx, road in enumerate(roads):
+        if not isinstance(road, dict) or road.get("type") != "road_edge":
+            continue
+        geometry = road.get("geometry")
+        if not isinstance(geometry, list) or len(geometry) < 2:
+            continue
+
+        for seg_idx in range(len(geometry) - 1):
+            start = geometry[seg_idx]
+            end = geometry[seg_idx + 1]
+            if not isinstance(start, dict) or not isinstance(end, dict):
+                continue
+            if "x" not in start or "y" not in start or "x" not in end or "y" not in end:
+                continue
+
+            sx = float(start["x"])
+            sy = float(start["y"])
+            ex = float(end["x"])
+            ey = float(end["y"])
+            len_sq = (ex - sx) ** 2 + (ey - sy) ** 2
+            if len_sq <= eps_sq:
+                return road_idx, seg_idx, (sx, sy), (ex, ey), float(np.sqrt(len_sq))
+
+    return None
 
 
 def _find_interesting_pair(
@@ -401,7 +446,7 @@ def main() -> None:
     parser.add_argument(
         "--scenario_index_json",
         type=str,
-        default="/home/chen/workspace/dcd-ctrlsim/data/scenarios_index_valid.json",
+        default="/home/chen/workspace/dcd-ctrlsim/data/scenarios_index_train.json",
         help="Path to scenarios_index.json",
     )
     parser.add_argument(
@@ -413,13 +458,13 @@ def main() -> None:
     parser.add_argument(
         "--scenario_dir",
         type=str,
-        default="/home/chen/workspace/dcd-ctrlsim/data/nocturne_waymo/formatted_json_v2_no_tl_valid",
+        default="/home/chen/Downloads/data/nocturne_mini/formatted_json_v2_no_tl_train/formatted_json_v2_no_tl_train",
         help="Scenario directory (overrides config.yaml)",
     )
     parser.add_argument(
         "--preprocess_dir",
         type=str,
-        default=None,
+        default="/home/chen/Downloads/data/processed/training",
         help="Preprocessed data directory (required to filter vehicles by preprocessed data)",
     )
     parser.add_argument(
@@ -430,8 +475,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--filter_close_goal_point",
-        action="store_true",
-        help="Filter scenarios where ego start-goal distance is smaller than threshold.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Filter scenarios where ego start-goal distance is smaller than threshold. "
+            "Use --filter_close_goal_point or --no-filter_close_goal_point. "
+            "Default: true."
+        ),
     )
     parser.add_argument(
         "--close_goal_threshold_m",
@@ -469,6 +519,7 @@ def main() -> None:
     scenarios_with_preproc = 0
     scenarios_filtered = 0
     close_goal_filtered_scenarios = 0
+    degenerate_road_edge_scenarios = 0
     
     vehicle_map: Dict[str, Dict] = {}
     kept_scenario_ids: List[str] = []
@@ -483,15 +534,19 @@ def main() -> None:
         scenario_path = os.path.join(args.scenario_dir, scenario_filename)
         if not os.path.exists(scenario_path):
             print(f"Warning: scenario not found: {scenario_path}")
-            vehicle_map[scenario_id] = {
-                "ego_vehicle_id": None,
-                "ego_selection_mode": "unknown",
-                "opponent_vehicle_ids": [],
-            }
-            kept_scenario_ids.append(scenario_id)
             continue
 
         try:
+            degenerate_segment = _find_degenerate_road_edge_segment(scenario_path)
+            if degenerate_segment is not None:
+                road_idx, seg_idx, start, end, seg_len = degenerate_segment
+                degenerate_road_edge_scenarios += 1
+                print(
+                    f"  {scenario_id}: Skip degenerate road_edge segment "
+                    f"(road[{road_idx}] seg[{seg_idx}] start={start} end={end} len={seg_len})"
+                )
+                continue
+
             gt_data_dict = data_bridge.get_ground_truth(args.scenario_dir, scenario_filename)
             sim = data_bridge.create_simulation(args.scenario_dir, scenario_filename)
             scenario = sim.getScenario()
@@ -561,17 +616,12 @@ def main() -> None:
                 "ego_vehicle_id": ego_id,
                 "ego_selection_mode": ego_selection_mode,
                 "opponent_vehicle_ids": opponent_ids,
+                "opponent_vehicle_num": len(opponent_ids),
             }
             kept_scenario_ids.append(scenario_id)
             sim.reset()
         except Exception as e:
             print(f"Warning: failed to process {scenario_id}: {e}")
-            vehicle_map[scenario_id] = {
-                "ego_vehicle_id": None,
-                "ego_selection_mode": "unknown",
-                "opponent_vehicle_ids": [],
-            }
-            kept_scenario_ids.append(scenario_id)
 
     # Determine output path
     if args.output:
@@ -616,6 +666,8 @@ def main() -> None:
         print(f"Saved filtered scenario index to: {filtered_scenario_index_path}")
     print(f"\nStatistics:")
     print(f"  Total scenarios: {total_scenarios}")
+    print(f"  Degenerate-road-edge skipped scenarios: {degenerate_road_edge_scenarios}")
+    print(f"  Processed scenarios: {len(kept_scenario_ids)}")
     if args.filter_close_goal_point:
         print(f"  Close-goal filtered scenarios: {close_goal_filtered_scenarios}")
         print(f"  Remaining scenarios after close-goal filter: {len(kept_scenario_ids)}")

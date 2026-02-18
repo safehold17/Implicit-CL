@@ -250,6 +250,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.ego_vehicle = None
         self.opponent_vehicles: List = []
         self.opponent_vehicle_ids: List[int] = []
+        self.current_opponent_vehicle_num: int = 0
         self.ego_selection_mode: str = "unknown"
         
         # Ground truth and preprocessed data
@@ -279,7 +280,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._episode_progress: float = 0.0  # Target progress [0, 1]
         
         # Cache for last completed episode (for get_complexity_info)
-        self._last_completed_episode_info: Optional[Dict] = None
         self._last_completed_complexity_info: Optional[Dict] = None
         
         # Level parameters vector (for adversary building)
@@ -697,13 +697,19 @@ class NocturneCtrlSimAdversarial(gym.Env):
         }
         
         # Load vehicle IDs from map (strict mode: no dynamic fallback)
-        ego_id, opponent_ids, ego_selection_mode = load_vehicle_ids_for_scenario(self, level.scenario_id)
+        (
+            ego_id,
+            opponent_ids,
+            ego_selection_mode,
+            opponent_vehicle_num,
+        ) = load_vehicle_ids_for_scenario(self, level.scenario_id)
         self.ego_vehicle = get_vehicle_by_id(self, ego_id)
         if self.ego_vehicle is None:
             raise ValueError(
                 f"ego_vehicle_id {ego_id} from vehicle map does not exist in scenario '{level.scenario_id}'."
             )
         self.ego_selection_mode = ego_selection_mode
+        self.current_opponent_vehicle_num = int(opponent_vehicle_num)
         
         # Load preprocessed data (with check)
         self._preproc_data, file_exists = self.data_bridge.load_preprocessed_data(
@@ -1354,8 +1360,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     def close(self):
         """Close environment"""
-        # Clear cached episode statistics
-        self._last_completed_episode_info = None
+        # Clear cached episode snapshot
         self._last_completed_complexity_info = None
         
         # If recording, stop first

@@ -72,13 +72,11 @@ def get_info(env) -> Dict[str, Any]:
     progress = max(progress, float(getattr(env, '_episode_progress', 0.0)))
 
     if done:
-        # Cache completed episode statistics for get_complexity_info().
-        # Keep scenario metadata and episode stats in one atomic snapshot
+        # Cache an atomic completed-episode snapshot for get_complexity_info()
         # so downstream logging never mixes new scenario_id with old stats.
-        env._last_completed_episode_info = build_episode_stats(env)
         env._last_completed_complexity_info = build_complexity_snapshot(
             env,
-            env._last_completed_episode_info,
+            build_episode_stats(env),
         )
 
     info = {
@@ -120,8 +118,7 @@ def get_complexity_info(env) -> Dict[str, Any]:
     Prioritizes returning cached data from the last completed episode to avoid
     returning zeros when called immediately after reset.
     """
-    # Episode statistics: prioritize cached completed episode data.
-    # The cache stores a full snapshot, including scenario context.
+    # Prioritize cached completed episode snapshot.
     if env._last_completed_complexity_info is not None:
         return dict(env._last_completed_complexity_info)
 
@@ -153,6 +150,7 @@ def build_level_context(env) -> Dict[str, Any]:
         'scenario_id': env.current_level.scenario_id,
         'seed': env.current_level.seed,
         'opponent_k': env.opponent_k,
+        'opponent_vehicle_num': int(getattr(env, 'current_opponent_vehicle_num', 0)),
         'scenario_pool_size': len(env.scenario_ids),
     }
 
