@@ -165,6 +165,10 @@ class VecPreprocessImageWrapper(VecEnvWrapper):
 		obs = self.venv.reset_to_level_batch(level)
 		return self._preprocess(obs, obs_key=self.obs_key)
 
+	def reset_to_level_indices(self, levels, indices):
+		obs = self.venv.reset_to_level_indices(levels, indices)
+		return self._preprocess(obs, obs_key=self.obs_key)
+
 	def mutate_level(self, num_edits=None):
 		obs = self.venv.mutate_level(num_edits=num_edits)
 		return self._preprocess(obs, obs_key=self.obs_key)

@@ -367,6 +367,21 @@ class ParallelAdversarialVecEnv(SubprocVecEnv):
         obs = _flatten_list(obs)
         return _flatten_obs(obs)
 
+    def reset_to_level_indices(self, levels, indices):
+        self._assert_not_closed()
+        if len(levels) != len(indices):
+            raise ValueError(
+                f"levels and indices must have the same length, got {len(levels)} and {len(indices)}"
+            )
+
+        remotes = [self.remotes[i] for i in indices]
+        [remote.send(('reset_to_level', level)) for remote, level in zip(remotes, levels)]
+        self.waiting = True
+        obs = [remote.recv() for remote in remotes]
+        self.waiting = False
+        obs = _flatten_list(obs)
+        return _flatten_obs(obs)
+
     # mutate level
     def mutate_level(self, num_edits=None):
         self._assert_not_closed()

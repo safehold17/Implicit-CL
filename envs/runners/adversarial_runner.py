@@ -845,6 +845,8 @@ class AdversarialRunner(object):
 
             if level_sampler and level_replay:
                 next_level_seeds = [s for s in self.current_level_seeds]
+                reset_level_indices = []
+                reset_levels = []
                 
             for i, info in enumerate(infos):
                 if 'episode' in info.keys():
@@ -875,23 +877,37 @@ class AdversarialRunner(object):
                             if self.use_accel_paired:
                                 level_seed = self.current_level_seeds[i]
                                 level = self.level_store.get_level(level_seed)
-                                obs_i = self.venv.reset_to_level(level, i)
-                                set_obs_at_index(obs, obs_i, i)
                                 next_level_seeds[i] = level_seed
                                 rollout_info['solved_idx'][i] = True
                                 self.current_level_seeds[i] = level_seed
                             else:
                                 level_seed = level_sampler.sample_replay_level()
                                 level = self.level_store.get_level(level_seed)
-                                obs_i = self.venv.reset_to_level(level, i)
-                                set_obs_at_index(obs, obs_i, i)
                                 next_level_seeds[i] = level_seed
                                 rollout_info['solved_idx'][i] = True
+
+                            reset_level_indices.append(i)
+                            reset_levels.append(level)
 
                         # If using ALP-GMM, sample next level
                         if self.is_alp_gmm:
                             self.alp_gmm_teacher.record_train_episode(rollout_returns[i][-1], index=i)
                             self.alp_gmm_teacher.set_env_params(self.venv)
+
+            if level_sampler and level_replay and reset_level_indices:
+                reset_obs_batch = self.venv.reset_to_level_indices(
+                    reset_levels,
+                    reset_level_indices,
+                )
+                for batch_idx, env_idx in enumerate(reset_level_indices):
+                    if isinstance(reset_obs_batch, dict):
+                        obs_i = {
+                            k: v[batch_idx:batch_idx + 1]
+                            for k, v in reset_obs_batch.items()
+                        }
+                    else:
+                        obs_i = reset_obs_batch[batch_idx:batch_idx + 1]
+                    set_obs_at_index(obs, obs_i, env_idx)
 
             # If done then clean the history of observations.
             masks = torch.FloatTensor(
