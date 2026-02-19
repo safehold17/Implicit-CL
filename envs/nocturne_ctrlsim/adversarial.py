@@ -56,13 +56,6 @@ from adapters.ctrl_sim import (
     DataBridge,
     create_minimal_config,
 )
-
-
-def rand_int_seed() -> int:
-    # generate 4 bytes (32 bits) random number
-    return int.from_bytes(os.urandom(4), byteorder="little")
-
-
 class NocturneCtrlSimAdversarial(gym.Env):
     """
     DCD adversarial environment: Nocturne scenario + CtRL-Sim opponent
@@ -395,7 +388,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # ========== Encoding format ==========
         # Use string array, compatible with BipedalWalker
-        n_u_chars = max(12, len(str(rand_int_seed())))
+        n_u_chars = max(12, len(str(np.iinfo(np.int32).max)))
         self.encoding_u_chars = np.dtype(('U', n_u_chars))
         
         # ========== Metrics tracking ==========
@@ -413,6 +406,13 @@ class NocturneCtrlSimAdversarial(gym.Env):
             np.random.seed(seed)
         # Keep mutation randomness process-specific and reproducible.
         self._mutation_random_state = np.random.RandomState(seed)
+        # Keep level-seed generation reproducible and process-local.
+        self._level_seed_random_state = np.random.RandomState(seed)
+
+    def _sample_level_seed(self) -> int:
+        """Sample a level seed from process-local RNG in int32 range."""
+        int32_max = np.iinfo(np.int32).max
+        return int(self._level_seed_random_state.randint(1, int32_max))
 
     def _set_level_seed(self, seed: int) -> int:
         """Set the current level seed tracked by the environment."""
@@ -487,7 +487,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.level_params_vec = self._init_level_params_vec()
         
         # Generate new level seed
-        self._set_level_seed(rand_int_seed())
+        self._set_level_seed(self._sample_level_seed())
         
         return self._build_adversary_obs()
 
@@ -892,7 +892,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
     def _sample_random_level(self) -> ScenarioLevel:
         """Randomly generate level"""
         scenario_id = np.random.choice(self.scenario_ids)
-        seed = rand_int_seed()
+        seed = self._sample_level_seed()
         runtime_mode = getattr(self, 'opponent_runtime_mode', 'normal')
 
         # In disable/replay runtime modes, tilting is not used by policy.
@@ -1083,7 +1083,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
 
         mutated = self._mutate_level_internal(base_level)
         # Ensure the mutated level carries a fresh seed for subsequent resets.
-        mutated = replace(mutated, seed=self._set_level_seed(rand_int_seed()))
+        mutated = replace(mutated, seed=self._set_level_seed(self._sample_level_seed()))
         return self.reset_to_level(mutated)
 
     def _mutate_level_internal(

@@ -9,7 +9,6 @@ import os
 import shutil
 import collections
 import timeit
-import random
 
 import numpy as np
 import torch
@@ -82,13 +81,6 @@ def cleanup_log_dir(log_dir, pattern='*'):
         files = glob.glob(os.path.join(log_dir, pattern))
         for f in files:
             os.remove(f)
-
-def seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -296,7 +288,7 @@ def create_parallel_env(args, adversary=True):
     if args.singleton_env:
         seeds = [args.seed]*args.num_processes
     else:
-        seeds = [i for i in range(args.num_processes)]
+        seeds = [args.seed + i for i in range(args.num_processes)]
     venv.set_seed(seeds)
 
     return venv, ued_venv
