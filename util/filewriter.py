@@ -339,21 +339,24 @@ class FileWriter:
         self.log_to_tensorboard(to_log)
 
     def log_level_weights(self, weights, seeds=None):
-        if self.record_seed_diffs:
+        if self.record_seed_diffs and seeds is not None:
+            curr_seeds = np.asarray(seeds)
             if self.seeds is None:
-                self.seeds = seeds.copy()
-                level_seed_log = {
-                    'new_seeds': " ".join([str(s) for s in self.seeds]),
-                    'new_seed_indices': " ".join([str(i) for i in range(len(self.seeds))]),
-                }
+                self.seeds = curr_seeds.copy()
+                new_seed_indices = np.arange(len(curr_seeds), dtype=np.int64)
             else:
-                new_seed_indices = np.nonzero(self.seeds - seeds)[0]
-                new_seeds = seeds[new_seed_indices]
-                self.seeds = seeds.copy()
-                level_seed_log = {
-                    'new_seeds': " ".join([str(s) for s in new_seeds]),
-                    'new_seed_indices': " ".join([str(i) for i in new_seed_indices]),
-                }
+                prev_seeds = np.asarray(self.seeds)
+                if prev_seeds.shape != curr_seeds.shape:
+                    new_seed_indices = np.arange(len(curr_seeds), dtype=np.int64)
+                else:
+                    new_seed_indices = np.flatnonzero(prev_seeds != curr_seeds)
+                self.seeds = curr_seeds.copy()
+
+            new_seeds = curr_seeds[new_seed_indices]
+            level_seed_log = {
+                'new_seeds': " ".join([str(s) for s in new_seeds]),
+                'new_seed_indices': " ".join([str(i) for i in new_seed_indices]),
+            }
             self._levelseedswriter.writerow(level_seed_log)
             self._levelseedsfile.flush()
 
