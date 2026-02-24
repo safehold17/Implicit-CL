@@ -10,7 +10,7 @@ dependencies:
   - swig
   - box2d-py=2.3.8
   - pip:
-      # ---- ctrl-sim (keep) ----
+      # ---- ctrl-sim----
       - hydra-core
       - hydra-submitit-launcher
       - ipdb
@@ -35,10 +35,11 @@ dependencies:
       - pytorch-lightning
       - torch_geometric
 
-      # ---- hard pins (match ctrl-sim anchors) ----
+      # ---- match ctrl-sim ----
       - torch==2.2.0
       - torchvision==0.17.0
       - torchaudio==2.2.0
+
       - numpy==1.23.0
       - scipy==1.12.0
       - gym_minigrid==1.2.2
@@ -47,13 +48,13 @@ dependencies:
       - tensorboard==2.16.2
       - protobuf==4.25.3
 
-      # ---- env API (unify) ----
+      # ---- env ----
       - gym==0.26.2
       - gymnasium==0.29.1
       - shimmy==0.2.1
       - pyglet==1.5.11
 
-      # ---- DCD migrated deps (no TensorFlow) ----
+      # ---- DCD (no TensorFlow) ----
       - cloudpickle==2.2.1
       - networkx==2.8.8
       - tqdm==4.66.1
@@ -61,6 +62,4 @@ dependencies:
       - cma==2.7.0
       - treelib==1.6.1
       - pandas==1.5.3
-
-      # ---- RL stack replacement (optional but recommended) ----
       - stable-baselines3==2.4.0
