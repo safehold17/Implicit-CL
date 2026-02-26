@@ -772,7 +772,7 @@ parser.add_argument(
 parser.add_argument(
     '--warmup_opponent_replay_ratio',
     type=float,
-    default=1.0,
+    default=0.2,
     help='Warmup ratio for opponent-replay stage (fraction of num_env_steps).')
 parser.add_argument(
     '--warm_up_level_replay_seed_buffer_size',
