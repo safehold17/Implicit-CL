@@ -19,7 +19,13 @@ import multiprocessing as mp
 import os
 import queue
 import sys
+import time
 from typing import Any, Dict, List, Optional, Tuple
+
+# Reduce per-process thread oversubscription in multiprocess mode.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import numpy as np
 from omegaconf import OmegaConf
@@ -445,10 +451,10 @@ def _determine_output_path(scenario_index_json: str, output: Optional[str]) -> s
     if output:
         return output
     if "valid" in scenario_index_json:
-        return os.path.join("data", "vehicle_map_valid.json")
+        return os.path.join("data", "vehicle_map_filtered_valid.json")
     if "train" in scenario_index_json:
-        return os.path.join("data", "vehicle_map_train.json")
-    return os.path.join("data", "vehicle_map.json")
+        return os.path.join("data", "vehicle_map_filtered_train.json")
+    return os.path.join("data", "vehicle_map_filtered.json")
 
 
 def _save_json(path: str, payload: Dict) -> None:
@@ -480,7 +486,6 @@ def _process_single_scenario(
     preprocess_dir: str,
     history_steps: int,
     max_episode_steps: int,
-    filter_close_goal_point: bool,
     close_goal_threshold_m: float,
 ) -> Dict[str, Any]:
     """Process one scenario and return structured result."""
@@ -566,28 +571,27 @@ def _process_single_scenario(
             history_steps,
         )
 
-        if filter_close_goal_point:
-            start_goal_dist = _compute_start_goal_distance(
-                ego_id=ego_id,
-                vehicles=vehicles,
-                gt_data_dict=gt_data_dict,
-                max_episode_steps=max_episode_steps,
-            )
-            if (
-                start_goal_dist is not None
-                and start_goal_dist < close_goal_threshold_m
-            ):
-                return {
-                    "status": "close_goal_filtered",
-                    "scenario_id": scenario_id,
-                    "detail": (
-                        f"start_goal_dist={start_goal_dist:.3f} < "
-                        f"{close_goal_threshold_m:.3f}"
-                    ),
-                    "warnings": warnings,
-                    "with_preproc": with_preproc,
-                    "vehicle_filtered": vehicle_filtered,
-                }
+        start_goal_dist = _compute_start_goal_distance(
+            ego_id=ego_id,
+            vehicles=vehicles,
+            gt_data_dict=gt_data_dict,
+            max_episode_steps=max_episode_steps,
+        )
+        if (
+            start_goal_dist is not None
+            and start_goal_dist < close_goal_threshold_m
+        ):
+            return {
+                "status": "close_goal_filtered",
+                "scenario_id": scenario_id,
+                "detail": (
+                    f"start_goal_dist={start_goal_dist:.3f} < "
+                    f"{close_goal_threshold_m:.3f}"
+                ),
+                "warnings": warnings,
+                "with_preproc": with_preproc,
+                "vehicle_filtered": vehicle_filtered,
+            }
 
         opponent_ids = _select_opponent_vehicle_ids(
             moving_veh_ids,
@@ -656,7 +660,6 @@ def _worker_loop(
             preprocess_dir=worker_cfg["preprocess_dir"],
             history_steps=history_steps,
             max_episode_steps=max_episode_steps,
-            filter_close_goal_point=worker_cfg["filter_close_goal_point"],
             close_goal_threshold_m=worker_cfg["close_goal_threshold_m"],
         )
         result_queue.put(result)
@@ -695,20 +698,10 @@ def main() -> None:
         help="Output file path (default: data/vehicle_map_valid.json or vehicle_map_train.json)",
     )
     parser.add_argument(
-        "--filter_close_goal_point",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Filter scenarios where ego start-goal distance is smaller than threshold. "
-            "Use --filter_close_goal_point or --no-filter_close_goal_point. "
-            "Default: true."
-        ),
-    )
-    parser.add_argument(
         "--close_goal_threshold_m",
         type=float,
         default=5.0,
-        help="Threshold in meters for --filter_close_goal_point (default: 5.0).",
+        help="Threshold in meters for close-goal filtering (default: 5.0).",
     )
     parser.add_argument(
         "--isolate_scenario_process",
@@ -724,6 +717,12 @@ def main() -> None:
         type=float,
         default=120.0,
         help="Timeout (seconds) for one scenario when isolation is enabled.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=32,
+        help="Number of worker processes in isolation mode (default: 16).",
     )
     parser.add_argument(
         "--checkpoint_every",
@@ -815,107 +814,248 @@ def main() -> None:
         )
         data_bridge = DataBridge(cfg, preprocess_dir=args.preprocess_dir or "")
         history_steps = int(getattr(cfg.nocturne, "history_steps", 10))
+    completed_flags = [False] * len(scenario_ids)
+    for done_idx in range(min(start_index, len(scenario_ids))):
+        completed_flags[done_idx] = True
+    next_done_index = min(start_index, len(scenario_ids))
+    last_checkpoint_done = next_done_index
 
-    worker_ctx = None
-    worker_process = None
-    task_queue = None
-    result_queue = None
+    def handle_result(scenario_id: str, result: Dict[str, Any]) -> None:
+        stats["total_scenarios"] += 1
+        if result.get("with_preproc"):
+            stats["scenarios_with_preproc"] += 1
+        if result.get("vehicle_filtered"):
+            stats["scenarios_filtered"] += 1
 
-    def stop_worker() -> None:
-        nonlocal worker_process, task_queue, result_queue
-        if worker_process is None:
+        for warning in result.get("warnings", []):
+            print(f"  {warning}")
+
+        status = result.get("status")
+        detail = result.get("detail", "")
+        if status == "ok":
+            vehicle_map[scenario_id] = result["vehicle_map_item"]
+        elif status == "degenerate_road_edge":
+            stats["degenerate_road_edge_scenarios"] += 1
+            print(f"  {scenario_id}: {detail}")
+        elif status == "close_goal_filtered":
+            stats["close_goal_filtered_scenarios"] += 1
+        elif status == "missing_scenario":
+            print(f"Warning: {detail}")
+        else:
+            stats["failed_scenarios"] += 1
+            failed_scenario_ids.append(scenario_id)
+            print(f"Warning: failed to process {scenario_id}: {detail}")
+
+    def mark_completed(idx: int) -> None:
+        nonlocal next_done_index
+        completed_flags[idx] = True
+        while next_done_index < len(scenario_ids) and completed_flags[next_done_index]:
+            next_done_index += 1
+
+    def maybe_save_checkpoint(force: bool = False) -> None:
+        nonlocal last_checkpoint_done
+        if args.checkpoint_every <= 0:
             return
-        if worker_process.is_alive():
-            try:
-                task_queue.put_nowait(None)
-            except Exception:
-                pass
-            worker_process.join(timeout=1.0)
-        if worker_process.is_alive():
-            worker_process.terminate()
-            worker_process.join(timeout=1.0)
-        worker_process = None
-        task_queue = None
-        result_queue = None
+        should_save = force or (
+            next_done_index - last_checkpoint_done >= args.checkpoint_every
+        )
+        if not should_save:
+            return
+        checkpoint_payload = {
+            "version": 1,
+            "scenario_index_json": args.scenario_index_json,
+            "scenario_dir": args.scenario_dir,
+            "next_index": next_done_index,
+            "vehicle_map": vehicle_map,
+            "kept_scenario_ids": [
+                sid for sid in scenario_ids[:next_done_index] if sid in vehicle_map
+            ],
+            "stats": stats,
+            "failed_scenario_ids": failed_scenario_ids,
+        }
+        _save_checkpoint(checkpoint_path, checkpoint_payload)
+        last_checkpoint_done = next_done_index
 
-    def start_worker() -> None:
-        nonlocal worker_ctx, worker_process, task_queue, result_queue
-        stop_worker()
+    if args.isolate_scenario_process:
+        worker_count = max(1, int(args.num_workers))
         worker_ctx = mp.get_context("spawn")
-        task_queue = worker_ctx.Queue(maxsize=1)
-        result_queue = worker_ctx.Queue(maxsize=1)
         worker_cfg = {
             "scenario_dir": args.scenario_dir,
             "preprocess_dir": args.preprocess_dir,
             "max_episode_steps": max_episode_steps,
-            "filter_close_goal_point": args.filter_close_goal_point,
             "close_goal_threshold_m": args.close_goal_threshold_m,
         }
-        worker_process = worker_ctx.Process(
-            target=_worker_loop,
-            args=(worker_cfg, task_queue, result_queue),
-            daemon=True,
-        )
-        worker_process.start()
+        workers: List[Dict[str, Any]] = []
 
-    if args.isolate_scenario_process:
-        start_worker()
+        def stop_worker(worker_idx: int) -> None:
+            worker = workers[worker_idx]
+            proc = worker.get("process")
+            task_q = worker.get("task_queue")
+            if proc is None:
+                return
+            if proc.is_alive():
+                try:
+                    task_q.put_nowait(None)
+                except Exception:
+                    pass
+                proc.join(timeout=1.0)
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=1.0)
+            worker["process"] = None
+            worker["task_queue"] = None
+            worker["result_queue"] = None
+            worker["active_idx"] = None
+            worker["active_scenario_id"] = None
+            worker["start_time"] = None
 
-    try:
-        for idx in tqdm(
+        def start_worker(worker_idx: int) -> None:
+            stop_worker(worker_idx)
+            task_q = worker_ctx.Queue(maxsize=1)
+            result_q = worker_ctx.Queue(maxsize=1)
+            proc = worker_ctx.Process(
+                target=_worker_loop,
+                args=(worker_cfg, task_q, result_q),
+                daemon=True,
+            )
+            proc.start()
+            workers[worker_idx] = {
+                "process": proc,
+                "task_queue": task_q,
+                "result_queue": result_q,
+                "active_idx": None,
+                "active_scenario_id": None,
+                "start_time": None,
+            }
+
+        for _ in range(worker_count):
+            workers.append(
+                {
+                    "process": None,
+                    "task_queue": None,
+                    "result_queue": None,
+                    "active_idx": None,
+                    "active_scenario_id": None,
+                    "start_time": None,
+                }
+            )
+        for worker_idx in range(worker_count):
+            start_worker(worker_idx)
+
+        next_dispatch_idx = start_index
+        progress_total = len(scenario_ids) - start_index
+        try:
+            with tqdm(
+                total=progress_total,
+                desc="Building vehicle map",
+                unit="scenario",
+                dynamic_ncols=True,
+            ) as pbar:
+                while next_done_index < len(scenario_ids):
+                    progress_made = False
+
+                    for worker_idx, worker in enumerate(workers):
+                        if worker["active_idx"] is not None:
+                            continue
+                        if next_dispatch_idx >= len(scenario_ids):
+                            break
+                        scenario_id = scenario_ids[next_dispatch_idx]
+                        worker["task_queue"].put(scenario_id)
+                        worker["active_idx"] = next_dispatch_idx
+                        worker["active_scenario_id"] = scenario_id
+                        worker["start_time"] = time.monotonic()
+                        next_dispatch_idx += 1
+                        progress_made = True
+
+                    for worker_idx, worker in enumerate(workers):
+                        active_idx = worker["active_idx"]
+                        if active_idx is None:
+                            continue
+                        scenario_id = worker["active_scenario_id"]
+                        try:
+                            result = worker["result_queue"].get_nowait()
+                            handle_result(scenario_id, result)
+                            mark_completed(active_idx)
+                            worker["active_idx"] = None
+                            worker["active_scenario_id"] = None
+                            worker["start_time"] = None
+                            pbar.update(1)
+                            maybe_save_checkpoint()
+                            progress_made = True
+                            continue
+                        except queue.Empty:
+                            pass
+                        except Exception as e:
+                            stats["worker_crash_scenarios"] += 1
+                            result = {
+                                "status": "worker_crash",
+                                "scenario_id": scenario_id,
+                                "detail": f"Worker communication failed: {e}",
+                                "warnings": [],
+                                "with_preproc": False,
+                                "vehicle_filtered": False,
+                            }
+                            handle_result(scenario_id, result)
+                            mark_completed(active_idx)
+                            pbar.update(1)
+                            maybe_save_checkpoint()
+                            start_worker(worker_idx)
+                            progress_made = True
+                            continue
+
+                        proc = worker["process"]
+                        elapsed = time.monotonic() - worker["start_time"]
+                        if proc is None or not proc.is_alive():
+                            stats["worker_crash_scenarios"] += 1
+                            result = {
+                                "status": "worker_crash",
+                                "scenario_id": scenario_id,
+                                "detail": "Worker process crashed (possible native SIGFPE)",
+                                "warnings": [],
+                                "with_preproc": False,
+                                "vehicle_filtered": False,
+                            }
+                            handle_result(scenario_id, result)
+                            mark_completed(active_idx)
+                            pbar.update(1)
+                            maybe_save_checkpoint()
+                            start_worker(worker_idx)
+                            progress_made = True
+                        elif elapsed > args.scenario_timeout_s:
+                            stats["timeout_scenarios"] += 1
+                            result = {
+                                "status": "timeout",
+                                "scenario_id": scenario_id,
+                                "detail": (
+                                    f"Scenario timed out after "
+                                    f"{args.scenario_timeout_s:.1f}s"
+                                ),
+                                "warnings": [],
+                                "with_preproc": False,
+                                "vehicle_filtered": False,
+                            }
+                            handle_result(scenario_id, result)
+                            mark_completed(active_idx)
+                            pbar.update(1)
+                            maybe_save_checkpoint()
+                            start_worker(worker_idx)
+                            progress_made = True
+
+                    if not progress_made:
+                        time.sleep(0.01)
+        finally:
+            for worker_idx in range(worker_count):
+                stop_worker(worker_idx)
+            maybe_save_checkpoint(force=True)
+    else:
+        with tqdm(
             range(start_index, len(scenario_ids)),
             desc="Building vehicle map",
             unit="scenario",
             dynamic_ncols=True,
-        ):
-            scenario_id = scenario_ids[idx]
-            stats["total_scenarios"] += 1
-
-            if args.isolate_scenario_process:
-                if worker_process is None or not worker_process.is_alive():
-                    start_worker()
-                try:
-                    task_queue.put(scenario_id)
-                    result = result_queue.get(timeout=args.scenario_timeout_s)
-                except queue.Empty:
-                    if worker_process is not None and worker_process.is_alive():
-                        worker_process.terminate()
-                        worker_process.join(timeout=1.0)
-                        stats["timeout_scenarios"] += 1
-                        result = {
-                            "status": "timeout",
-                            "scenario_id": scenario_id,
-                            "detail": (
-                                f"Scenario timed out after "
-                                f"{args.scenario_timeout_s:.1f}s"
-                            ),
-                            "warnings": [],
-                            "with_preproc": False,
-                            "vehicle_filtered": False,
-                        }
-                    else:
-                        stats["worker_crash_scenarios"] += 1
-                        result = {
-                            "status": "worker_crash",
-                            "scenario_id": scenario_id,
-                            "detail": "Worker process crashed (possible native SIGFPE)",
-                            "warnings": [],
-                            "with_preproc": False,
-                            "vehicle_filtered": False,
-                        }
-                    start_worker()
-                except Exception as e:
-                    stats["worker_crash_scenarios"] += 1
-                    result = {
-                        "status": "worker_crash",
-                        "scenario_id": scenario_id,
-                        "detail": f"Worker communication failed: {e}",
-                        "warnings": [],
-                        "with_preproc": False,
-                        "vehicle_filtered": False,
-                    }
-                    start_worker()
-            else:
+        ) as pbar_range:
+            for idx in pbar_range:
+                scenario_id = scenario_ids[idx]
                 result = _process_single_scenario(
                     scenario_id=scenario_id,
                     data_bridge=data_bridge,
@@ -923,92 +1063,38 @@ def main() -> None:
                     preprocess_dir=args.preprocess_dir,
                     history_steps=history_steps,
                     max_episode_steps=max_episode_steps,
-                    filter_close_goal_point=args.filter_close_goal_point,
                     close_goal_threshold_m=args.close_goal_threshold_m,
                 )
-
-            if result.get("with_preproc"):
-                stats["scenarios_with_preproc"] += 1
-            if result.get("vehicle_filtered"):
-                stats["scenarios_filtered"] += 1
-
-            for warning in result.get("warnings", []):
-                print(f"  {warning}")
-
-            status = result.get("status")
-            detail = result.get("detail", "")
-            if status == "ok":
-                vehicle_map[scenario_id] = result["vehicle_map_item"]
-                kept_scenario_ids.append(scenario_id)
-            elif status == "degenerate_road_edge":
-                stats["degenerate_road_edge_scenarios"] += 1
-                print(f"  {scenario_id}: {detail}")
-            elif status == "close_goal_filtered":
-                stats["close_goal_filtered_scenarios"] += 1
-            elif status == "missing_scenario":
-                print(f"Warning: {detail}")
-            else:
-                stats["failed_scenarios"] += 1
-                failed_scenario_ids.append(scenario_id)
-                print(f"Warning: failed to process {scenario_id}: {detail}")
-
-            if args.checkpoint_every > 0:
-                processed_count = idx + 1
-                if (
-                    processed_count % args.checkpoint_every == 0
-                    or processed_count == len(scenario_ids)
-                ):
-                    checkpoint_payload = {
-                        "version": 1,
-                        "scenario_index_json": args.scenario_index_json,
-                        "scenario_dir": args.scenario_dir,
-                        "next_index": processed_count,
-                        "vehicle_map": vehicle_map,
-                        "kept_scenario_ids": kept_scenario_ids,
-                        "stats": stats,
-                        "failed_scenario_ids": failed_scenario_ids,
-                    }
-                    _save_checkpoint(checkpoint_path, checkpoint_payload)
-    finally:
-        if args.isolate_scenario_process:
-            stop_worker()
+                handle_result(scenario_id, result)
+                mark_completed(idx)
+                maybe_save_checkpoint()
+        maybe_save_checkpoint(force=True)
     
     if not os.path.isdir("data"):
         raise FileNotFoundError("data directory not found for output")
+    kept_scenario_ids = [sid for sid in scenario_ids if sid in vehicle_map]
+    filtered_scenario_index_path = os.path.join("data", "scenarios_index_filtered.json")
+    filtered_index_data = {
+        "version": "1.0",
+        "source_dir": index_source_dir or args.scenario_dir,
+        "total_scenarios": len(kept_scenario_ids),
+        "scenario_ids": kept_scenario_ids,
+    }
     _save_json(output_path, vehicle_map)
-
-    if args.filter_close_goal_point:
-        filtered_vehicle_map_path = os.path.join("data", "vehicle_map_filtered.json")
-        filtered_scenario_index_path = os.path.join("data", "scenarios_index_filtered.json")
-
-        filtered_vehicle_map = {
-            sid: vehicle_map[sid] for sid in kept_scenario_ids if sid in vehicle_map
-        }
-        filtered_index_data = {
-            "version": "1.0",
-            "source_dir": index_source_dir or args.scenario_dir,
-            "total_scenarios": len(kept_scenario_ids),
-            "scenario_ids": kept_scenario_ids,
-        }
-
-        _save_json(filtered_vehicle_map_path, filtered_vehicle_map)
-        _save_json(filtered_scenario_index_path, filtered_index_data)
+    _save_json(filtered_scenario_index_path, filtered_index_data)
 
     if os.path.exists(checkpoint_path):
         os.remove(checkpoint_path)
     
     print(f"\n{'='*60}")
-    print(f"Saved vehicle map to: {output_path}")
-    if args.filter_close_goal_point:
-        print(f"Saved filtered vehicle map to: {filtered_vehicle_map_path}")
-        print(f"Saved filtered scenario index to: {filtered_scenario_index_path}")
+    print(f"Saved filtered vehicle map to: {output_path}")
+    print(f"Saved filtered scenario index to: {filtered_scenario_index_path}")
     print(f"\nStatistics:")
     print(f"  Total scenarios: {stats['total_scenarios']}")
     print(f"  Degenerate-road-edge skipped scenarios: {stats['degenerate_road_edge_scenarios']}")
     print(f"  Processed scenarios: {len(kept_scenario_ids)}")
-    if args.filter_close_goal_point:
-        print(f"  Close-goal filtered scenarios: {stats['close_goal_filtered_scenarios']}")
-        print(f"  Remaining scenarios after close-goal filter: {len(kept_scenario_ids)}")
+    print(f"  Close-goal filtered scenarios: {stats['close_goal_filtered_scenarios']}")
+    print(f"  Remaining scenarios after close-goal filter: {len(kept_scenario_ids)}")
     if args.preprocess_dir:
         print(f"  Scenarios with preprocessed data: {stats['scenarios_with_preproc']}")
         print(f"  Scenarios with filtered vehicles: {stats['scenarios_filtered']}")
