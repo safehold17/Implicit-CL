@@ -15,9 +15,11 @@ Output format:
 """
 import argparse
 import json
+import multiprocessing as mp
 import os
+import queue
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from omegaconf import OmegaConf
@@ -256,9 +258,6 @@ def _get_preproc_vehicle_ids(preproc_data, gt_data_dict: Dict) -> Optional[List[
     
     if rtgs is not None and gt_data_dict:
         import torch
-        if isinstance(rtgs, torch.Tensor):
-            rtgs = rtgs.cpu().numpy()
-        
         # RTG shape: (num_agents, steps, reward_components)
         if hasattr(rtgs, 'shape') and len(rtgs.shape) >= 1:
             num_agents_in_rtg = rtgs.shape[0]
@@ -441,6 +440,228 @@ def _compute_start_goal_distance(
     return float(np.linalg.norm(goal_pos - start_pos))
 
 
+def _determine_output_path(scenario_index_json: str, output: Optional[str]) -> str:
+    """Determine output path from args."""
+    if output:
+        return output
+    if "valid" in scenario_index_json:
+        return os.path.join("data", "vehicle_map_valid.json")
+    if "train" in scenario_index_json:
+        return os.path.join("data", "vehicle_map_train.json")
+    return os.path.join("data", "vehicle_map.json")
+
+
+def _save_json(path: str, payload: Dict) -> None:
+    """Save json payload to path."""
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
+def _save_checkpoint(path: str, payload: Dict[str, Any]) -> None:
+    """Save checkpoint atomically."""
+    temp_path = f"{path}.tmp"
+    with open(temp_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(temp_path, path)
+
+
+def _load_checkpoint(path: str) -> Optional[Dict[str, Any]]:
+    """Load checkpoint if exists."""
+    if not os.path.exists(path):
+        return None
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def _process_single_scenario(
+    scenario_id: str,
+    data_bridge: DataBridge,
+    scenario_dir: str,
+    preprocess_dir: str,
+    history_steps: int,
+    max_episode_steps: int,
+    filter_close_goal_point: bool,
+    close_goal_threshold_m: float,
+) -> Dict[str, Any]:
+    """Process one scenario and return structured result."""
+    scenario_filename = f"{scenario_id}.json"
+    scenario_path = os.path.join(scenario_dir, scenario_filename)
+    if not os.path.exists(scenario_path):
+        return {
+            "status": "missing_scenario",
+            "scenario_id": scenario_id,
+            "detail": f"scenario not found: {scenario_path}",
+            "warnings": [],
+            "with_preproc": False,
+            "vehicle_filtered": False,
+        }
+
+    degenerate_segment = _find_degenerate_road_edge_segment(scenario_path)
+    if degenerate_segment is not None:
+        road_idx, seg_idx, start, end, seg_len = degenerate_segment
+        return {
+            "status": "degenerate_road_edge",
+            "scenario_id": scenario_id,
+            "detail": (
+                f"Skip degenerate road_edge segment (road[{road_idx}] "
+                f"seg[{seg_idx}] start={start} end={end} len={seg_len})"
+            ),
+            "warnings": [],
+            "with_preproc": False,
+            "vehicle_filtered": False,
+        }
+
+    sim = None
+    warnings: List[str] = []
+    with_preproc = False
+    vehicle_filtered = False
+
+    try:
+        sim = data_bridge.create_simulation(scenario_dir, scenario_filename)
+        gt_data_dict = data_bridge.get_ground_truth_from_sim(sim, scenario_filename)
+        scenario = sim.getScenario()
+        vehicles = list(scenario.vehicles())
+        moving_veh_ids = [v.getID() for v in scenario.getObjectsThatMoved()]
+
+        if preprocess_dir:
+            try:
+                preproc_data, file_exists = data_bridge.load_preprocessed_data(scenario_id)
+                if file_exists and preproc_data is not None:
+                    with_preproc = True
+                    preproc_veh_ids = _get_preproc_vehicle_ids(preproc_data, gt_data_dict)
+                    if preproc_veh_ids is not None and len(preproc_veh_ids) > 0:
+                        preproc_veh_id_set = set(preproc_veh_ids)
+                        original_count = len(moving_veh_ids)
+                        moving_veh_ids = [
+                            vid for vid in moving_veh_ids if vid in preproc_veh_id_set
+                        ]
+                        if len(moving_veh_ids) < original_count:
+                            vehicle_filtered = True
+                            filtered_count = original_count - len(moving_veh_ids)
+                            warnings.append(
+                                f"{scenario_id}: Filtered {filtered_count} vehicles "
+                                f"(from {original_count} to {len(moving_veh_ids)}), "
+                                f"preproc has {len(preproc_veh_ids)} agents"
+                            )
+                        if len(moving_veh_ids) == 0:
+                            warnings.append(
+                                f"{scenario_id}: Warning - All vehicles filtered out! "
+                                f"Preproc has {len(preproc_veh_ids)} agents"
+                            )
+                    else:
+                        warnings.append(
+                            f"{scenario_id}: Warning - Cannot extract vehicle IDs from "
+                            "preprocessed data, using all moving vehicles"
+                        )
+            except Exception as e:
+                warnings.append(
+                    f"{scenario_id}: Warning - Failed to load preprocessed data: {e}"
+                )
+
+        ego_id, ego_selection_mode = _select_ego_vehicle_id(
+            moving_veh_ids,
+            gt_data_dict,
+            vehicles,
+            max_episode_steps,
+            history_steps,
+        )
+
+        if filter_close_goal_point:
+            start_goal_dist = _compute_start_goal_distance(
+                ego_id=ego_id,
+                vehicles=vehicles,
+                gt_data_dict=gt_data_dict,
+                max_episode_steps=max_episode_steps,
+            )
+            if (
+                start_goal_dist is not None
+                and start_goal_dist < close_goal_threshold_m
+            ):
+                return {
+                    "status": "close_goal_filtered",
+                    "scenario_id": scenario_id,
+                    "detail": (
+                        f"start_goal_dist={start_goal_dist:.3f} < "
+                        f"{close_goal_threshold_m:.3f}"
+                    ),
+                    "warnings": warnings,
+                    "with_preproc": with_preproc,
+                    "vehicle_filtered": vehicle_filtered,
+                }
+
+        opponent_ids = _select_opponent_vehicle_ids(
+            moving_veh_ids,
+            vehicles,
+            gt_data_dict,
+            ego_id,
+            history_steps,
+            k=7,
+            traj_len_threshold=60,
+        )
+
+        return {
+            "status": "ok",
+            "scenario_id": scenario_id,
+            "detail": "",
+            "warnings": warnings,
+            "with_preproc": with_preproc,
+            "vehicle_filtered": vehicle_filtered,
+            "vehicle_map_item": {
+                "ego_vehicle_id": ego_id,
+                "ego_selection_mode": ego_selection_mode,
+                "opponent_vehicle_ids": opponent_ids,
+                "opponent_vehicle_num": len(opponent_ids),
+            },
+        }
+    except Exception as e:
+        return {
+            "status": "failed",
+            "scenario_id": scenario_id,
+            "detail": str(e),
+            "warnings": warnings,
+            "with_preproc": with_preproc,
+            "vehicle_filtered": vehicle_filtered,
+        }
+    finally:
+        if sim is not None:
+            try:
+                sim.reset()
+            except Exception:
+                pass
+
+
+def _worker_loop(
+    worker_cfg: Dict[str, Any],
+    task_queue: Any,
+    result_queue: Any,
+) -> None:
+    """Worker process loop for isolated scenario execution."""
+    cfg = create_minimal_config(
+        checkpoint_path="",
+        scenario_dir=worker_cfg["scenario_dir"],
+        preprocess_dir=worker_cfg["preprocess_dir"],
+    )
+    data_bridge = DataBridge(cfg, preprocess_dir=worker_cfg["preprocess_dir"] or "")
+    history_steps = int(getattr(cfg.nocturne, "history_steps", 10))
+    max_episode_steps = int(worker_cfg["max_episode_steps"])
+
+    while True:
+        scenario_id = task_queue.get()
+        if scenario_id is None:
+            break
+        result = _process_single_scenario(
+            scenario_id=scenario_id,
+            data_bridge=data_bridge,
+            scenario_dir=worker_cfg["scenario_dir"],
+            preprocess_dir=worker_cfg["preprocess_dir"],
+            history_steps=history_steps,
+            max_episode_steps=max_episode_steps,
+            filter_close_goal_point=worker_cfg["filter_close_goal_point"],
+            close_goal_threshold_m=worker_cfg["close_goal_threshold_m"],
+        )
+        result_queue.put(result)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build vehicle map for scenarios")
     parser.add_argument(
@@ -489,6 +710,42 @@ def main() -> None:
         default=5.0,
         help="Threshold in meters for --filter_close_goal_point (default: 5.0).",
     )
+    parser.add_argument(
+        "--isolate_scenario_process",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Process scenarios in an isolated worker process to survive native crashes. "
+            "Use --isolate_scenario_process / --no-isolate_scenario_process."
+        ),
+    )
+    parser.add_argument(
+        "--scenario_timeout_s",
+        type=float,
+        default=120.0,
+        help="Timeout (seconds) for one scenario when isolation is enabled.",
+    )
+    parser.add_argument(
+        "--checkpoint_every",
+        type=int,
+        default=1000,
+        help="Checkpoint interval by processed scenario count. <=0 disables checkpointing.",
+    )
+    parser.add_argument(
+        "--checkpoint_path",
+        type=str,
+        default=None,
+        help="Checkpoint file path (default: <output>.checkpoint.json).",
+    )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Resume from checkpoint if exists. "
+            "Use --resume_from_checkpoint / --no-resume_from_checkpoint."
+        ),
+    )
     args = parser.parse_args()
 
     cfg_scenario_dir = _load_config_defaults(args.config)
@@ -505,140 +762,220 @@ def main() -> None:
     if len(scenario_ids) == 0:
         raise ValueError("No scenario_ids found in scenarios_index.json")
 
-    cfg = create_minimal_config(
-        checkpoint_path="",
-        scenario_dir=args.scenario_dir,
-        preprocess_dir=args.preprocess_dir,
-    )
-    data_bridge = DataBridge(cfg, preprocess_dir=args.preprocess_dir or "")
-    history_steps = int(getattr(cfg.nocturne, "history_steps", 10))
+    output_path = _determine_output_path(args.scenario_index_json, args.output)
+    checkpoint_path = args.checkpoint_path or f"{output_path}.checkpoint.json"
     max_episode_steps = 90
 
-    # 统计信息
-    total_scenarios = 0
-    scenarios_with_preproc = 0
-    scenarios_filtered = 0
-    close_goal_filtered_scenarios = 0
-    degenerate_road_edge_scenarios = 0
-    
+    # 统计信息与结果容器
     vehicle_map: Dict[str, Dict] = {}
     kept_scenario_ids: List[str] = []
-    for scenario_id in tqdm(
-        scenario_ids,
-        desc="Building vehicle map",
-        unit="scenario",
-        dynamic_ncols=True,
-    ):
-        total_scenarios += 1
-        scenario_filename = f"{scenario_id}.json"
-        scenario_path = os.path.join(args.scenario_dir, scenario_filename)
-        if not os.path.exists(scenario_path):
-            print(f"Warning: scenario not found: {scenario_path}")
-            continue
+    stats: Dict[str, int] = {
+        "total_scenarios": 0,
+        "scenarios_with_preproc": 0,
+        "scenarios_filtered": 0,
+        "close_goal_filtered_scenarios": 0,
+        "degenerate_road_edge_scenarios": 0,
+        "failed_scenarios": 0,
+        "timeout_scenarios": 0,
+        "worker_crash_scenarios": 0,
+    }
+    failed_scenario_ids: List[str] = []
+    start_index = 0
 
-        try:
-            degenerate_segment = _find_degenerate_road_edge_segment(scenario_path)
-            if degenerate_segment is not None:
-                road_idx, seg_idx, start, end, seg_len = degenerate_segment
-                degenerate_road_edge_scenarios += 1
+    if args.resume_from_checkpoint:
+        checkpoint = _load_checkpoint(checkpoint_path)
+        if checkpoint is not None:
+            if (
+                checkpoint.get("scenario_index_json") == args.scenario_index_json
+                and checkpoint.get("scenario_dir") == args.scenario_dir
+            ):
+                start_index = int(checkpoint.get("next_index", 0))
+                vehicle_map = checkpoint.get("vehicle_map", {})
+                kept_scenario_ids = checkpoint.get("kept_scenario_ids", [])
+                loaded_stats = checkpoint.get("stats", {})
+                for key in stats:
+                    stats[key] = int(loaded_stats.get(key, stats[key]))
+                failed_scenario_ids = checkpoint.get("failed_scenario_ids", [])
                 print(
-                    f"  {scenario_id}: Skip degenerate road_edge segment "
-                    f"(road[{road_idx}] seg[{seg_idx}] start={start} end={end} len={seg_len})"
+                    f"Resuming from checkpoint: index={start_index}/"
+                    f"{len(scenario_ids)}, path={checkpoint_path}"
                 )
-                continue
+            else:
+                print(
+                    f"Warning: checkpoint mismatch, ignored: {checkpoint_path}"
+                )
 
-            gt_data_dict = data_bridge.get_ground_truth(args.scenario_dir, scenario_filename)
-            sim = data_bridge.create_simulation(args.scenario_dir, scenario_filename)
-            scenario = sim.getScenario()
-            vehicles = list(scenario.vehicles())
-            moving_veh_ids = [v.getID() for v in scenario.getObjectsThatMoved()]
-            
-            # 加载预处理数据并过滤车辆
-            preproc_data = None
-            preproc_veh_ids = None
-            if args.preprocess_dir:
+    data_bridge: Optional[DataBridge] = None
+    history_steps = 10
+    if not args.isolate_scenario_process:
+        cfg = create_minimal_config(
+            checkpoint_path="",
+            scenario_dir=args.scenario_dir,
+            preprocess_dir=args.preprocess_dir,
+        )
+        data_bridge = DataBridge(cfg, preprocess_dir=args.preprocess_dir or "")
+        history_steps = int(getattr(cfg.nocturne, "history_steps", 10))
+
+    worker_ctx = None
+    worker_process = None
+    task_queue = None
+    result_queue = None
+
+    def stop_worker() -> None:
+        nonlocal worker_process, task_queue, result_queue
+        if worker_process is None:
+            return
+        if worker_process.is_alive():
+            try:
+                task_queue.put_nowait(None)
+            except Exception:
+                pass
+            worker_process.join(timeout=1.0)
+        if worker_process.is_alive():
+            worker_process.terminate()
+            worker_process.join(timeout=1.0)
+        worker_process = None
+        task_queue = None
+        result_queue = None
+
+    def start_worker() -> None:
+        nonlocal worker_ctx, worker_process, task_queue, result_queue
+        stop_worker()
+        worker_ctx = mp.get_context("spawn")
+        task_queue = worker_ctx.Queue(maxsize=1)
+        result_queue = worker_ctx.Queue(maxsize=1)
+        worker_cfg = {
+            "scenario_dir": args.scenario_dir,
+            "preprocess_dir": args.preprocess_dir,
+            "max_episode_steps": max_episode_steps,
+            "filter_close_goal_point": args.filter_close_goal_point,
+            "close_goal_threshold_m": args.close_goal_threshold_m,
+        }
+        worker_process = worker_ctx.Process(
+            target=_worker_loop,
+            args=(worker_cfg, task_queue, result_queue),
+            daemon=True,
+        )
+        worker_process.start()
+
+    if args.isolate_scenario_process:
+        start_worker()
+
+    try:
+        for idx in tqdm(
+            range(start_index, len(scenario_ids)),
+            desc="Building vehicle map",
+            unit="scenario",
+            dynamic_ncols=True,
+        ):
+            scenario_id = scenario_ids[idx]
+            stats["total_scenarios"] += 1
+
+            if args.isolate_scenario_process:
+                if worker_process is None or not worker_process.is_alive():
+                    start_worker()
                 try:
-                    preproc_data, file_exists = data_bridge.load_preprocessed_data(scenario_id)
-                    if file_exists and preproc_data is not None:
-                        scenarios_with_preproc += 1
-                        preproc_veh_ids = _get_preproc_vehicle_ids(preproc_data, gt_data_dict)
-                        if preproc_veh_ids is not None and len(preproc_veh_ids) > 0:
-                            # 只保留预处理数据中存在的车辆
-                            original_count = len(moving_veh_ids)
-                            moving_veh_ids = [vid for vid in moving_veh_ids if vid in preproc_veh_ids]
-                            if len(moving_veh_ids) < original_count:
-                                scenarios_filtered += 1
-                                filtered_count = original_count - len(moving_veh_ids)
-                                print(f"  {scenario_id}: Filtered {filtered_count} vehicles (from {original_count} to {len(moving_veh_ids)}), preproc has {len(preproc_veh_ids)} agents")
-                            elif len(moving_veh_ids) == 0:
-                                print(f"  {scenario_id}: Warning - All vehicles filtered out! Preproc has {len(preproc_veh_ids)} agents: {preproc_veh_ids}")
-                        else:
-                            print(f"  {scenario_id}: Warning - Cannot extract vehicle IDs from preprocessed data, using all moving vehicles")
+                    task_queue.put(scenario_id)
+                    result = result_queue.get(timeout=args.scenario_timeout_s)
+                except queue.Empty:
+                    if worker_process is not None and worker_process.is_alive():
+                        worker_process.terminate()
+                        worker_process.join(timeout=1.0)
+                        stats["timeout_scenarios"] += 1
+                        result = {
+                            "status": "timeout",
+                            "scenario_id": scenario_id,
+                            "detail": (
+                                f"Scenario timed out after "
+                                f"{args.scenario_timeout_s:.1f}s"
+                            ),
+                            "warnings": [],
+                            "with_preproc": False,
+                            "vehicle_filtered": False,
+                        }
+                    else:
+                        stats["worker_crash_scenarios"] += 1
+                        result = {
+                            "status": "worker_crash",
+                            "scenario_id": scenario_id,
+                            "detail": "Worker process crashed (possible native SIGFPE)",
+                            "warnings": [],
+                            "with_preproc": False,
+                            "vehicle_filtered": False,
+                        }
+                    start_worker()
                 except Exception as e:
-                    print(f"  {scenario_id}: Warning - Failed to load preprocessed data: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-            ego_id, ego_selection_mode = _select_ego_vehicle_id(
-                moving_veh_ids,
-                gt_data_dict,
-                vehicles,
-                max_episode_steps,
-                history_steps,
-            )
-
-            if args.filter_close_goal_point:
-                start_goal_dist = _compute_start_goal_distance(
-                    ego_id=ego_id,
-                    vehicles=vehicles,
-                    gt_data_dict=gt_data_dict,
+                    stats["worker_crash_scenarios"] += 1
+                    result = {
+                        "status": "worker_crash",
+                        "scenario_id": scenario_id,
+                        "detail": f"Worker communication failed: {e}",
+                        "warnings": [],
+                        "with_preproc": False,
+                        "vehicle_filtered": False,
+                    }
+                    start_worker()
+            else:
+                result = _process_single_scenario(
+                    scenario_id=scenario_id,
+                    data_bridge=data_bridge,
+                    scenario_dir=args.scenario_dir,
+                    preprocess_dir=args.preprocess_dir,
+                    history_steps=history_steps,
                     max_episode_steps=max_episode_steps,
+                    filter_close_goal_point=args.filter_close_goal_point,
+                    close_goal_threshold_m=args.close_goal_threshold_m,
                 )
-                if (
-                    start_goal_dist is not None
-                    and start_goal_dist < args.close_goal_threshold_m
-                ):
-                    close_goal_filtered_scenarios += 1
-                    sim.reset()
-                    continue
-            
-            opponent_ids = _select_opponent_vehicle_ids(
-                moving_veh_ids,
-                vehicles,
-                gt_data_dict,
-                ego_id,
-                history_steps,
-                k=7,
-                traj_len_threshold=60,
-            )
-            
-            vehicle_map[scenario_id] = {
-                "ego_vehicle_id": ego_id,
-                "ego_selection_mode": ego_selection_mode,
-                "opponent_vehicle_ids": opponent_ids,
-                "opponent_vehicle_num": len(opponent_ids),
-            }
-            kept_scenario_ids.append(scenario_id)
-            sim.reset()
-        except Exception as e:
-            print(f"Warning: failed to process {scenario_id}: {e}")
 
-    # Determine output path
-    if args.output:
-        output_path = args.output
-    else:
-        # Auto-detect based on input filename
-        if "valid" in args.scenario_index_json:
-            output_path = os.path.join("data", "vehicle_map_valid.json")
-        elif "train" in args.scenario_index_json:
-            output_path = os.path.join("data", "vehicle_map_train.json")
-        else:
-            output_path = os.path.join("data", "vehicle_map.json")
+            if result.get("with_preproc"):
+                stats["scenarios_with_preproc"] += 1
+            if result.get("vehicle_filtered"):
+                stats["scenarios_filtered"] += 1
+
+            for warning in result.get("warnings", []):
+                print(f"  {warning}")
+
+            status = result.get("status")
+            detail = result.get("detail", "")
+            if status == "ok":
+                vehicle_map[scenario_id] = result["vehicle_map_item"]
+                kept_scenario_ids.append(scenario_id)
+            elif status == "degenerate_road_edge":
+                stats["degenerate_road_edge_scenarios"] += 1
+                print(f"  {scenario_id}: {detail}")
+            elif status == "close_goal_filtered":
+                stats["close_goal_filtered_scenarios"] += 1
+            elif status == "missing_scenario":
+                print(f"Warning: {detail}")
+            else:
+                stats["failed_scenarios"] += 1
+                failed_scenario_ids.append(scenario_id)
+                print(f"Warning: failed to process {scenario_id}: {detail}")
+
+            if args.checkpoint_every > 0:
+                processed_count = idx + 1
+                if (
+                    processed_count % args.checkpoint_every == 0
+                    or processed_count == len(scenario_ids)
+                ):
+                    checkpoint_payload = {
+                        "version": 1,
+                        "scenario_index_json": args.scenario_index_json,
+                        "scenario_dir": args.scenario_dir,
+                        "next_index": processed_count,
+                        "vehicle_map": vehicle_map,
+                        "kept_scenario_ids": kept_scenario_ids,
+                        "stats": stats,
+                        "failed_scenario_ids": failed_scenario_ids,
+                    }
+                    _save_checkpoint(checkpoint_path, checkpoint_payload)
+    finally:
+        if args.isolate_scenario_process:
+            stop_worker()
     
     if not os.path.isdir("data"):
         raise FileNotFoundError("data directory not found for output")
-    with open(output_path, "w") as f:
-        json.dump(vehicle_map, f, indent=2)
+    _save_json(output_path, vehicle_map)
 
     if args.filter_close_goal_point:
         filtered_vehicle_map_path = os.path.join("data", "vehicle_map_filtered.json")
@@ -654,10 +991,11 @@ def main() -> None:
             "scenario_ids": kept_scenario_ids,
         }
 
-        with open(filtered_vehicle_map_path, "w") as f:
-            json.dump(filtered_vehicle_map, f, indent=2)
-        with open(filtered_scenario_index_path, "w") as f:
-            json.dump(filtered_index_data, f, indent=2)
+        _save_json(filtered_vehicle_map_path, filtered_vehicle_map)
+        _save_json(filtered_scenario_index_path, filtered_index_data)
+
+    if os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
     
     print(f"\n{'='*60}")
     print(f"Saved vehicle map to: {output_path}")
@@ -665,18 +1003,30 @@ def main() -> None:
         print(f"Saved filtered vehicle map to: {filtered_vehicle_map_path}")
         print(f"Saved filtered scenario index to: {filtered_scenario_index_path}")
     print(f"\nStatistics:")
-    print(f"  Total scenarios: {total_scenarios}")
-    print(f"  Degenerate-road-edge skipped scenarios: {degenerate_road_edge_scenarios}")
+    print(f"  Total scenarios: {stats['total_scenarios']}")
+    print(f"  Degenerate-road-edge skipped scenarios: {stats['degenerate_road_edge_scenarios']}")
     print(f"  Processed scenarios: {len(kept_scenario_ids)}")
     if args.filter_close_goal_point:
-        print(f"  Close-goal filtered scenarios: {close_goal_filtered_scenarios}")
+        print(f"  Close-goal filtered scenarios: {stats['close_goal_filtered_scenarios']}")
         print(f"  Remaining scenarios after close-goal filter: {len(kept_scenario_ids)}")
     if args.preprocess_dir:
-        print(f"  Scenarios with preprocessed data: {scenarios_with_preproc}")
-        print(f"  Scenarios with filtered vehicles: {scenarios_filtered}")
-        print(f"  Coverage: {scenarios_with_preproc}/{total_scenarios} = {100*scenarios_with_preproc/total_scenarios:.1f}%")
+        print(f"  Scenarios with preprocessed data: {stats['scenarios_with_preproc']}")
+        print(f"  Scenarios with filtered vehicles: {stats['scenarios_filtered']}")
+        if stats["total_scenarios"] > 0:
+            coverage = 100 * stats["scenarios_with_preproc"] / stats["total_scenarios"]
+            print(
+                f"  Coverage: {stats['scenarios_with_preproc']}/"
+                f"{stats['total_scenarios']} = {coverage:.1f}%"
+            )
     else:
         print(f"  Note: No preprocess_dir provided, no vehicle filtering applied")
+    print(f"  Failed scenarios: {stats['failed_scenarios']}")
+    if args.isolate_scenario_process:
+        print(f"  Timeout scenarios: {stats['timeout_scenarios']}")
+        print(f"  Worker-crash scenarios: {stats['worker_crash_scenarios']}")
+    if len(failed_scenario_ids) > 0:
+        failed_preview = ", ".join(failed_scenario_ids[:10])
+        print(f"  Failed scenario sample (up to 10): {failed_preview}")
     print(f"{'='*60}")
 
 
