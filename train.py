@@ -67,6 +67,19 @@ def init_clearml(args):
 
     task.connect(vars(args))
 
+    # Configure Docker environment for remote execution.
+    task.set_base_docker(
+        "nvcr.io/nvidia/pytorch:21.07-py3",
+        docker_setup_bash_script=[
+            "apt-get install -y libgl1 ffmpeg imagemagick",
+            "pip install numpy==1.19.5",
+            "pip install tensorflow==2.4.1",
+            "git clone https://github.com/openai/baselines.git",
+            "cd baselines && pip install -e .",
+        ],
+        docker_arguments="-e NVIDIA_DRIVER_CAPABILITIES=all --network=host",
+    )
+
     print('Using ClearML')
     return task
 
