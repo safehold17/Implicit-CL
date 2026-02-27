@@ -446,15 +446,36 @@ def _compute_start_goal_distance(
     return float(np.linalg.norm(goal_pos - start_pos))
 
 
-def _determine_output_path(scenario_index_json: str, output: Optional[str]) -> str:
-    """Determine output path from args."""
-    if output:
-        return output
+def _default_output_filename(scenario_index_json: str) -> str:
+    """Return default output filename by scenario split."""
     if "valid" in scenario_index_json:
-        return os.path.join("data", "vehicle_map_filtered_valid.json")
+        return "vehicle_map_filtered_valid.json"
     if "train" in scenario_index_json:
-        return os.path.join("data", "vehicle_map_filtered_train.json")
-    return os.path.join("data", "vehicle_map_filtered.json")
+        return "vehicle_map_filtered_train.json"
+    return "vehicle_map_filtered.json"
+
+
+def _determine_output_path(scenario_index_json: str, output: Optional[str]) -> str:
+    """Determine output file path from args.
+
+    Supports both:
+    - output as a file path (e.g. /tmp/vehicle_map.json)
+    - output as a directory path (e.g. /tmp/out_dir or /tmp/out_dir/)
+    """
+    default_filename = _default_output_filename(scenario_index_json)
+    if output:
+        output_abs = os.path.abspath(output)
+        output_base = os.path.basename(output.rstrip(os.sep))
+        has_extension = bool(os.path.splitext(output_base)[1])
+        is_directory_like = (
+            output.endswith(os.sep)
+            or os.path.isdir(output_abs)
+            or not has_extension
+        )
+        if is_directory_like:
+            return os.path.join(output, default_filename)
+        return output
+    return os.path.join("data", default_filename)
 
 
 def _save_json(path: str, payload: Dict) -> None:
@@ -763,6 +784,10 @@ def main() -> None:
 
     output_path = _determine_output_path(args.scenario_index_json, args.output)
     checkpoint_path = args.checkpoint_path or f"{output_path}.checkpoint.json"
+    output_dir = os.path.dirname(os.path.abspath(output_path)) or "."
+    checkpoint_dir = os.path.dirname(os.path.abspath(checkpoint_path)) or "."
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
     max_episode_steps = 90
 
     # 统计信息与结果容器
@@ -1070,10 +1095,10 @@ def main() -> None:
                 maybe_save_checkpoint()
         maybe_save_checkpoint(force=True)
     
-    if not os.path.isdir("data"):
-        raise FileNotFoundError("data directory not found for output")
     kept_scenario_ids = [sid for sid in scenario_ids if sid in vehicle_map]
-    filtered_scenario_index_path = os.path.join("data", "scenarios_index_filtered.json")
+    filtered_scenario_index_path = os.path.join(
+        output_dir, "scenarios_index_filtered.json"
+    )
     filtered_index_data = {
         "version": "1.0",
         "source_dir": index_source_dir or args.scenario_dir,
