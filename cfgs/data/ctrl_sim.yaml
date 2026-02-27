@@ -1,0 +1,29 @@
+# CtRL-Sim 路径配置
+# 用于覆盖 ctrl-sim 默认的 /scratch 路径
+
+ctrl_sim:
+  # 项目根目录（相对于当前配置文件）
+  project_root: ${oc.env:PWD,/home/chen/workspace/dcd-ctrlsim}
+  
+  # 数据集根目录
+  dataset_root: ${ctrl_sim.project_root}/data
+  
+  # Nocturne Waymo 数据路径
+  nocturne_waymo_data_folder: ${ctrl_sim.dataset_root}/nocturne_waymo
+  nocturne_waymo_train_folder: ${ctrl_sim.nocturne_waymo_data_folder}/formatted_json_v2_no_tl_train
+  nocturne_waymo_val_folder: ${ctrl_sim.nocturne_waymo_data_folder}/formatted_json_v2_no_tl_valid
+  nocturne_waymo_val_interactive_folder: ${ctrl_sim.nocturne_waymo_data_folder}/formatted_json_v2_no_tl_valid_interactive
+  
+  # 预处理数据目录
+  preprocess_dir: ${ctrl_sim.dataset_root}/ctrl_sim_preprocessed
+  
+  # 离线 RL 数据集路径
+  offline_rl:
+    dataset_path: ${ctrl_sim.dataset_root}/offline_rl
+    output_data_folder_train: ${ctrl_sim.dataset_root}/offline_rl/train
+    output_data_folder_val: ${ctrl_sim.dataset_root}/offline_rl/val
+    output_data_folder_val_interactive: ${ctrl_sim.dataset_root}/offline_rl/val_interactive
+  
+  # 仿真数据集路径
+  simulated_dataset: ${ctrl_sim.dataset_root}/cat_offline_rl_data
+  simulated_dataset_preprocessed_dir: ${ctrl_sim.dataset_root}/preprocessed_cat

@@ -642,40 +642,15 @@ parser.add_argument(
     metavar=('MIN', 'MAX'),
     help='Absolute tilt range for parameters, formatted as: MIN MAX (e.g., -25 25).')
 parser.add_argument(
-    '--scenario_index_path',
-    type=str,
-    default='data/scenarios_index.json',
-    help='The path to the Nocturne scenario index JSON file')
-parser.add_argument(
-    '--opponent_checkpoint',
-    type=str,
-    default='checkpoints/model.ckpt',
-    help='The path to the ctrl-sim opponent model checkpoint')
-parser.add_argument(
     '--opponent_vehicle_number',
     type=int,
     default=7,
     help='Number of opponent vehicles used for per-vehicle tilting (K).')
 parser.add_argument(
-    '--scenario_data_dir',
-    type=str,
-    default='data/nocturne_waymo/formatted_json_v2_no_tl_train',
-    help='The directory of the Nocturne scenario data')
-parser.add_argument(
-    '--preprocess_dir',
-    type=str,
-    default='data/preprocess/test',
-    help='The directory of the ctrl-sim preprocessed data')
-parser.add_argument(
     '--preproc_cache_size',
     type=int,
     default=64,
     help='LRU cache size for preprocessed scenario data in each Nocturne worker.')
-parser.add_argument(
-    '--vehicle_map_path',
-    type=str,
-    default='data/vehicle_map_valid.json',
-    help='The path to the vehicle map JSON file')
 parser.add_argument(
     '--nocturne_max_episode_steps',
     type=int,
@@ -793,3 +768,56 @@ parser.add_argument(
     '--show_ego_vehicle_selection',
     type=str2bool, nargs='?', const=True, default=True,
     help='Show ego vehicle selection mode text in level image.')
+
+# ============== data path ==============
+parser.add_argument(
+    '--scenario_index_path',
+    type=str,
+    default='data/scenarios_index.json',
+    help='The path to the Nocturne scenario index JSON file')
+parser.add_argument(
+    '--scenario_data_dir',
+    type=str,
+    default='data/nocturne_waymo/formatted_json_v2_no_tl_train',
+    help='The directory of the Nocturne scenario data')
+parser.add_argument(
+    '--preprocess_dir',
+    type=str,
+    default='data/preprocess/test',
+    help='The directory of the ctrl-sim preprocessed data')
+parser.add_argument(
+    '--opponent_checkpoint',
+    type=str,
+    default='checkpoints/model.ckpt',
+    help='The path to the ctrl-sim opponent model checkpoint')
+parser.add_argument(
+    '--vehicle_map_path',
+    type=str,
+    default='data/vehicle_map_valid.json',
+    help='The path to the vehicle map JSON file')
+
+# ============== ClearML ==============
+parser.add_argument(
+    '--use_clearml',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Enable ClearML experiment tracking.')
+parser.add_argument(
+    '--clearml_project',
+    type=str,
+    default='dcd-ctrlsim',
+    help='ClearML project name.')
+parser.add_argument(
+    '--clearml_task',
+    type=str,
+    default='train',
+    help='ClearML task name.')
+parser.add_argument(
+    '--clearml_dataset_project',
+    type=str,
+    default='',
+    help='ClearML dataset project name for downloading training data.')
+parser.add_argument(
+    '--clearml_dataset_name',
+    type=str,
+    default='',
+    help='ClearML dataset name for downloading training data.')

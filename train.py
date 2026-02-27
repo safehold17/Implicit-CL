@@ -34,14 +34,48 @@ from envs.box2d import *
 from envs.bipedalwalker import *
 from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim 环境（触发注册）
 from envs.runners.adversarial_runner import AdversarialRunner 
+from adapters.ctrl_sim.clearml_paths import download_clearml_dataset
 from util import make_agent, FileWriter, safe_checkpoint, create_parallel_env, make_plr_args, save_images
 from eval import Evaluator
+from clearml import Task
+
+
+def init_clearml(args):
+    """Initialize ClearML experiment tracking and resolve dataset paths.
+
+    Returns the ClearML Task object, or None when ClearML is disabled.
+    """
+    if not args.use_clearml:
+        print('Running locally (ClearML disabled)')
+        return None
+
+    task = Task.init(
+        project_name=args.clearml_project,
+        task_name=args.clearml_task,
+    )
+
+    # Download ClearML dataset and remap paths.
+    if args.clearml_dataset_project and args.clearml_dataset_name:
+        dataset_dir = download_clearml_dataset(
+            args.clearml_dataset_project, args.clearml_dataset_name,
+        )
+        for key in ('scenario_index_path', 'scenario_data_dir', 'preprocess_dir',
+                     'opponent_checkpoint', 'vehicle_map_path'):
+            path = getattr(args, key)
+            if path and not os.path.isabs(path):
+                setattr(args, key, os.path.join(dataset_dir, path))
+
+    task.connect(vars(args))
+
+    print('Using ClearML')
+    return task
 
 
 if __name__ == '__main__':
     os.environ["OMP_NUM_THREADS"] = "1"
 
     args = parser.parse_args()
+    clearml_task = init_clearml(args)
     warmup_disable_steps = int(args.num_env_steps * args.warmup_opponent_disable_ratio)
     warmup_replay_steps = int(args.num_env_steps * args.warmup_opponent_replay_ratio)
 

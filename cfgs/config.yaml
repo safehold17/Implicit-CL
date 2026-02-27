@@ -37,5 +37,8 @@ nocturne_env:
   tilt_range: [-25.0, 25.0]
   tilt_mutation_std: 5.0
 
+# ClearML 配置已迁移至命令行参数（--use_clearml, --clearml_project 等）。
+# 详见 arguments.py 中的 ClearML section。
+
 defaults:
   - _self_

@@ -64,19 +64,22 @@ class DataBridge:
         
         # Preprocessed files cache
         self._preprocessed_files_cache: Optional[Dict[str, str]] = None
+        self._preprocessed_indices_cache: Optional[Dict[str, int]] = None
         self._preproc_data_cache: OrderedDict[str, Dict] = OrderedDict()
     
     def _ensure_preprocessed_files_cache(self):
-        """Lazy initialize preprocessed files cache, mapping scenario_id -> file_path"""
+        """Lazy initialize preprocessed files cache and dataset index cache."""
         if self._preprocessed_files_cache is None:
             self._preprocessed_files_cache = {}
+            self._preprocessed_indices_cache = {}
             if self.preprocessed_dset is None:
                 return
-            for filepath in self.preprocessed_dset.files:
+            for idx, filepath in enumerate(self.preprocessed_dset.files):
                 basename = os.path.basename(filepath)
                 if basename.endswith('_physics.pkl'):
                     scenario_id = basename.replace('_physics.pkl', '')
                     self._preprocessed_files_cache[scenario_id] = filepath
+                    self._preprocessed_indices_cache[scenario_id] = idx
     
     def get_ground_truth(
         self, 
@@ -203,11 +206,12 @@ class DataBridge:
         if scenario_id not in self._preprocessed_files_cache:
             return None, False
         
-        filepath = self._preprocessed_files_cache[scenario_id]
+        idx = self._preprocessed_indices_cache.get(scenario_id)
+        if idx is None:
+            return None, False
         
         try:
             # align with ctrl-sim evaluator: use dataset indexing to load preprocessed data
-            idx = self.preprocessed_dset.files.index(filepath)
             preproc_data = self.preprocessed_dset[idx]
             
             # cache results with LRU eviction
