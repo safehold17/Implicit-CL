@@ -34,7 +34,7 @@ from envs.box2d import *
 from envs.bipedalwalker import *
 from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim 环境（触发注册）
 from envs.runners.adversarial_runner import AdversarialRunner 
-from adapters.ctrl_sim.clearml_paths import download_clearml_dataset
+from util.clearml import download_clearml_dataset
 from util import make_agent, FileWriter, safe_checkpoint, create_parallel_env, make_plr_args, save_images
 from eval import Evaluator
 from clearml import Task
@@ -67,7 +67,7 @@ def init_clearml(args):
 
     task.connect(vars(args))
 
-    # Configure Docker environment for remote execution.
+    # example of configuration of Docker environment for remote execution
     task.set_base_docker(
         "nvcr.io/nvidia/pytorch:21.07-py3",
         docker_setup_bash_script=[

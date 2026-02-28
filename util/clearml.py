@@ -1,4 +1,4 @@
-"""ClearML dataset downloading."""
+"""ClearML dataset helpers."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ def download_clearml_dataset(dataset_project: str, dataset_name: str) -> str:
         ).get_local_copy()
     except Exception as e:
         raise RuntimeError(
-            f'Failed to download ClearML dataset '
-            f'(project={dataset_project!r}, name={dataset_name!r})'
+            f"Failed to download ClearML dataset "
+            f"(project={dataset_project!r}, name={dataset_name!r})"
         ) from e
     log.info("Downloaded ClearML dataset to: %s", local_copy)
     return local_copy
