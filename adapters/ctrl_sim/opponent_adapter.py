@@ -27,9 +27,16 @@ from models.ctrl_sim import CtRLSim
 from policies.autoregressive_policy import AutoregressivePolicy
 from datasets.rl_waymo.dataset_ctrl_sim import RLWaymoDatasetCtRLSim
 from utils.sim import get_road_data, get_moving_vehicles, compute_reward
-from utils.data import get_object_type_str
+from utils.data import get_object_type_str, add_batch_dim, from_numpy
 from tools.safe_bicycle import safe_backward_action_from_states
 from .existence import sim_position_exists
+
+from batch_inference.discretization_utils import (
+    get_tilt_logits as _get_tilt_logits,
+    undiscretize_rtgs as _undiscretize_rtgs,
+    decode_predicted_rtg as _decode_predicted_rtg,
+)
+from batch_inference import prepare_and_apply as _batch_io
 
 
 def _compute_goal_hold_until(
@@ -98,6 +105,14 @@ class TiltConfig:
         )
 
 
+class _DummyModel:
+    """替代 GPU 模型，仅提供 Policy.__init__ 需要的 cfg 属性和 eval() 方法。"""
+    def __init__(self, checkpoint_cfg):
+        self.cfg = checkpoint_cfg
+    def eval(self):
+        return self
+
+
 class PerVehicleAutoregressivePolicy(AutoregressivePolicy):
     """
     Per-vehicle tilting policy subclass
@@ -110,32 +125,17 @@ class PerVehicleAutoregressivePolicy(AutoregressivePolicy):
         """
         处理预测的 RTG，应用 per-vehicle tilting
         
-        参考: policies/autoregressive_policy.py process_predicted_rtg() 方法
-        
-        Args:
-            rtg_logits: RTG 预测 logits
-            token_index: token 索引
-            veh_id: 车辆 ID
-            dset: 数据集对象
-            vehicle_data_dict: 车辆数据字典
-            data: 数据
-            agent_idx_dict: agent 索引字典
-            is_tilted: 是否应用 tilting
-            device: 设备
+        使用 batch_inference.discretization_utils 中的纯函数，
+        替代直接调用 dset.get_tilt_logits() / dset.undiscretize_rtgs()。
         """
         idx = agent_idx_dict[self.veh_id_to_idx[veh_id]]
         
-        next_rtg_logits = rtg_logits[0, idx, token_index].reshape(
+        rtg_logits_3 = rtg_logits[0, idx, token_index].reshape(
             self.cfg_rl_waymo.rtg_discretization, self.cfg_model.num_reward_components
         )
-        next_rtg_goal_logits = next_rtg_logits[:, 0]
-        next_rtg_veh_logits = next_rtg_logits[:, 1]
-        next_rtg_road_logits = next_rtg_logits[:, 2]
         
-        # 获取 per-vehicle mapping
+        # 获取 per-vehicle tilt 参数
         per_vehicle_map = self.tilt_dict.get('per_vehicle', {})
-        
-        # is_tilted is whether we tilt the specific agent and self.tilt_dict['tilt'] is whether the model supports tilting
         if is_tilted and self.tilt_dict.get('tilt', False):
             if veh_id in per_vehicle_map:
                 g, v, e = per_vehicle_map[veh_id]
@@ -143,32 +143,30 @@ class PerVehicleAutoregressivePolicy(AutoregressivePolicy):
                 g = getattr(self, 'goal_tilt', 0)
                 v = getattr(self, 'veh_veh_tilt', 0)
                 e = getattr(self, 'veh_edge_tilt', 0)
-            tilt_logits = torch.from_numpy(dset.get_tilt_logits(g, v, e)).to(device)
         else:
-            tilt_logits = torch.from_numpy(dset.get_tilt_logits(0, 0, 0)).to(device)
+            g, v, e = 0, 0, 0
         
-        next_rtg_goal_dis = F.softmax(next_rtg_goal_logits + tilt_logits[:, 0], dim=0)
-        next_rtg_goal = torch.multinomial(next_rtg_goal_dis, 1)
-        next_rtg_veh_dis = F.softmax(next_rtg_veh_logits + tilt_logits[:, 1], dim=0)
-        next_rtg_veh = torch.multinomial(next_rtg_veh_dis, 1)
-        next_rtg_road_dis = F.softmax(next_rtg_road_logits + tilt_logits[:, 2], dim=0)
-        next_rtg_road = torch.multinomial(next_rtg_road_dis, 1)
+        tilt_logits_np = _get_tilt_logits(self.cfg_rl_waymo.rtg_discretization, g, v, e)
         
-        next_rtg = torch.cat(
-            [next_rtg_goal.reshape(1, 1, 1), next_rtg_veh.reshape(1, 1, 1), next_rtg_road.reshape(1, 1, 1)],
-            dim=2
+        (goal_idx, veh_idx, road_idx), (goal_val, veh_val, road_val) = _decode_predicted_rtg(
+            rtg_logits_3, tilt_logits_np,
+            self.cfg_rl_waymo.rtg_discretization,
+            self.cfg_rl_waymo.min_rtg_pos, self.cfg_rl_waymo.max_rtg_pos,
+            self.cfg_rl_waymo.min_rtg_veh, self.cfg_rl_waymo.max_rtg_veh,
+            self.cfg_rl_waymo.min_rtg_road, self.cfg_rl_waymo.max_rtg_road,
+            device=device,
         )
-        next_rtg_continuous = dset.undiscretize_rtgs(next_rtg.cpu().numpy())
-        vehicle_data_dict[veh_id]['next_rtg_goal'] = next_rtg_continuous[0, 0, 0]
-        vehicle_data_dict[veh_id]['next_rtg_veh'] = next_rtg_continuous[0, 0, 1]
-        vehicle_data_dict[veh_id]['next_rtg_road'] = next_rtg_continuous[0, 0, 2]
+        
+        vehicle_data_dict[veh_id]['next_rtg_goal'] = goal_val
+        vehicle_data_dict[veh_id]['next_rtg_veh'] = veh_val
+        vehicle_data_dict[veh_id]['next_rtg_road'] = road_val
         
         # append predicted RTG to data dictionary before making action prediction
-        data['agent'].rtgs[0, idx, token_index, 0] = next_rtg_goal
-        data['agent'].rtgs[0, idx, token_index, 1] = next_rtg_veh
-        data['agent'].rtgs[0, idx, token_index, 2] = next_rtg_road
+        data['agent'].rtgs[0, idx, token_index, 0] = goal_idx
+        data['agent'].rtgs[0, idx, token_index, 1] = veh_idx
+        data['agent'].rtgs[0, idx, token_index, 2] = road_idx
         
-        next_rtgs = [next_rtg_goal, next_rtg_veh, next_rtg_road]
+        next_rtgs = [goal_idx, veh_idx, road_idx]
         
         return vehicle_data_dict, data, next_rtgs
 
@@ -221,6 +219,8 @@ class CtrlSimOpponentAdapter:
         self.checkpoint_path = checkpoint_path
         self.model = None
         self.dataset = None
+        self.batch_inference = False
+        self._checkpoint_cfg = None
         if load_on_init:
             self._load_model_and_dataset()
         
@@ -241,8 +241,11 @@ class CtrlSimOpponentAdapter:
         # 运行时状态
         self._vehicle_data_dict: Dict = {}
         self._gt_data_dict: Dict = {}
+        self._gt_traj_by_id: Dict[int, np.ndarray] = {}
         self._preproc_data: Dict = {}
         self._vehicles_to_control: List[int] = []
+        self._vehicles_to_control_sorted: List[int] = []
+        self._vehicles_to_control_set: set[int] = set()
         self._road_edge_polylines: List = []
         self._goal_dict: Dict = {}
         self._goal_dist_normalizer: Dict = {}
@@ -255,11 +258,54 @@ class CtrlSimOpponentAdapter:
         self._goal_hold_steps: int = 5
         # Whether to move non-controlled vehicles out of the scene when GT is missing.
         self.allow_set_position_for_noncontrolled: bool = False
+        # 缓存 vehicles 列表，供 apply_predictions warm-up 使用
+        self._last_vehicles: Optional[List] = None
+        self._last_vehicle_by_id: Dict[int, Any] = {}
         
         # 从配置中获取时间相关参数
         self.dt = cfg.nocturne.dt
         self.steps = cfg.nocturne.steps
         self.history_steps = getattr(cfg.nocturne, 'history_steps', 10)
+
+    def _load_checkpoint_cfg(self):
+        """从 checkpoint 中只读取 cfg，不加载模型权重到 GPU。"""
+        if self._checkpoint_cfg is not None:
+            return
+        tmp = CtRLSim.load_from_checkpoint(self.checkpoint_path, map_location='cpu')
+        self._checkpoint_cfg = tmp.cfg
+        del tmp
+
+    def _validate_external_cfg_compatibility(self):
+        """校验 checkpoint cfg 与 adapter cfg 的关键字段一致性。"""
+        if self._checkpoint_cfg is None:
+            return
+        ckpt_ds = self._checkpoint_cfg.dataset.waymo
+        ckpt_model = self._checkpoint_cfg.model
+        adapter_ds = self.cfg.dataset.waymo
+        checks = [
+            ('train_context_length', getattr(ckpt_ds, 'train_context_length', None),
+             getattr(adapter_ds, 'train_context_length', None)),
+            ('rtg_discretization', getattr(ckpt_ds, 'rtg_discretization', None),
+             getattr(adapter_ds, 'rtg_discretization', None)),
+            ('accel_discretization', getattr(ckpt_ds, 'accel_discretization', None),
+             getattr(adapter_ds, 'accel_discretization', None)),
+            ('steer_discretization', getattr(ckpt_ds, 'steer_discretization', None),
+             getattr(adapter_ds, 'steer_discretization', None)),
+            ('max_num_agents', getattr(ckpt_model, 'max_num_agents', None),
+             getattr(self.cfg.model, 'max_num_agents', None)),
+            ('num_reward_components', getattr(ckpt_model, 'num_reward_components', None),
+             getattr(self.cfg.model, 'num_reward_components', None)),
+        ]
+        for name, ckpt_val, adapter_val in checks:
+            if ckpt_val is not None and adapter_val is not None and ckpt_val != adapter_val:
+                raise ValueError(
+                    f"External teacher cfg mismatch: {name} "
+                    f"checkpoint={ckpt_val} vs adapter={adapter_val}"
+                )
+
+    def _load_dataset_only(self):
+        """仅加载 dataset，不加载模型。"""
+        self.dataset = RLWaymoDatasetCtRLSim(self.cfg, split_name='test', mode='eval')
 
     def _load_model_and_dataset(self):
         # 加载模型（参考: eval_sim.py 第 35 行）
@@ -271,7 +317,7 @@ class CtrlSimOpponentAdapter:
 
         # 初始化数据集（用于数据处理，参考: policy_evaluator.py 第 40 行）
         # 注：mode='eval' 用于推理时的数据预处理
-        self.dataset = RLWaymoDatasetCtRLSim(self.cfg, split_name='test', mode='eval')
+        self._load_dataset_only()
     
     def _create_policy(self) -> AutoregressivePolicy:
         """
@@ -284,8 +330,16 @@ class CtrlSimOpponentAdapter:
             'next_steering': 'next_steering',
             'rtgs': 'rtgs'
         }
-        if self.model is None:
-            raise RuntimeError('CtrlSim model is not loaded.')
+        # batch_inference 模式使用 _DummyModel 替代真模型
+        if self.batch_inference:
+            if self._checkpoint_cfg is None:
+                self._load_checkpoint_cfg()
+                self._validate_external_cfg_compatibility()
+            model = _DummyModel(self._checkpoint_cfg)
+        else:
+            if self.model is None:
+                raise RuntimeError('CtrlSim model is not loaded.')
+            model = self.model
         
         # 根据是否有 per_vehicle_tilting 决定使用哪个 policy 类
         if self.per_vehicle_tilting is not None:
@@ -301,7 +355,7 @@ class CtrlSimOpponentAdapter:
             return PerVehicleAutoregressivePolicy(
                 cfg=self.cfg,
                 model_path=self.checkpoint_path,
-                model=self.model,
+                model=model,
                 use_rtg=True,
                 predict_rtgs=True,
                 discretize_rtgs=True,
@@ -322,7 +376,7 @@ class CtrlSimOpponentAdapter:
             return AutoregressivePolicy(
                 cfg=self.cfg,
                 model_path=self.checkpoint_path,
-                model=self.model,
+                model=model,
                 use_rtg=True,
                 predict_rtgs=True,
                 discretize_rtgs=True,
@@ -418,17 +472,38 @@ class CtrlSimOpponentAdapter:
         """
         # 仅在有对手车辆时才需要策略；若前序以非 normal 启动，首次转 normal 时在此加载。
         if vehicles_to_control:
-            if self.model is None or self.dataset is None:
-                self._load_model_and_dataset()
+            if self.batch_inference:
+                # external teacher 模式：只需 dataset + DummyModel
+                if self.dataset is None:
+                    self._load_dataset_only()
+            else:
+                # 内置路径：需要真模型 + dataset
+                if self.model is None or self.dataset is None:
+                    self._load_model_and_dataset()
             self._policy = self._create_policy()
         else:
             self._policy = None
         
         # 存储运行时状态
         self._gt_data_dict = gt_data_dict
+        self._gt_traj_by_id = {
+            veh_id: np.asarray(data['traj'])
+            for veh_id, data in gt_data_dict.items()
+            if isinstance(data, dict) and 'traj' in data
+        }
         self._preproc_data = preproc_data
-        self._vehicles_to_control = vehicles_to_control
+        self._vehicles_to_control = list(vehicles_to_control)
+        self._vehicles_to_control_set = set(self._vehicles_to_control)
+        self._vehicles_to_control_sorted = sorted(
+            self._vehicles_to_control,
+            key=lambda veh_id: int(self._get_gt_traj_data(veh_id)[:, 4].sum())
+            if self._get_gt_traj_data(veh_id) is not None
+            else -1,
+            reverse=True,
+        )
         self._ego_id = ego_id
+        self._last_vehicles = None
+        self._last_vehicle_by_id = {}
         
         # 提取道路数据（参考: policy_evaluator.py 第 496-497 行）
         road_data = get_road_data(scenario)
@@ -447,7 +522,9 @@ class CtrlSimOpponentAdapter:
         for idx, veh in enumerate(vehicles):
             veh_id = veh.getID()
             self._veh_id_to_idx[veh_id] = idx
-            gt_traj_data = np.array(gt_data_dict[veh_id]['traj'])
+            gt_traj_data = self._get_gt_traj_data(veh_id)
+            if gt_traj_data is None:
+                raise KeyError(f"Missing gt traj data for veh_id={veh_id}")
             self._goal_dict[veh_id] = self._initialize_goal_dict(veh, gt_traj_data)
             self._vehicle_data_dict[veh_id] = self._initialize_vehicle_data_dict(
                 veh, self._goal_dict[veh_id]
@@ -455,7 +532,7 @@ class CtrlSimOpponentAdapter:
             self._goal_dist_normalizer[veh_id] = self._compute_goal_dist_normalizer(
                 veh, self._goal_dict[veh_id]['pos']
             )
-            if veh_id in vehicles_to_control:
+            if veh_id in self._vehicles_to_control_set:
                 pos = veh.getPosition()
                 sim_exists = sim_position_exists(pos.x, pos.y)
                 self._opponent_vehicle_exits[veh_id] = bool(sim_exists)
@@ -473,7 +550,7 @@ class CtrlSimOpponentAdapter:
     def cache_last_valid_positions(self, vehicles: List):
         for veh in vehicles:
             veh_id = veh.getID()
-            if veh_id not in self._vehicles_to_control:
+            if veh_id not in self._vehicles_to_control_set:
                 continue
             pos = veh.getPosition()
             if sim_position_exists(pos.x, pos.y):
@@ -488,7 +565,7 @@ class CtrlSimOpponentAdapter:
 
         仅对对手车辆返回有效值；非对手车辆返回 None。
         """
-        if veh_id not in self._vehicles_to_control:
+        if veh_id not in self._vehicles_to_control_set:
             return None
         if veh_id in self._opponent_vehicle_exits:
             return bool(self._opponent_vehicle_exits[veh_id])
@@ -507,7 +584,7 @@ class CtrlSimOpponentAdapter:
             goal_points_by_id = {}
         for veh in vehicles:
             veh_id = veh.getID()
-            if veh_id not in self._vehicles_to_control:
+            if veh_id not in self._vehicles_to_control_set:
                 continue
             pos = veh.getPosition()
             sim_exists = sim_position_exists(pos.x, pos.y)
@@ -560,6 +637,16 @@ class CtrlSimOpponentAdapter:
                 sim_exists, prev_exists
             )
     
+    # ========== External teacher (batch_inference) 接口 ==========
+
+    def prepare_step(self, t: int, vehicles: List) -> Optional[Dict]:
+        """构建 prepared_dict，委托给 batch_inference.prepare_and_apply。"""
+        return _batch_io.prepare_step(self, t, vehicles)
+
+    def apply_predictions(self, model_outputs: Optional[Dict]) -> Dict[int, Tuple[float, float]]:
+        """接收推理结果并返回动作，委托给 batch_inference.prepare_and_apply。"""
+        return _batch_io.apply_predictions(self, model_outputs)
+
     def step(self, t: int, vehicles: List) -> Dict[int, Tuple[float, float]]:
         """
         执行一步推理，返回所有被控车辆的动作
@@ -603,7 +690,7 @@ class CtrlSimOpponentAdapter:
         actions = {}
         for veh in vehicles:
             veh_id = veh.getID()
-            if veh_id in self._vehicles_to_control:
+            if veh_id in self._vehicles_to_control_set:
                 if t >= self.history_steps - 1:
                     veh_exists = self._vehicle_data_dict[veh_id]['existence'][-1]
                     if veh_exists:
@@ -674,17 +761,16 @@ class CtrlSimOpponentAdapter:
         
         参考: policy_evaluator.py apply_gt_action()
         """
-        if veh_id not in self._gt_data_dict:
+        gt_traj = self._get_gt_traj_data(veh_id)
+        if gt_traj is None:
             return (0.0, 0.0)
-        
-        gt_traj = np.array(self._gt_data_dict[veh_id]['traj'])
         if t + 1 >= len(gt_traj):
             return (0.0, 0.0)
         
         # action is only defined if state at next timestep is defined
-        protected = (veh_id == self._ego_id) or (veh_id in self._vehicles_to_control)
+        protected = (veh_id == self._ego_id) or (veh_id in self._vehicles_to_control_set)
         if protected:
-            if veh_id in self._vehicles_to_control:
+            if veh_id in self._vehicles_to_control_set:
                 exists = self.get_opponent_vehicle_exists(veh_id)
                 veh_exists = 1 if exists else 0
             else:
@@ -704,7 +790,7 @@ class CtrlSimOpponentAdapter:
                 return (0.0, 0.0)
             if veh is not None:
                 # For opponents, keep position even if GT action is missing.
-                if self.allow_set_position_for_noncontrolled and veh_id not in self._vehicles_to_control:
+                if self.allow_set_position_for_noncontrolled and veh_id not in self._vehicles_to_control_set:
                     veh.setPosition(-1000000, -1000000)
             return (0.0, 0.0)
         
@@ -724,6 +810,18 @@ class CtrlSimOpponentAdapter:
         
         return (float(accel), float(steer))
     
+    def _get_gt_traj_data(self, veh_id: int) -> Optional[np.ndarray]:
+        """返回缓存的 GT 轨迹数组；首次访问时按需从 _gt_data_dict 建立缓存。"""
+        gt_traj = self._gt_traj_by_id.get(veh_id)
+        if gt_traj is not None:
+            return gt_traj
+        data = self._gt_data_dict.get(veh_id)
+        if not isinstance(data, dict) or 'traj' not in data:
+            return None
+        gt_traj = np.asarray(data['traj'])
+        self._gt_traj_by_id[veh_id] = gt_traj
+        return gt_traj
+
     # ========== 辅助方法（复用 PolicyEvaluator 逻辑）==========
     
     def _extract_road_edge_polylines(self, road_data: List[Dict]) -> List:
@@ -817,11 +915,12 @@ class CtrlSimOpponentAdapter:
         
         参考: policy_evaluator.py 第 99-146 行 update_vehicle_data_dict()
         """
-        cfg_model = self.model.cfg.model
-        
+        vehicles_to_control_set = self._vehicles_to_control_set
         for veh_idx, veh in enumerate(vehicles):
             veh_id = veh.getID()
-            gt_traj_data = np.array(self._gt_data_dict[veh_id]['traj'])
+            gt_traj_data = self._get_gt_traj_data(veh_id)
+            if gt_traj_data is None:
+                continue
             
             # 更新 ground truth 信息
             vehicle_data_dict[veh_id]["gt_position"].append({
@@ -851,9 +950,9 @@ class CtrlSimOpponentAdapter:
             vehicle_data_dict[veh_id]["timestep"].append(t)
             
             # 更新存在状态
-            protected = (veh_id == self._ego_id) or (veh_id in self._vehicles_to_control)
+            protected = (veh_id == self._ego_id) or (veh_id in vehicles_to_control_set)
             if protected:
-                if veh_id in self._vehicles_to_control:
+                if veh_id in vehicles_to_control_set:
                     pos = veh.getPosition()
                     sim_exists = sim_position_exists(pos.x, pos.y)
                     prev_exists = self._opponent_vehicle_exits.get(veh_id, bool(sim_exists))
@@ -871,7 +970,7 @@ class CtrlSimOpponentAdapter:
                 veh_exists = gt_traj_data[t, 4]
             if (
                 t > 0
-                and veh_id not in self._vehicles_to_control
+                and veh_id not in vehicles_to_control_set
                 and vehicle_data_dict[veh_id]["existence"][-1] == 0
             ):
                 veh_exists = 0

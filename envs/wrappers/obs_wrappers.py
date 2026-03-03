@@ -184,6 +184,10 @@ class VecPreprocessImageWrapper(VecEnvWrapper):
 
 	def step_wait(self):
 		obs, rews, dones, infos = self.venv.step_wait()
+		return self._postprocess_step(obs, rews, dones, infos)
+
+	def _postprocess_step(self, obs, rews, dones, infos):
+		"""Shared obs/reward post-processing for step_env / step_complete."""
 		obs = self._preprocess(obs, obs_key=self.obs_key)
 
 		for i, info in enumerate(infos):
@@ -199,18 +203,14 @@ class VecPreprocessImageWrapper(VecEnvWrapper):
 
 	def step_env(self, actions, reset_random=False):
 		obs, rews, dones, infos = self.venv.step_env(actions, reset_random=reset_random)
-		obs = self._preprocess(obs, obs_key=self.obs_key)
+		return self._postprocess_step(obs, rews, dones, infos)
 
-		for i, info in enumerate(infos):
-			if 'truncated_obs' in info:
-				truncated_obs = info['truncated_obs']
-				infos[i]['truncated_obs'] = \
-					self._preprocess(truncated_obs, obs_key=self.obs_key)
+	def step_prepare(self, action):
+		return self.venv.step_prepare(action)
 
-		if self.to_tensor:
-			rews = torch.from_numpy(rews).unsqueeze(dim=1).float()
-
-		return obs, rews, dones, infos
+	def step_complete(self, model_outputs, reset_random=False):
+		obs, rews, dones, infos = self.venv.step_complete(model_outputs, reset_random=reset_random)
+		return self._postprocess_step(obs, rews, dones, infos)
 
 	def step_adversary(self, action):
 		obs, rews, dones, infos = self.venv.step_adversary(action)

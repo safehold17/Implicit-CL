@@ -229,6 +229,7 @@ def _make_env(args):
             'student_steer_discretization': getattr(
                 args, 'student_steer_discretization', 13
             ),
+            'batch_inference': getattr(args, 'batch_inference', False),
         }
         env_kwargs.update(nocturne_kwargs)
         return gym_make(args.env_name, **env_kwargs)

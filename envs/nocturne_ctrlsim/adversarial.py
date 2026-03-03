@@ -131,6 +131,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 f"got {student_steer_discretization}"
             )
         tilt_range = kwargs.get('tilt_range', None)
+        batch_inference = kwargs.get('batch_inference', False)
 
         self.fixed_environment = fixed_environment
         self._set_process_seed(seed)
@@ -180,6 +181,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
             preproc_cache_size=preproc_cache_size,
         )
         
+        # ========== Batch inference flag ==========
+        self.batch_inference = batch_inference
+        
         # ========== Opponent policy adapter ==========
         self.opponent = CtrlSimOpponentAdapter(
             cfg=cfg,
@@ -187,6 +191,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
             device=device,
             load_on_init=(opponent_runtime_mode == 'normal'),
         )
+        if self.batch_inference:
+            self.opponent.batch_inference = True
         
         # ========== Environment config ==========
         if max_episode_steps is None:
@@ -1145,6 +1151,45 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 per[idx] = _clip_and_round(per[idx] + delta)
         return replace(level, per_vehicle_tilting=tuple(per))
     
+    # ========== Batch inference two-phase step ==========
+
+    def step_prepare(self, action: np.ndarray) -> Optional[Dict]:
+        """Phase 1: Apply student action, build opponent data for external inference.
+
+        Only valid when ``self.batch_inference`` is True.
+
+        Returns:
+            prepared_dict sent to ExternalTeacher, or None when no opponent vehicles.
+        """
+        self.current_step += 1
+
+        # Apply student action first (order matters: adapter.prepare_step reads positions)
+        apply_student_action(self, action)
+
+        runtime_mode = getattr(self, "opponent_runtime_mode", "normal")
+        if runtime_mode == "normal" and len(self.opponent_vehicle_ids) > 0:
+            return self.opponent.prepare_step(self.current_step - 1, self.vehicles)
+        return None
+
+    def step_complete(
+        self, model_outputs: Optional[Dict]
+    ) -> Tuple[np.ndarray, float, bool, Dict]:
+        """Phase 2: Apply opponent predictions, GT actions, sim.step, reward/done.
+
+        Only valid when ``self.batch_inference`` is True.
+        Must be called after ``step_prepare``.
+        """
+        # Decode model outputs → opponent actions
+        runtime_mode = getattr(self, "opponent_runtime_mode", "normal")
+        if runtime_mode == "normal" and len(self.opponent_vehicle_ids) > 0:
+            opponent_actions = self.opponent.apply_predictions(model_outputs)
+        else:
+            opponent_actions = {}
+
+        return self._step_post_actions(opponent_actions)
+
+    # ========== Original single-phase step ==========
+
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
         """
         Execute one step simulation (Student action)
@@ -1168,6 +1213,12 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # 2. Apply student action to ego vehicle
         apply_student_action(self, action)
         
+        return self._step_post_actions(opponent_actions)
+
+    def _step_post_actions(
+        self, opponent_actions: Dict[int, Tuple[float, float]]
+    ) -> Tuple[np.ndarray, float, bool, Dict]:
+        """Shared tail: apply actions, sim.step, compute reward/done."""
         # 3. Apply opponent action
         for veh_id, (accel, steer) in opponent_actions.items():
             veh = get_vehicle_by_id(self, veh_id)

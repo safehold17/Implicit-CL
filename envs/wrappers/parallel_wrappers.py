@@ -46,6 +46,18 @@ def worker(remote, parent_remote, env_fn_wrappers):
 
         return ob, reward, done, info
 
+    def step_complete_env(env, model_output, reset_random=False):
+        ob, reward, done, info = env.step_complete(model_output)
+
+        if done:
+            if reset_random:
+                env.reset_random()
+                ob = env.reset_agent()
+            else:
+                ob = env.reset_agent()
+
+        return ob, reward, done, info
+
     def get_env_attr(env, attr):
         if hasattr(env, attr):
             return getattr(env, attr)
@@ -68,6 +80,12 @@ def worker(remote, parent_remote, env_fn_wrappers):
                 remote.send([step_env(env, action) for env, action in zip(envs, data)])
             elif cmd == 'step_env_reset_random':
                 remote.send([step_env(env, action, reset_random=True) for env, action in zip(envs, data)])
+            elif cmd == 'step_prepare':
+                remote.send([env.step_prepare(action) for env, action in zip(envs, data)])
+            elif cmd == 'step_complete':
+                remote.send([step_complete_env(env, mo) for env, mo in zip(envs, data)])
+            elif cmd == 'step_complete_reset_random':
+                remote.send([step_complete_env(env, mo, reset_random=True) for env, mo in zip(envs, data)])
             elif cmd == 'observation_space':
                 remote.send(envs[0].observation_space)
             elif cmd == 'adversary_observation_space':
@@ -328,6 +346,32 @@ class ParallelAdversarialVecEnv(SubprocVecEnv):
             action = np.expand_dims(action, 1)
         [remote.send(('step_env_reset_random', a)) for remote, a in zip(self.remotes, action)]
         self.waiting = True
+
+    # ========== Batch inference two-phase step ==========
+
+    def step_prepare(self, action):
+        """Phase 1: send actions, collect prepared_dicts from all envs."""
+        self._assert_not_closed()
+        if self._should_expand_action(action):
+            action = np.expand_dims(action, 1)
+        action = np.array_split(action, self.nremotes)
+        for remote, a in zip(self.remotes, action):
+            remote.send(('step_prepare', a))
+        results = [remote.recv() for remote in self.remotes]
+        return _flatten_list(results)
+
+    def step_complete(self, model_outputs_per_env, reset_random=False):
+        """Phase 2: send model_outputs, collect (obs, rew, done, info)."""
+        self._assert_not_closed()
+        chunks = np.array_split(range(len(model_outputs_per_env)), self.nremotes)
+        cmd = 'step_complete_reset_random' if reset_random else 'step_complete'
+        for remote, idx in zip(self.remotes, chunks):
+            remote.send((cmd, [model_outputs_per_env[i] for i in idx]))
+        results = [remote.recv() for remote in self.remotes]
+        results = _flatten_list(results)
+        self.waiting = False
+        obs, rews, dones, infos = zip(*results)
+        return _flatten_obs(obs), np.stack(rews), np.stack(dones), infos
 
     # reset_agent
     def reset_agent(self):

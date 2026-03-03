@@ -46,8 +46,10 @@ class CtrlSimEgoWrapper:
         xpid: str,
         device: str = "cuda",
         seed: int = 0,
+        batch_inference: bool = False,
         **_kwargs,
     ):
+        self.batch_inference = batch_inference
         self.env = NocturneCtrlSimAdversarial(
             scenario_index_path=scenario_index_path,
             opponent_checkpoint=opponent_checkpoint,
@@ -60,6 +62,7 @@ class CtrlSimEgoWrapper:
             seed=seed,
             tilting_mode=tilting_mode,
             tilt_range=tilt_range,
+            batch_inference=batch_inference,
         )
         self.tilting_mode = tilting_mode
         self.device = device
@@ -79,6 +82,8 @@ class CtrlSimEgoWrapper:
             checkpoint_path=self.checkpoint_path,
             device=self.device,
         )
+        if self.batch_inference:
+            self.ego_adapter.batch_inference = True
         self.ego_adapter.set_tilting(0, 0, 0)
         self.ego_id = None
 
@@ -230,27 +235,8 @@ class CtrlSimEgoWrapper:
         self._reset_ego_adapter()
         return obs
 
-    def step(self, _action):
-        t = self.env.current_step
-        ego_actions = self.ego_adapter.step(t, self.env.vehicles)
-        if self.ego_id is not None and self.ego_id in ego_actions:
-            accel, steer = ego_actions[self.ego_id]
-        else:
-            accel, steer = 0.0, 0.0
-
-        action = np.array(
-            [
-                np.clip(accel / 10.0, -1.0, 1.0),
-                np.clip(steer / 0.7, -1.0, 1.0),
-            ],
-            dtype=np.float32,
-        )
-        obs, reward, done, info = self.env.step(action)
-        self.ego_adapter.record_all_actions(
-            self.env.current_step - 1,
-            self.env.vehicles,
-            {self.ego_id: (accel, steer)} if self.ego_id is not None else {},
-        )
+    def _postprocess_step(self, obs, reward, done, info):
+        """Goal check, opponent stop, recording stop, info enrichment."""
         self._update_opponent_stop_states()
         position_reached = self._ego_reached_goal()
         if position_reached:
@@ -275,6 +261,86 @@ class CtrlSimEgoWrapper:
         if done:
             self._stop_recording()
         return obs, reward, done, info
+
+    def step(self, _action):
+        t = self.env.current_step
+        ego_actions = self.ego_adapter.step(t, self.env.vehicles)
+        if self.ego_id is not None and self.ego_id in ego_actions:
+            accel, steer = ego_actions[self.ego_id]
+        else:
+            accel, steer = 0.0, 0.0
+
+        action = np.array(
+            [
+                np.clip(accel / 10.0, -1.0, 1.0),
+                np.clip(steer / 0.7, -1.0, 1.0),
+            ],
+            dtype=np.float32,
+        )
+        obs, reward, done, info = self.env.step(action)
+        self.ego_adapter.record_all_actions(
+            self.env.current_step - 1,
+            self.env.vehicles,
+            {self.ego_id: (accel, steer)} if self.ego_id is not None else {},
+        )
+        return self._postprocess_step(obs, reward, done, info)
+
+    # ========== Batch inference two-phase step ==========
+
+    def step_prepare(self, _action):
+        """Phase 1: Prepare inference data for both ego and opponent adapters."""
+        t = self.env.current_step
+        ego_prepared = self.ego_adapter.prepare_step(t, self.env.vehicles)
+        runtime_mode = getattr(self.env, "opponent_runtime_mode", "normal")
+        if runtime_mode == "normal" and len(self.env.opponent_vehicle_ids) > 0:
+            opp_prepared = self.env.opponent.prepare_step(t, self.env.vehicles)
+        else:
+            opp_prepared = None
+        return {"ego": ego_prepared, "opponent": opp_prepared}
+
+    def step_complete(self, model_outputs):
+        """Phase 2: Apply predictions, step simulation, postprocess."""
+        ego_outputs = model_outputs.get("ego")
+        opp_outputs = model_outputs.get("opponent")
+
+        # 1. Apply ego predictions → get physical ego action
+        ego_actions = self.ego_adapter.apply_predictions(ego_outputs) if ego_outputs else {}
+        if self.ego_id is not None and self.ego_id in ego_actions:
+            accel, steer = ego_actions[self.ego_id]
+        else:
+            accel, steer = 0.0, 0.0
+
+        # 2. Increment step counter
+        self.env.current_step += 1
+
+        # 3. Apply ego action directly to vehicle
+        ego_veh = self.env.ego_vehicle
+        if ego_veh is not None:
+            if accel > 0:
+                ego_veh.acceleration = accel
+            else:
+                ego_veh.brake(abs(accel))
+            ego_veh.steering = steer
+
+        # 4. Apply opponent predictions
+        runtime_mode = getattr(self.env, "opponent_runtime_mode", "normal")
+        if runtime_mode == "normal" and len(self.env.opponent_vehicle_ids) > 0:
+            opponent_actions = self.env.opponent.apply_predictions(opp_outputs)
+        else:
+            opponent_actions = {}
+
+        # 5. sim.step + reward/done (shared tail)
+        obs, reward, done, info = self.env._step_post_actions(opponent_actions)
+
+        # 6. Record ego actions for next adapter.update_state
+        self.ego_adapter.record_all_actions(
+            self.env.current_step - 1,
+            self.env.vehicles,
+            {self.ego_id: (accel, steer)} if self.ego_id is not None else {},
+        )
+
+        # 7. Postprocess (goal check, recording, info enrichment)
+        return self._postprocess_step(obs, reward, done, info)
 
     def close(self):
         self.env.close()
@@ -390,6 +456,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--show_vehicle_ids", action="store_true")
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--xpid", type=str, required=True)
+    parser.add_argument("--batch_inference", action="store_true",
+                        help="Use batched GPU inference in main process instead of per-subprocess models.")
     return parser.parse_args()
 
 
@@ -503,6 +571,7 @@ def evaluate_with_metrics(
     render,
     tilting_mode,
     progress_threshold,
+    external_teacher=None,
 ):
     env_name = evaluator.env_names[0]
     venv = evaluator.venv[env_name]
@@ -536,7 +605,19 @@ def evaluate_with_metrics(
         if not evaluator.is_discrete_actions:
             action = agent.process_action(action)
 
-        if env_name.startswith("Nocturne"):
+        if external_teacher is not None:
+            # 3-phase batch inference: prepare → batched forward → complete
+            per_env_prepared = venv.step_prepare(action)
+            ego_prepared = [p.get("ego") if p else None for p in per_env_prepared]
+            opp_prepared = [p.get("opponent") if p else None for p in per_env_prepared]
+            ego_results = external_teacher.batched_forward(ego_prepared)
+            opp_results = external_teacher.batched_forward(opp_prepared)
+            combined = [
+                {"ego": e, "opponent": o}
+                for e, o in zip(ego_results, opp_results)
+            ]
+            obs, reward, done, infos = venv.step_complete(combined, reset_random=True)
+        elif env_name.startswith("Nocturne"):
             obs, reward, done, infos = venv.step_env(action, reset_random=True)
         else:
             obs, reward, done, infos = venv.step(action)
@@ -667,7 +748,17 @@ def main() -> None:
         output_dir=args.output_dir,
         xpid=args.xpid,
         video_dir=video_dir,
+        batch_inference=args.batch_inference,
     )
+
+    # Build ExternalTeacher for batched inference (single GPU model in main process)
+    external_teacher = None
+    if args.batch_inference:
+        from batch_inference import ExternalTeacher
+        external_teacher = ExternalTeacher(
+            checkpoint_path=args.checkpoint_path,
+            device=args.device,
+        )
 
     action_dim = evaluator.venv[env_names[0]].action_space.shape[0]
     agent = DummyEvalAgent(action_dim=action_dim)
@@ -680,6 +771,7 @@ def main() -> None:
         render=args.render,
         tilting_mode=args.tilting_mode,
         progress_threshold=args.progress_threshold,
+        external_teacher=external_teacher,
     )
     csv_path = write_metrics_csv(args.output_dir, args.xpid, episode_metrics)
     print(f"Metrics saved to: {csv_path}")

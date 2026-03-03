@@ -34,10 +34,8 @@ from envs.box2d import *
 from envs.bipedalwalker import *
 from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim 环境（触发注册）
 from envs.runners.adversarial_runner import AdversarialRunner 
-from util.clearml import download_clearml_dataset
 from util import make_agent, FileWriter, safe_checkpoint, create_parallel_env, make_plr_args, save_images
 from eval import Evaluator
-from clearml import Task
 
 
 def init_clearml(args):
@@ -48,6 +46,9 @@ def init_clearml(args):
     if not args.use_clearml:
         print('Running locally (ClearML disabled)')
         return None
+
+    from clearml import Task
+    from util.clearml import download_clearml_dataset
 
     task = Task.init(
         project_name=args.clearml_project,
@@ -82,6 +83,15 @@ def init_clearml(args):
 
     print('Using ClearML')
     return task
+
+
+def _build_external_teacher(args, device):
+    """Create an ExternalTeacher for batched ctrl-sim inference."""
+    from batch_inference import ExternalTeacher
+    return ExternalTeacher(
+        checkpoint_path=args.opponent_checkpoint,
+        device=device,
+    )
 
 
 if __name__ == '__main__':
@@ -258,7 +268,9 @@ if __name__ == '__main__':
         flexible_protagonist=False,
         train=True,
         plr_args=plr_args,
-        device=device)
+        device=device,
+        external_teacher=_build_external_teacher(args, device) if getattr(args, 'batch_inference', False) else None,
+    )
 
     # === Configure checkpointing ===
     timer = timeit.default_timer

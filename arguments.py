@@ -795,6 +795,10 @@ parser.add_argument(
     type=str,
     default='data/vehicle_map_valid.json',
     help='The path to the vehicle map JSON file')
+parser.add_argument(
+    '--batch_inference',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Move ctrl-sim GPU inference to main process (batched across envs).')
 
 # ============== ClearML ==============
 parser.add_argument(

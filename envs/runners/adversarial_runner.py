@@ -41,7 +41,8 @@ class AdversarialRunner(object):
         flexible_protagonist=False,
         train=False,
         plr_args=None,
-        device='cpu'):
+        device='cpu',
+        external_teacher=None):
         """
         venv: Vectorized, adversarial gym env with agent-specific wrappers.
         agent: Protagonist trainer.
@@ -84,6 +85,9 @@ class AdversarialRunner(object):
             self.env_return_rms = RunningMeanStd(shape=())
 
         self.device = device
+
+        # External teacher for batched inference (None = disabled)
+        self.external_teacher = external_teacher
 
         if train:
             self.train()
@@ -827,6 +831,15 @@ class AdversarialRunner(object):
 
             if is_env:
                 obs, reward, done, infos = self.ued_venv.step_adversary(_action)
+            elif self.external_teacher is not None:
+                # Three-phase step: prepare → batched GPU inference → complete
+                prepared = self.venv.step_prepare(_action)
+                model_outputs = self.external_teacher.batched_forward(prepared)
+                obs, reward, done, infos = self.venv.step_complete(
+                    model_outputs, reset_random=reset_random,
+                )
+                if args.clip_reward:
+                    reward = torch.clamp(reward, -args.clip_reward, args.clip_reward)
             else:
                 obs, reward, done, infos = self.venv.step_env(_action, reset_random=reset_random)
                 if args.clip_reward:

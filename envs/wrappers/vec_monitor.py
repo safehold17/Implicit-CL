@@ -59,6 +59,11 @@ class VecMonitor(VecEnvWrapper):
 
     def step_wait(self):
         obs, rews, dones, infos = self.venv.step_wait()
+        newinfos = self._track_episodes(rews, dones, infos)
+        return obs, rews, dones, newinfos
+
+    def _track_episodes(self, rews, dones, infos):
+        """Shared episode tracking logic for step_env / step_complete."""
         self.eprets += rews
         self.eplens += 1
 
@@ -82,31 +87,17 @@ class VecMonitor(VecEnvWrapper):
                     self.results_writer.write_row(epinfo)
                 newinfos[i] = info
 
-        return obs, rews, dones, newinfos
+        return newinfos
 
     def step_env(self, actions, reset_random=False):
         obs, rews, dones, infos = self.venv.step_env(actions, reset_random=reset_random)
-        self.eprets += rews
-        self.eplens += 1
+        newinfos = self._track_episodes(rews, dones, infos)
+        return obs, rews, dones, newinfos
 
-        newinfos = list(infos[:])
-        for i in range(len(dones)):
-            if dones[i]:
-                info = infos[i].copy()
-                ret = self.eprets[i]
-                eplen = self.eplens[i]
-                epinfo = {'r': ret, 'l': eplen, 't': round(time.time() - self.tstart, 6)}
-                for k in self.info_keywords:
-                    epinfo[k] = info[k]
-                info['episode'] = epinfo
-                if self.keep_buf:
-                    self.epret_buf.append(ret)
-                    self.eplen_buf.append(eplen)
-                self.epcount += 1
-                self.eprets[i] = 0
-                self.eplens[i] = 0
-                if self.results_writer:
-                    self.results_writer.write_row(epinfo)
-                newinfos[i] = info
+    def step_prepare(self, action):
+        return self.venv.step_prepare(action)
 
+    def step_complete(self, model_outputs, reset_random=False):
+        obs, rews, dones, infos = self.venv.step_complete(model_outputs, reset_random=reset_random)
+        newinfos = self._track_episodes(rews, dones, infos)
         return obs, rews, dones, newinfos
