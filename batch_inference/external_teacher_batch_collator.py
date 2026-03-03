@@ -14,12 +14,9 @@ def get_or_create_collate_buffers(
     collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]],
     cache_key: Tuple[Any, ...],
     specs: Dict[str, Tuple[Tuple[int, ...], np.dtype, Any]],
-    max_cache_keys: int,
 ) -> Dict[str, np.ndarray]:
     buffers = collate_numpy_buffers.get(cache_key)
     if buffers is None:
-        if len(collate_numpy_buffers) >= max_cache_keys:
-            collate_numpy_buffers.clear()
         buffers = {}
         for name, (shape, dtype, fill_value) in specs.items():
             arr = np.zeros(shape, dtype=dtype)
@@ -202,7 +199,6 @@ def collate_chunk_with_padding(
     chunk: List[Dict[str, Any]],
     device: str,
     collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]],
-    max_cache_keys: int,
 ) -> Tuple[MotionData, Dict[str, Any]]:
     if not chunk:
         raise ValueError("chunk must not be empty")
@@ -214,7 +210,6 @@ def collate_chunk_with_padding(
         collate_numpy_buffers=collate_numpy_buffers,
         cache_key=cache_key,
         specs=specs,
-        max_cache_keys=max_cache_keys,
     )
     fill_collate_buffers(chunk, buffers)
 

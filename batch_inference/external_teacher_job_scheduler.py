@@ -70,7 +70,6 @@ def estimate_job_tokens(job: Dict[str, Any]) -> int:
 
 def build_chunks(
     flat_jobs: List[Dict[str, Any]],
-    max_chunk_tokens: int,
     micro_batch: Optional[int],
 ) -> List[List[Dict[str, Any]]]:
     if not flat_jobs:
@@ -85,22 +84,13 @@ def build_chunks(
     chunks: List[List[Dict[str, Any]]] = []
     for shape_key in sorted(buckets.keys()):
         current_chunk: List[Dict[str, Any]] = []
-        current_tokens = 0
         for job in buckets[shape_key]:
-            job_tokens = estimate_job_tokens(job)
-            exceed_token_budget = (
-                bool(current_chunk)
-                and max_chunk_tokens > 0
-                and current_tokens + job_tokens > max_chunk_tokens
-            )
             exceed_job_budget = max_chunk_jobs is not None and len(current_chunk) >= max_chunk_jobs
-            if exceed_token_budget or exceed_job_budget:
+            if exceed_job_budget:
                 chunks.append(current_chunk)
                 current_chunk = []
-                current_tokens = 0
 
             current_chunk.append(job)
-            current_tokens += job_tokens
 
         if current_chunk:
             chunks.append(current_chunk)

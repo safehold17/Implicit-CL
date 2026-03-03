@@ -34,10 +34,6 @@ from .external_teacher_job_scheduler import (
 )
 from .ipc_codec import pack_model_outputs, unpack_prepared
 
-DEFAULT_MAX_CHUNK_TOKENS = 100000
-MAX_COLLATE_BUFFER_KEYS = 64
-
-
 def _assert_required_keys(payload: Dict[str, Any], required: Tuple[str, ...], payload_name: str) -> None:
     missing = [key for key in required if key not in payload]
     if missing:
@@ -54,7 +50,6 @@ class ExternalTeacher:
         micro_batch: Optional[int] = None,
         base_seed: int = 1,
     ) -> None:
-        self.max_chunk_tokens = DEFAULT_MAX_CHUNK_TOKENS
         self.device = device
         self.micro_batch = micro_batch
         self.base_seed = base_seed
@@ -307,7 +302,6 @@ class ExternalTeacher:
     def _build_chunks(self, flat_jobs: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
         return build_chunks(
             flat_jobs=flat_jobs,
-            max_chunk_tokens=int(self.max_chunk_tokens),
             micro_batch=self.micro_batch,
         )
 
@@ -316,7 +310,6 @@ class ExternalTeacher:
             chunk=chunk,
             device=self.device,
             collate_numpy_buffers=self._collate_numpy_buffers,
-            max_cache_keys=MAX_COLLATE_BUFFER_KEYS,
         )
 
     @torch.no_grad()
