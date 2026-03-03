@@ -14,7 +14,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from adapters.ctrl_sim import CtrlSimOpponentAdapter
+from adapters.opponent_vehicle import CtrlSimOpponentAdapter
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 from envs.wrappers import ParallelAdversarialVecEnv
 from eval import Evaluator

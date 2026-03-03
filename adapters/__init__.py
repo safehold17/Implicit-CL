@@ -4,6 +4,6 @@
 提供 DCD 框架与第三方库的桥接
 """
 
-from . import ctrl_sim
+from . import opponent_vehicle
 
-__all__ = ['ctrl_sim']
+__all__ = ['opponent_vehicle']

@@ -15,7 +15,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from adapters.ctrl_sim import DataBridge, create_minimal_config
+from adapters.config_loader import create_minimal_config
+from adapters.data_bridge import DataBridge
 
 
 def analyze_scenario(scenario_id: str, scenario_dir: str):

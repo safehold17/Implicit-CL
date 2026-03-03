@@ -26,7 +26,7 @@ from omegaconf import OmegaConf, DictConfig
 from cfgs.dcd_config import CONFIG_PATH as DCD_CONFIG_PATH
 
 # ctrl-sim config path
-CTRL_SIM_ROOT = os.path.join(os.path.dirname(__file__), '../../third_party/ctrl-sim')
+CTRL_SIM_ROOT = os.path.join(os.path.dirname(__file__), '../third_party/ctrl-sim')
 CTRL_SIM_CONFIG_PATH = os.path.join(CTRL_SIM_ROOT, 'cfgs')
 
 
@@ -193,7 +193,7 @@ def get_default_opponent_config() -> Dict[str, Any]:
         except Exception:
             # 回退到默认路径
             config['model_path'] = os.path.join(
-                os.path.dirname(__file__), '../../checkpoints/model.ckpt'
+                os.path.dirname(__file__), '../checkpoints/model.ckpt'
             )
         
         # 确保 tilting 参数存在（默认为 0）
@@ -216,7 +216,7 @@ def get_default_opponent_config() -> Dict[str, Any]:
         'veh_veh_tilt': 0,
         'veh_edge_tilt': 0,
         'model_path': os.path.join(
-            os.path.dirname(__file__), '../../checkpoints/model.ckpt'
+            os.path.dirname(__file__), '../checkpoints/model.ckpt'
         ),
     }
 

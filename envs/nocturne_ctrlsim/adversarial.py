@@ -51,11 +51,9 @@ from . import visualization as viz
 
 from tools.build_scenario_index import ScenarioIndex
 
-from adapters.ctrl_sim import (
-    CtrlSimOpponentAdapter,
-    DataBridge,
-    create_minimal_config,
-)
+from adapters.config_loader import create_minimal_config
+from adapters.data_bridge import DataBridge
+from adapters.opponent_vehicle import CtrlSimOpponentAdapter
 class NocturneCtrlSimAdversarial(gym.Env):
     """
     DCD adversarial environment: Nocturne scenario + CtRL-Sim opponent
