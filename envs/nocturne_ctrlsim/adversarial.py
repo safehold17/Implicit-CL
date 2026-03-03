@@ -137,6 +137,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
         opponent_sparse_inference_interval = int(
             kwargs.get("opponent_sparse_inference_interval", 2)
         )
+        sparse_inference_action_repeat = bool(
+            kwargs.get("sparse_inference_action_repeat", False)
+        )
 
         self.fixed_environment = fixed_environment
         self._set_process_seed(seed)
@@ -196,6 +199,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             device=device,
             opponent_sparse_inference_enabled=opponent_sparse_inference_enabled,
             opponent_sparse_inference_interval=opponent_sparse_inference_interval,
+            sparse_inference_action_repeat=sparse_inference_action_repeat,
             load_on_init=(opponent_runtime_mode == 'normal'),
         )
         if self.batch_inference:

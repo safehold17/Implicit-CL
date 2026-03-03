@@ -235,6 +235,9 @@ def _make_env(args):
             'opponent_sparse_inference_interval': getattr(
                 args, 'opponent_sparse_inference_interval', 2
             ),
+            'sparse_inference_action_repeat': getattr(
+                args, 'sparse_inference_action_repeat', False
+            ),
             'batch_inference': getattr(args, 'batch_inference', False),
         }
         env_kwargs.update(nocturne_kwargs)

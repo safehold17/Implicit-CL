@@ -79,34 +79,31 @@ def _get_step_controlled_ids(adapter: Any) -> List[int]:
     return list(adapter._vehicles_to_control)
 
 
-def _build_actions_from_sparse_cache(
+def _build_sparse_repeat_actions(
     adapter: Any,
     step_t: int,
-) -> Tuple[Dict[int, Tuple[float, float]], List[int]]:
+) -> Dict[int, Tuple[float, float]]:
     actions: Dict[int, Tuple[float, float]] = {}
-    missing_cache_vehicle_ids: List[int] = []
     for veh_id in _get_step_controlled_ids(adapter):
         veh_data = _require_vehicle_data(
             adapter._vehicle_data_dict,
             veh_id,
-            "sparse_cache",
+            "sparse_repeat",
             step_t,
         )
-        if step_t < adapter.history_steps - 1:
-            veh = adapter._last_vehicle_by_id.get(veh_id)
-            action = adapter._get_gt_action(veh_id, step_t, veh)
-        elif not veh_data["existence"][-1]:
+        if not veh_data["existence"][-1]:
             action = (0.0, 0.0)
         else:
-            cached_action = adapter.sparse_inference.get_cached_action(veh_id)
-            if cached_action is None:
-                missing_cache_vehicle_ids.append(veh_id)
-                continue
-            action = (float(cached_action[0]), float(cached_action[1]))
+            accel_hist = veh_data["acceleration"]
+            steer_hist = veh_data["steering"]
+            if accel_hist and steer_hist:
+                action = (float(accel_hist[-1]), float(steer_hist[-1]))
+            else:
+                action = (0.0, 0.0)
         veh_data["next_acceleration"] = action[0]
         veh_data["next_steering"] = action[1]
         actions[veh_id] = action
-    return actions, missing_cache_vehicle_ids
+    return actions
 
 
 def _clear_pending_sparse_actions(adapter: Any) -> None:
@@ -135,6 +132,29 @@ def _consume_pending_sparse_actions(
         return None
     _clear_pending_sparse_actions(adapter)
     return pending_actions
+
+
+def _set_predict_rtgs_override(adapter: Any, step_t: int, predict_rtgs: bool) -> None:
+    policy = adapter._policy
+    if policy is None:
+        return
+    adapter._predict_rtgs_override_prev = bool(policy.predict_rtgs)
+    adapter._predict_rtgs_override_step_t = int(step_t)
+    policy.predict_rtgs = bool(predict_rtgs)
+
+
+def _clear_predict_rtgs_override(adapter: Any, step_t: Optional[int] = None) -> None:
+    override_step = getattr(adapter, "_predict_rtgs_override_step_t", None)
+    if override_step is None:
+        return
+    if step_t is not None and int(step_t) != int(override_step):
+        return
+    policy = adapter._policy
+    prev_predict_rtgs = getattr(adapter, "_predict_rtgs_override_prev", None)
+    if policy is not None and prev_predict_rtgs is not None:
+        policy.predict_rtgs = bool(prev_predict_rtgs)
+    adapter._predict_rtgs_override_step_t = None
+    adapter._predict_rtgs_override_prev = None
 
 
 def _angle_sub_np(current_angle: np.ndarray, target_angle: np.ndarray) -> np.ndarray:
@@ -419,8 +439,10 @@ def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str
     """构建 prepared_dict 供主进程 ExternalTeacher.batched_forward() 使用。"""
     if adapter._policy is None or len(vehicles) == 0:
         _clear_pending_sparse_actions(adapter)
+        _clear_predict_rtgs_override(adapter)
         return None
 
+    _clear_predict_rtgs_override(adapter)
     adapter._last_vehicles = vehicles
     adapter._last_vehicle_by_id = {}
 
@@ -432,17 +454,18 @@ def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str
         _clear_pending_sparse_actions(adapter)
         return None
 
-    should_infer = adapter.sparse_inference.should_infer(
+    is_sparse_step = adapter.sparse_inference.is_sparse_step(
         t=t,
         history_steps=adapter.history_steps,
     )
-    if not should_infer:
-        actions, missing_cache_vehicle_ids = _build_actions_from_sparse_cache(adapter, t)
-        if not missing_cache_vehicle_ids:
-            _set_pending_sparse_actions(adapter, step_t=t, actions=actions)
-            return None
+    if is_sparse_step and adapter.sparse_inference_action_repeat:
+        actions = _build_sparse_repeat_actions(adapter, t)
+        _set_pending_sparse_actions(adapter, step_t=t, actions=actions)
+        return None
 
     _clear_pending_sparse_actions(adapter)
+    if is_sparse_step:
+        _set_predict_rtgs_override(adapter, step_t=t, predict_rtgs=False)
 
     focal_batches, dead_ids = build_focal_batches(adapter, t)
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1
@@ -586,82 +609,81 @@ def apply_predictions(adapter: Any, model_outputs: Optional[Dict[str, Any]]) -> 
     model_outputs = unpack_model_outputs(model_outputs)
     if model_outputs is None:
         pending_actions = _consume_pending_sparse_actions(adapter)
+        _clear_predict_rtgs_override(adapter)
         if pending_actions is not None:
             return pending_actions
         return {}
     validate_model_outputs_payload(model_outputs)
 
     step_t = int(model_outputs["step_t"])
-    status = str(model_outputs["status"])
-    if status == "skip":
-        pending_actions = _consume_pending_sparse_actions(adapter, step_t=step_t)
-        if pending_actions is not None:
-            return pending_actions
-        actions, missing_cache_vehicle_ids = _build_actions_from_sparse_cache(adapter, step_t)
-        if missing_cache_vehicle_ids:
-            missing = ",".join(str(veh_id) for veh_id in missing_cache_vehicle_ids)
+    try:
+        status = str(model_outputs["status"])
+        if status == "skip":
+            pending_actions = _consume_pending_sparse_actions(adapter, step_t=step_t)
+            if pending_actions is not None:
+                return pending_actions
+            return {}
+
+        action_results = model_outputs["action_results"]
+        rtg_results = model_outputs["rtg_results"]
+        processed_rtg_veh_ids = set(model_outputs["processed_rtg_veh_ids"])
+        dead_ids = set(model_outputs["dead_ids"])
+
+        for veh_id, (goal_val, veh_val, road_val) in rtg_results.items():
+            veh_data = _require_vehicle_data(adapter._vehicle_data_dict, veh_id, "rtg_results", step_t)
+            veh_data["next_rtg_goal"] = goal_val
+            veh_data["next_rtg_veh"] = veh_val
+            veh_data["next_rtg_road"] = road_val
+
+        if adapter._policy.predict_rtgs:
+            for veh_id, veh_data in adapter._vehicle_data_dict.items():
+                if veh_id in processed_rtg_veh_ids:
+                    missing = [key for key in _NEXT_RTG_KEYS if key not in veh_data]
+                    if missing:
+                        raise ValueError(
+                            f"Missing RTG fields for veh_id={veh_id} at step_t={step_t}: {missing}"
+                        )
+                    veh_data["rtgs"].append(
+                        np.array(
+                            [
+                                veh_data["next_rtg_goal"],
+                                veh_data["next_rtg_veh"],
+                                veh_data["next_rtg_road"],
+                            ]
+                        )
+                    )
+                else:
+                    veh_data["rtgs"].append(
+                        np.array([0] * adapter._policy.cfg_model.num_reward_components)
+                    )
+
+        for veh_id, (accel, steer) in action_results.items():
+            veh_data = _require_vehicle_data(adapter._vehicle_data_dict, veh_id, "action_results", step_t)
+            veh_data["next_acceleration"] = accel
+            veh_data["next_steering"] = steer
+
+        for veh_id in dead_ids:
+            veh_data = _require_vehicle_data(adapter._vehicle_data_dict, veh_id, "dead_ids", step_t)
+            veh_data["next_acceleration"] = 0.0
+            veh_data["next_steering"] = 0.0
+
+        actions: Dict[int, Tuple[float, float]] = {}
+        for veh_id in _get_step_controlled_ids(adapter):
+            if step_t < adapter.history_steps - 1:
+                veh = adapter._last_vehicle_by_id.get(veh_id)
+                actions[veh_id] = adapter._get_gt_action(veh_id, step_t, veh)
+                continue
+
+            if veh_id in action_results:
+                actions[veh_id] = action_results[veh_id]
+                continue
+            if veh_id in dead_ids:
+                actions[veh_id] = (0.0, 0.0)
+                continue
             raise ValueError(
-                f"Missing sparse-inference cached actions for veh_ids={missing} at step_t={step_t}"
+                f"Missing action for non-dead controlled vehicle veh_id={veh_id} at step_t={step_t}."
             )
+
         return actions
-
-    action_results = model_outputs["action_results"]
-    rtg_results = model_outputs["rtg_results"]
-    processed_rtg_veh_ids = set(model_outputs["processed_rtg_veh_ids"])
-    dead_ids = set(model_outputs["dead_ids"])
-
-    for veh_id, (goal_val, veh_val, road_val) in rtg_results.items():
-        veh_data = _require_vehicle_data(adapter._vehicle_data_dict, veh_id, "rtg_results", step_t)
-        veh_data["next_rtg_goal"] = goal_val
-        veh_data["next_rtg_veh"] = veh_val
-        veh_data["next_rtg_road"] = road_val
-
-    if adapter._policy.predict_rtgs:
-        for veh_id, veh_data in adapter._vehicle_data_dict.items():
-            if veh_id in processed_rtg_veh_ids:
-                missing = [key for key in _NEXT_RTG_KEYS if key not in veh_data]
-                if missing:
-                    raise ValueError(
-                        f"Missing RTG fields for veh_id={veh_id} at step_t={step_t}: {missing}"
-                    )
-                veh_data["rtgs"].append(
-                    np.array(
-                        [
-                            veh_data["next_rtg_goal"],
-                            veh_data["next_rtg_veh"],
-                            veh_data["next_rtg_road"],
-                        ]
-                    )
-                )
-            else:
-                veh_data["rtgs"].append(np.array([0] * adapter._policy.cfg_model.num_reward_components))
-
-    for veh_id, (accel, steer) in action_results.items():
-        veh_data = _require_vehicle_data(adapter._vehicle_data_dict, veh_id, "action_results", step_t)
-        veh_data["next_acceleration"] = accel
-        veh_data["next_steering"] = steer
-
-    for veh_id in dead_ids:
-        veh_data = _require_vehicle_data(adapter._vehicle_data_dict, veh_id, "dead_ids", step_t)
-        veh_data["next_acceleration"] = 0.0
-        veh_data["next_steering"] = 0.0
-
-    actions: Dict[int, Tuple[float, float]] = {}
-    for veh_id in _get_step_controlled_ids(adapter):
-        if step_t < adapter.history_steps - 1:
-            veh = adapter._last_vehicle_by_id.get(veh_id)
-            actions[veh_id] = adapter._get_gt_action(veh_id, step_t, veh)
-            continue
-
-        if veh_id in action_results:
-            actions[veh_id] = action_results[veh_id]
-            continue
-        if veh_id in dead_ids:
-            actions[veh_id] = (0.0, 0.0)
-            continue
-        raise ValueError(
-            f"Missing action for non-dead controlled vehicle veh_id={veh_id} at step_t={step_t}."
-        )
-
-    adapter.sparse_inference.cache_actions(actions)
-    return actions
+    finally:
+        _clear_predict_rtgs_override(adapter, step_t=step_t)

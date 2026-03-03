@@ -22,13 +22,21 @@ class SparseInferenceController:
     def clear_on_reset(self) -> None:
         self._cached_actions.clear()
 
-    def should_infer(self, t: int, history_steps: int) -> bool:
+    def is_sparse_step(self, t: int, history_steps: int) -> bool:
         if not self.cfg.enabled:
-            return True
+            return False
         anchor_t = history_steps - 1
         if t < anchor_t:
             return False
-        return (t - anchor_t) % self.cfg.interval == 0
+        phase = (t - anchor_t) % self.cfg.interval
+        return phase == self.cfg.interval - 1
+
+    def should_infer(self, t: int, history_steps: int) -> bool:
+        # Backward-compatible API: infer on non-sparse model steps.
+        anchor_t = history_steps - 1
+        if t < anchor_t:
+            return False
+        return not self.is_sparse_step(t=t, history_steps=history_steps)
 
     def cache_actions(self, actions: Dict[int, Tuple[float, float]]) -> None:
         self._cached_actions.update(actions)

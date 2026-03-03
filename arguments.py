@@ -815,7 +815,11 @@ parser.add_argument(
     '--opponent_sparse_inference_interval',
     type=int,
     default=2,
-    help='Sparse opponent inference interval N (infer once every N steps when enabled).')
+    help='Sparse opponent inference cycle length N (within each N model steps, the last step is sparse).')
+parser.add_argument(
+    '--sparse_inference_action_repeat',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Sparse-step action mode: True=repeat previous action, False=use recursively updated RTG to infer action.')
 
 # ============== ClearML ==============
 parser.add_argument(
