@@ -676,15 +676,16 @@ class CtrlSimOpponentAdapter:
             t
         )
         
-        # 3. 执行推理（参考: policy_evaluator.py 第 530 行）
-        self._vehicle_data_dict = self._policy.predict(
-            self._vehicle_data_dict,
-            self._gt_data_dict,
-            self._preproc_data,
-            self.dataset,
-            self._vehicles_to_control,
-            t
-        )
+        # 3. 执行推理（warm-up 阶段仅使用 GT 动作，不做模型推理）
+        if t >= self.history_steps - 1:
+            self._vehicle_data_dict = self._policy.predict(
+                self._vehicle_data_dict,
+                self._gt_data_dict,
+                self._preproc_data,
+                self.dataset,
+                self._vehicles_to_control,
+                t
+            )
         
         # 4. 提取动作（参考: policy_evaluator.py 的 warm-up 逻辑）
         actions = {}
@@ -1089,73 +1090,154 @@ class CtrlSimOpponentAdapter:
         self, t: int, vehicle_data_dict: Dict
     ) -> Dict:
         """
-        计算 dense reward（包含车-车距离和车-边界距离奖励）
-        
+        计算 dense reward（仅对受控车辆）
+
         参考: evaluator.py 第 127-170 行 compute_dense_reward()
         """
         veh_ids = list(vehicle_data_dict.keys())
         if not veh_ids:
             return vehicle_data_dict
-        
-        all_x = np.array([vehicle_data_dict[v]["position"][t]['x'] for v in veh_ids])
-        all_y = np.array([vehicle_data_dict[v]["position"][t]['y'] for v in veh_ids])
-        all_existence = np.array([vehicle_data_dict[v]["existence"][t] for v in veh_ids])
-        
-        processed_rewards = np.array([vehicle_data_dict[v]['reward'] for v in veh_ids])
-        processed_rewards = processed_rewards * all_existence[:, np.newaxis, np.newaxis].astype(float)
-        
-        ag_data_xy = np.concatenate([all_x[:, np.newaxis], all_y[:, np.newaxis]], axis=1)[:, np.newaxis, :]
-        if len(self._road_edge_polylines) > 0:
-            veh_edge_dist_rewards = self.dataset.compute_dist_to_nearest_road_edge_rewards(
-                ag_data_xy, self._road_edge_polylines
-            )
-            veh_edge_dist_rewards = veh_edge_dist_rewards * all_existence[:, np.newaxis].astype(float)
-        else:
-            veh_edge_dist_rewards = np.zeros((len(veh_ids), 1), dtype=float)
-        
-        ag_data_xy_exist = np.concatenate([
-            all_x[:, np.newaxis],
-            all_y[:, np.newaxis],
-            all_existence[:, np.newaxis]
-        ], axis=1)[:, np.newaxis, :]
-        veh_veh_dist_rewards = self.dataset.compute_dist_to_nearest_vehicle_rewards(
-            ag_data_xy_exist, normalize=False
-        ) * all_existence[:, np.newaxis].astype(float)
-        
-        all_gt_x = np.array([vehicle_data_dict[v]["gt_position"][t]['x'] for v in veh_ids])
-        all_gt_y = np.array([vehicle_data_dict[v]["gt_position"][t]['y'] for v in veh_ids])
-        gt_ag_data = np.concatenate([
-            all_gt_x[:, np.newaxis],
-            all_gt_y[:, np.newaxis],
-            all_existence[:, np.newaxis]
-        ], axis=1)[:, np.newaxis, :]
-        veh_veh_dist_rewards_gt = self.dataset.compute_dist_to_nearest_vehicle_rewards(
-            gt_ag_data, normalize=False
-        ) * all_existence[:, np.newaxis].astype(float)
-        
+
+        controlled_ids = [
+            veh_id for veh_id in self._vehicles_to_control
+            if veh_id in vehicle_data_dict
+        ]
+        veh_id_to_all_idx = {veh_id: i for i, veh_id in enumerate(veh_ids)}
+
+        all_x = np.array([vehicle_data_dict[v]["position"][t]['x'] for v in veh_ids], dtype=np.float32)
+        all_y = np.array([vehicle_data_dict[v]["position"][t]['y'] for v in veh_ids], dtype=np.float32)
+        all_existence = np.array([vehicle_data_dict[v]["existence"][t] for v in veh_ids], dtype=np.float32)
+        all_positions = np.stack([all_x, all_y], axis=1)
+
+        all_gt_x = np.array([vehicle_data_dict[v]["gt_position"][t]['x'] for v in veh_ids], dtype=np.float32)
+        all_gt_y = np.array([vehicle_data_dict[v]["gt_position"][t]['y'] for v in veh_ids], dtype=np.float32)
+        all_gt_positions = np.stack([all_gt_x, all_gt_y], axis=1)
+
+        nearest_dist_map: Dict[int, float] = {veh_id: 0.0 for veh_id in veh_ids}
+        gt_nearest_dist_map: Dict[int, float] = {veh_id: 0.0 for veh_id in veh_ids}
+        dense_reward_map: Dict[int, np.ndarray] = {}
+
         cfg_dataset = self.cfg.dataset.waymo
-        for i, veh_id in enumerate(veh_ids):
-            vehicle_data_dict[veh_id]["nearest_dist"].append(
-                veh_veh_dist_rewards[i, 0] * cfg_dataset.max_veh_veh_distance
+        dense_template = np.zeros(self.cfg.model.num_reward_components, dtype=np.float32)
+
+        if controlled_ids:
+            controlled_all_indices = np.array(
+                [veh_id_to_all_idx[veh_id] for veh_id in controlled_ids],
+                dtype=np.int64,
             )
-            vehicle_data_dict[veh_id]["gt_nearest_dist"].append(
-                veh_veh_dist_rewards_gt[i, 0] * cfg_dataset.max_veh_veh_distance
+            controlled_positions = all_positions[controlled_all_indices]
+            controlled_gt_positions = all_gt_positions[controlled_all_indices]
+            controlled_existence = all_existence[controlled_all_indices]
+
+            if len(self._road_edge_polylines) > 0:
+                controlled_xy = controlled_positions[:, np.newaxis, :]
+                veh_edge_dist_rewards = self.dataset.compute_dist_to_nearest_road_edge_rewards(
+                    controlled_xy,
+                    self._road_edge_polylines,
+                )
+                veh_edge_dist_rewards = (
+                    veh_edge_dist_rewards
+                    * controlled_existence[:, np.newaxis].astype(float)
+                )
+            else:
+                veh_edge_dist_rewards = np.zeros((len(controlled_ids), 1), dtype=float)
+
+            veh_veh_dist_rewards = self._compute_nearest_dist_to_all(
+                target_positions=controlled_positions,
+                all_positions=all_positions,
+                all_existence=all_existence,
+                target_existence=controlled_existence,
+                target_all_indices=controlled_all_indices,
             )
-        
-        veh_veh_dist_rewards_norm = np.clip(
-            veh_veh_dist_rewards, a_min=0.0, a_max=cfg_dataset.max_veh_veh_distance
-        )
-        veh_veh_dist_rewards_norm = veh_veh_dist_rewards_norm / cfg_dataset.max_veh_veh_distance
-        
-        all_rewards = self.dataset.compute_rewards(
-            ag_data_xy_exist, processed_rewards, veh_edge_dist_rewards, veh_veh_dist_rewards_norm
-        )
-        all_rewards = np.concatenate([all_rewards[:, :, :1], all_rewards[:, :, 3:]], axis=-1)
-        
-        for i, veh_id in enumerate(veh_ids):
-            vehicle_data_dict[veh_id]["dense_reward"].append(all_rewards[i, 0])
-        
+            veh_veh_dist_rewards_gt = self._compute_nearest_dist_to_all(
+                target_positions=controlled_gt_positions,
+                all_positions=all_gt_positions,
+                all_existence=all_existence,
+                target_existence=controlled_existence,
+                target_all_indices=controlled_all_indices,
+            )
+
+            for i, veh_id in enumerate(controlled_ids):
+                nearest_dist_map[veh_id] = float(
+                    veh_veh_dist_rewards[i, 0] * cfg_dataset.max_veh_veh_distance
+                )
+                gt_nearest_dist_map[veh_id] = float(
+                    veh_veh_dist_rewards_gt[i, 0] * cfg_dataset.max_veh_veh_distance
+                )
+
+            veh_veh_dist_rewards_norm = np.clip(
+                veh_veh_dist_rewards,
+                a_min=0.0,
+                a_max=cfg_dataset.max_veh_veh_distance,
+            )
+            veh_veh_dist_rewards_norm = (
+                veh_veh_dist_rewards_norm / cfg_dataset.max_veh_veh_distance
+            )
+
+            processed_rewards = np.array(
+                [vehicle_data_dict[v]["reward"] for v in controlled_ids]
+            )
+            processed_rewards = (
+                processed_rewards
+                * controlled_existence[:, np.newaxis, np.newaxis].astype(float)
+            )
+            controlled_ag_data = np.concatenate(
+                [
+                    controlled_positions,
+                    controlled_existence[:, np.newaxis],
+                ],
+                axis=1,
+            )[:, np.newaxis, :]
+            controlled_rewards = self.dataset.compute_rewards(
+                controlled_ag_data,
+                processed_rewards,
+                veh_edge_dist_rewards,
+                veh_veh_dist_rewards_norm,
+            )
+            controlled_rewards = np.concatenate(
+                [controlled_rewards[:, :, :1], controlled_rewards[:, :, 3:]],
+                axis=-1,
+            )
+
+            dense_template = np.zeros_like(controlled_rewards[0, 0], dtype=np.float32)
+            for i, veh_id in enumerate(controlled_ids):
+                dense_reward_map[veh_id] = controlled_rewards[i, 0]
+
+        for veh_id in veh_ids:
+            vehicle_data_dict[veh_id]["nearest_dist"].append(nearest_dist_map[veh_id])
+            vehicle_data_dict[veh_id]["gt_nearest_dist"].append(gt_nearest_dist_map[veh_id])
+            vehicle_data_dict[veh_id]["dense_reward"].append(
+                dense_reward_map.get(veh_id, dense_template.copy())
+            )
+
         return vehicle_data_dict
+
+    @staticmethod
+    def _compute_nearest_dist_to_all(
+        target_positions: np.ndarray,
+        all_positions: np.ndarray,
+        all_existence: np.ndarray,
+        target_existence: np.ndarray,
+        target_all_indices: np.ndarray,
+    ) -> np.ndarray:
+        """计算目标车辆到全体车辆的最近距离（不含自身）。"""
+        if len(target_positions) == 0:
+            return np.zeros((0, 1), dtype=np.float32)
+
+        with np.errstate(invalid='ignore'):
+            diff = target_positions[:, np.newaxis, :] - all_positions[np.newaxis, :, :]
+            squared_dist = np.sum(diff ** 2, axis=-1)
+
+        valid_all = all_existence.astype(bool)
+        squared_dist[:, ~valid_all] = np.inf
+        row_idx = np.arange(len(target_positions), dtype=np.int64)
+        squared_dist[row_idx, target_all_indices] = np.inf
+
+        nearest = np.sqrt(np.min(squared_dist, axis=1))
+        nearest = np.nan_to_num(nearest, nan=0.0, posinf=0.0, neginf=0.0)
+        nearest = nearest * target_existence
+
+        return nearest[:, np.newaxis].astype(np.float32)
 
     def finalize(self, vehicles: List) -> Dict:
         """

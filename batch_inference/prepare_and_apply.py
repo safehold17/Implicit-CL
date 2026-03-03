@@ -80,8 +80,8 @@ def _build_focal_batch(
     if len(road_points) == 0:
         return None, [], True
 
-    if t == 0:
-        policy.relevant_agent_idxs[focal_id] = []
+    has_cached_relevant_agents = focal_id in policy.relevant_agent_idxs
+    cached_relevant_agent_idxs = policy.relevant_agent_idxs.get(focal_id, [])
 
     normalize_timestep = 0
     rel_timesteps = np.repeat(np.expand_dims(timesteps, 0), rl.max_num_agents, axis=0)
@@ -103,14 +103,14 @@ def _build_focal_batch(
         origin_agent_idx,
         normalize_timestep,
         moving_agent_mask,
-        policy.relevant_agent_idxs[focal_id],
+        cached_relevant_agent_idxs,
     )
 
     accounted_veh_ids = [policy.idx_to_veh_id[idx] for idx in new_agent_idx_dict.keys()]
     additionally_accounted = [veh_id for veh_id in remaining_veh_ids if veh_id in accounted_veh_ids]
     cur_data_veh_ids = [focal_id] + additionally_accounted
 
-    if t == 0:
+    if not has_cached_relevant_agents:
         relevant_ids_for_store = list(new_agent_idx_dict.keys())
     else:
         relevant_ids_for_store = relevant_agent_idxs
@@ -157,13 +157,14 @@ def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str
         return None
 
     adapter._last_vehicles = vehicles
-    if t < adapter.history_steps - 1:
-        adapter._last_vehicle_by_id = {veh.getID(): veh for veh in vehicles}
-    else:
-        adapter._last_vehicle_by_id = {}
+    adapter._last_vehicle_by_id = {}
 
     adapter._vehicle_data_dict = adapter._update_vehicle_data_dict(t, vehicles, adapter._vehicle_data_dict)
     adapter._policy.update_state(adapter._vehicle_data_dict, adapter._vehicles_to_control, t)
+
+    # warm-up 阶段使用 GT 动作，不做 opponent 模型推理与 focal batch 组装
+    if t < adapter.history_steps - 1:
+        return None
 
     focal_batches, dead_ids = build_focal_batches(adapter, t)
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1
