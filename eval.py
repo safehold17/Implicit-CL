@@ -154,6 +154,10 @@ def parse_args():
 		'--record_video',
 		type=str2bool, nargs='?', const=True, default=False,
 		help="Record video of first environment evaluation process.")
+	parser.add_argument(
+		'--batch_inference',
+		type=str2bool, nargs='?', const=True, default=False,
+		help='Enable main-process batched ctrl-sim inference for Nocturne evaluation.')
 
 	return parser.parse_args()
 
@@ -213,6 +217,7 @@ class Evaluator(object):
 				'opponent_vehicle_number',
 				'opponent_sparse_inference_enabled',
 				'opponent_sparse_inference_interval',
+				'batch_inference',
 				'veh_veh_collision_rew_multiplier',
 				'veh_edge_collision_rew_multiplier',
 				'pos_target_achieved_rew_multiplier',
@@ -319,10 +324,21 @@ class Evaluator(object):
 						else:
 							obs = self.env.reset_agent()
 						return obs
-					
+
 					def step(self, action):
 						self._start_if_needed()
 						obs, reward, done, info = self.env.step(action)
+						if done:
+							self._stop_if_recording()
+						return obs, reward, done, info
+
+					def step_prepare(self, action):
+						self._start_if_needed()
+						return self.env.step_prepare(action)
+
+					def step_complete(self, model_output):
+						self._start_if_needed()
+						obs, reward, done, info = self.env.step_complete(model_output)
 						if done:
 							self._stop_if_recording()
 						return obs, reward, done, info
@@ -422,7 +438,8 @@ class Evaluator(object):
 		show_progress=False,
 		render=False,
 		accumulator='mean',
-		return_episode_returns=False):
+		return_episode_returns=False,
+		external_teacher=None):
 
 		# Evaluate agent for N episodes
 		venv = self.venv
@@ -476,14 +493,45 @@ class Evaluator(object):
 					_, action, _, recurrent_hidden_states = agent.act(
 						obs, recurrent_hidden_states, masks, deterministic=deterministic)
 
-				# Observe reward and next obs
-				action = action.cpu().numpy()
-				if not self.is_discrete_actions:
-					action = agent.process_action(action)
-				if env_name.startswith('Nocturne'):
-					obs, reward, done, infos = venv.step_env(action, reset_random=True)
-				else:
-					obs, reward, done, infos = venv.step(action)
+					# Observe reward and next obs
+					action = action.cpu().numpy()
+					if not self.is_discrete_actions:
+						action = agent.process_action(action)
+					use_batch_inference = (
+						env_name.startswith('Nocturne')
+						and self.kwargs.get('batch_inference', False)
+						and external_teacher is not None
+					)
+					if use_batch_inference:
+						per_env_prepared = venv.step_prepare(action)
+						first_prepared = next(
+							(item for item in per_env_prepared if item is not None),
+							None,
+						)
+						if isinstance(first_prepared, dict) and (
+							'ego' in first_prepared or 'opponent' in first_prepared
+						):
+							ego_prepared = [
+								item.get('ego') if isinstance(item, dict) else None
+								for item in per_env_prepared
+							]
+							opp_prepared = [
+								item.get('opponent') if isinstance(item, dict) else None
+								for item in per_env_prepared
+							]
+							ego_results = external_teacher.batched_forward(ego_prepared)
+							opp_results = external_teacher.batched_forward(opp_prepared)
+							model_outputs = [
+								{'ego': ego_output, 'opponent': opp_output}
+								for ego_output, opp_output in zip(ego_results, opp_results)
+							]
+						else:
+							model_outputs = external_teacher.batched_forward(per_env_prepared)
+						obs, reward, done, infos = venv.step_complete(model_outputs, reset_random=True)
+					elif env_name.startswith('Nocturne'):
+						obs, reward, done, infos = venv.step_env(action, reset_random=True)
+					else:
+						obs, reward, done, infos = venv.step(action)
 
 				masks = torch.tensor(
 					[[0.0] if done_ else [1.0] for done_ in done],
@@ -543,6 +591,7 @@ def _collect_nocturne_required_args(flags, cli_args):
 		"opponent_vehicle_number",
 		"opponent_sparse_inference_enabled",
 		"opponent_sparse_inference_interval",
+		"batch_inference",
 		"scenario_data_dir",
 		"preprocess_dir",
 		"vehicle_map_path",
@@ -706,6 +755,19 @@ if __name__ == '__main__':
 
 			num_seeds += 1
 
+			external_teacher = None
+			if args.batch_inference and any(name.startswith("Nocturne") for name in env_names):
+				from batch_inference import ExternalTeacher
+				opponent_checkpoint = nocturne_required.get("opponent_checkpoint")
+				if opponent_checkpoint is None:
+					raise ValueError(
+						"batch_inference requires opponent_checkpoint for Nocturne evaluation."
+					)
+				external_teacher = ExternalTeacher(
+					checkpoint_path=opponent_checkpoint,
+					device=device,
+				)
+
 			# Evaluate environment batch in increments of chunk size
 			for i in range(num_chunks):
 				start_idx = i*chunk_size
@@ -729,7 +791,8 @@ if __name__ == '__main__':
 					deterministic=args.deterministic, 
 					show_progress=args.verbose,
 					render=args.render,
-					accumulator=args.accumulator)
+					accumulator=args.accumulator,
+					external_teacher=external_teacher)
 
 				for k,v in stats.items():
 					if args.accumulator:

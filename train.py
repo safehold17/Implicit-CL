@@ -340,7 +340,8 @@ if __name__ == '__main__':
                 preprocess_dir=args.preprocess_dir,
                 vehicle_map_path=args.vehicle_map_path,
                 max_episode_steps=args.nocturne_max_episode_steps,
-                tilt_range=args.tilt_range)
+                tilt_range=args.tilt_range,
+                batch_inference=args.batch_inference)
 
     # === Train === 
     last_checkpoint_idx = getattr(train_runner, args.checkpoint_basis)
@@ -416,10 +417,12 @@ if __name__ == '__main__':
                     if j == num_updates - 1:
                         test_stats, agent_env_returns = evaluator.evaluate(
                             train_runner.agents['agent'],
-                            return_episode_returns=True)
+                            return_episode_returns=True,
+                            external_teacher=train_runner.external_teacher)
                     else:
                         test_stats = evaluator.evaluate(
-                            train_runner.agents['agent'])
+                            train_runner.agents['agent'],
+                            external_teacher=train_runner.external_teacher)
                     stats.update(test_stats)
                     if train_runner.agents.get('adversary_agent') is not None and (
                         args.use_accel_paired or j == num_updates - 1
@@ -427,9 +430,12 @@ if __name__ == '__main__':
                         if j == num_updates - 1:
                             adv_test_stats, adv_env_returns = evaluator.evaluate(
                                 train_runner.agents['adversary_agent'],
-                                return_episode_returns=True)
+                                return_episode_returns=True,
+                                external_teacher=train_runner.external_teacher)
                         else:
-                            adv_test_stats = evaluator.evaluate(train_runner.agents['adversary_agent'])
+                            adv_test_stats = evaluator.evaluate(
+                                train_runner.agents['adversary_agent'],
+                                external_teacher=train_runner.external_teacher)
                         if args.use_accel_paired:
                             curr_keys = list(adv_test_stats.keys())
                             for curr_key in curr_keys:
