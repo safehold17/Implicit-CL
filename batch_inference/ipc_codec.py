@@ -74,6 +74,37 @@ def _as_float32_array(values: Sequence[Any]) -> np.ndarray:
     return np.asarray(values, dtype=np.float32)
 
 
+def _as_int_list(values: Any) -> List[int]:
+    return [int(v) for v in np.asarray(values, dtype=np.int32).tolist()]
+
+
+def _pack_result_map(
+    result_map: Dict[int, Tuple[float, ...]],
+    value_width: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    veh_ids = _as_int32_array(list(result_map.keys()))
+    if veh_ids.size == 0:
+        return veh_ids, np.zeros((0, value_width), dtype=np.float32)
+    values = _as_float32_array([result_map[int(k)] for k in veh_ids.tolist()]).reshape((-1, value_width))
+    return veh_ids, values
+
+
+def _unpack_result_map(
+    veh_ids_payload: Any,
+    values_payload: Any,
+    value_width: int,
+    field_name: str,
+) -> Dict[int, Tuple[float, ...]]:
+    veh_ids = np.asarray(veh_ids_payload, dtype=np.int32)
+    values = np.asarray(values_payload, dtype=np.float32).reshape((-1, value_width))
+    if veh_ids.shape[0] != values.shape[0]:
+        raise ValueError(f"packed model_outputs payload {field_name} arrays length mismatch.")
+    return {
+        int(veh_id): tuple(float(component) for component in val)
+        for veh_id, val in zip(veh_ids.tolist(), values.tolist())
+    }
+
+
 def _pack_dict_int32(mapping: Dict[Any, Any]) -> Tuple[np.ndarray, np.ndarray]:
     if not mapping:
         return _as_int32_array([]), _as_int32_array([])
@@ -326,7 +357,7 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "status": status,
         "step_t": int(packed["step_t"]),
         "token_index": int(packed["token_index"]),
-        "dead_ids": [int(v) for v in np.asarray(packed["dead_ids"], dtype=np.int32).tolist()],
+        "dead_ids": _as_int_list(packed["dead_ids"]),
     }
     if status == "skip":
         return prepared
@@ -389,13 +420,14 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     focal_ids = np.asarray(packed["focal_ids"], dtype=np.int32)
     predict_rtgs_arr = np.asarray(packed["predict_rtgs"], dtype=np.bool_)
 
+    new_agent_offsets = np.asarray(packed["new_agent_idx_offsets"], dtype=np.int32)
     new_agent_keys_rows = _unpack_ragged_int_lists(
         np.asarray(packed["new_agent_idx_keys"], dtype=np.int32),
-        np.asarray(packed["new_agent_idx_offsets"], dtype=np.int32),
+        new_agent_offsets,
     )
     new_agent_vals_rows = _unpack_ragged_int_lists(
         np.asarray(packed["new_agent_idx_vals"], dtype=np.int32),
-        np.asarray(packed["new_agent_idx_offsets"], dtype=np.int32),
+        new_agent_offsets,
     )
     data_veh_rows = _unpack_ragged_int_lists(
         np.asarray(packed["data_veh_ids_flat"], dtype=np.int32),
@@ -465,17 +497,14 @@ def pack_model_outputs(model_outputs: Optional[Dict[str, Any]]) -> Optional[Dict
     model_outputs_typed = cast(ModelOutputsPayload, model_outputs)
     status = _require_valid_status(model_outputs_typed["status"], "model_outputs")
 
-    action_results = model_outputs_typed["action_results"]
-    action_veh_ids = _as_int32_array(list(action_results.keys()))
-    action_values = _as_float32_array(
-        [action_results[int(k)] for k in action_veh_ids.tolist()]
-    ).reshape((-1, 2))
-
-    rtg_results = model_outputs_typed["rtg_results"]
-    rtg_veh_ids = _as_int32_array(list(rtg_results.keys()))
-    rtg_values = _as_float32_array(
-        [rtg_results[int(k)] for k in rtg_veh_ids.tolist()]
-    ).reshape((-1, 3))
+    action_veh_ids, action_values = _pack_result_map(
+        model_outputs_typed["action_results"],
+        value_width=2,
+    )
+    rtg_veh_ids, rtg_values = _pack_result_map(
+        model_outputs_typed["rtg_results"],
+        value_width=3,
+    )
 
     return {
         "ipc_format": MODEL_OUTPUTS_IPC_FORMAT,
@@ -517,23 +546,18 @@ def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str,
     )
     status = _require_valid_status(packed["status"], "packed model_outputs payload")
 
-    action_veh_ids = np.asarray(packed["action_veh_ids"], dtype=np.int32)
-    action_values = np.asarray(packed["action_values"], dtype=np.float32).reshape((-1, 2))
-    if action_veh_ids.shape[0] != action_values.shape[0]:
-        raise ValueError("packed model_outputs payload action arrays length mismatch.")
-    action_results = {
-        int(veh_id): (float(val[0]), float(val[1]))
-        for veh_id, val in zip(action_veh_ids.tolist(), action_values.tolist())
-    }
-
-    rtg_veh_ids = np.asarray(packed["rtg_veh_ids"], dtype=np.int32)
-    rtg_values = np.asarray(packed["rtg_values"], dtype=np.float32).reshape((-1, 3))
-    if rtg_veh_ids.shape[0] != rtg_values.shape[0]:
-        raise ValueError("packed model_outputs payload rtg arrays length mismatch.")
-    rtg_results = {
-        int(veh_id): (float(val[0]), float(val[1]), float(val[2]))
-        for veh_id, val in zip(rtg_veh_ids.tolist(), rtg_values.tolist())
-    }
+    action_results = _unpack_result_map(
+        packed["action_veh_ids"],
+        packed["action_values"],
+        value_width=2,
+        field_name="action",
+    )
+    rtg_results = _unpack_result_map(
+        packed["rtg_veh_ids"],
+        packed["rtg_values"],
+        value_width=3,
+        field_name="rtg",
+    )
 
     return {
         "status": status,
@@ -542,9 +566,6 @@ def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str,
         "token_index": int(packed["token_index"]),
         "action_results": action_results,
         "rtg_results": rtg_results,
-        "processed_rtg_veh_ids": [
-            int(v)
-            for v in np.asarray(packed["processed_rtg_veh_ids"], dtype=np.int32).tolist()
-        ],
-        "dead_ids": [int(v) for v in np.asarray(packed["dead_ids"], dtype=np.int32).tolist()],
+        "processed_rtg_veh_ids": _as_int_list(packed["processed_rtg_veh_ids"]),
+        "dead_ids": _as_int_list(packed["dead_ids"]),
     }

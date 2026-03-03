@@ -6,28 +6,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .ipc_codec import pack_prepared, unpack_model_outputs
+from .ipc_codec import pack_prepared, unpack_model_outputs, validate_model_outputs_payload
 
-_REQUIRED_MODEL_OUTPUT_KEYS = (
-    "status",
-    "env_idx",
-    "step_t",
-    "token_index",
-    "action_results",
-    "rtg_results",
-    "processed_rtg_veh_ids",
-    "dead_ids",
-)
+_NEXT_RTG_KEYS = ("next_rtg_goal", "next_rtg_veh", "next_rtg_road")
 
 
 def _slice_policy_window(policy: Any, t: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     tcl = policy.cfg_rl_waymo.train_context_length
-    if t < tcl:
-        start = 0
-        end = tcl
-    else:
-        start = t - (tcl - 1)
-        end = t + 1
+    start = 0 if t < tcl else t - (tcl - 1)
+    end = tcl if t < tcl else t + 1
 
     return (
         policy.states[:, start:end].copy(),
@@ -52,33 +39,19 @@ def _normalize_rtgs_inplace(rtgs: np.ndarray, rl: Any) -> None:
 
 
 def _get_control_vehicle_queue(adapter: Any) -> List[int]:
-    if adapter._vehicles_to_control_sorted:
-        return list(adapter._vehicles_to_control_sorted)
-    return list(adapter._vehicles_to_control)
+    return list(adapter._vehicles_to_control_sorted or adapter._vehicles_to_control)
 
 
-def _build_motion_data_np(
-    rel_ag_states: np.ndarray,
-    rel_ag_types: np.ndarray,
-    rel_goals: np.ndarray,
-    rel_actions: np.ndarray,
-    rel_rtgs: np.ndarray,
-    rel_timesteps: np.ndarray,
-    rel_moving_agent_mask: np.ndarray,
-    rel_road_points: np.ndarray,
-    rel_road_types: np.ndarray,
-) -> Dict[str, np.ndarray]:
-    return {
-        "agent_states": rel_ag_states,
-        "agent_types": rel_ag_types,
-        "goals": rel_goals,
-        "actions": rel_actions,
-        "rtgs": rel_rtgs,
-        "timesteps": rel_timesteps,
-        "moving_agent_mask": rel_moving_agent_mask,
-        "road_points": rel_road_points,
-        "road_types": rel_road_types,
-    }
+def _require_vehicle_data(
+    vehicle_data_dict: Dict[int, Dict[str, Any]],
+    veh_id: int,
+    source_name: str,
+    step_t: int,
+) -> Dict[str, Any]:
+    veh_data = vehicle_data_dict.get(veh_id)
+    if veh_data is None:
+        raise ValueError(f"Unknown veh_id={veh_id} in {source_name} at step_t={step_t}")
+    return veh_data
 
 
 def _build_focal_batch(
@@ -155,17 +128,17 @@ def _build_focal_batch(
         rel_goals,
         new_origin_agent_idx,
     )
-    motion_data_np = _build_motion_data_np(
-        rel_ag_states,
-        rel_ag_types,
-        rel_goals,
-        rel_actions,
-        rel_rtgs,
-        rel_timesteps,
-        rel_moving_agent_mask,
-        rel_road_points,
-        rel_road_types,
-    )
+    motion_data_np = {
+        "agent_states": rel_ag_states,
+        "agent_types": rel_ag_types,
+        "goals": rel_goals,
+        "actions": rel_actions,
+        "rtgs": rel_rtgs,
+        "timesteps": rel_timesteps,
+        "moving_agent_mask": rel_moving_agent_mask,
+        "road_points": rel_road_points,
+        "road_types": rel_road_types,
+    }
     veh_ids_in_context = [policy.idx_to_veh_id[idx] for idx in policy.relevant_agent_idxs[focal_id]]
     focal_batch = {
         "focal_id": focal_id,
@@ -176,14 +149,6 @@ def _build_focal_batch(
         "predict_rtgs": bool(policy.predict_rtgs),
     }
     return focal_batch, additionally_accounted, False
-
-
-def _validate_model_outputs_payload(model_outputs: Dict[str, Any]) -> None:
-    missing = [key for key in _REQUIRED_MODEL_OUTPUT_KEYS if key not in model_outputs]
-    if missing:
-        raise ValueError(f"model_outputs missing required keys: {missing}")
-    if model_outputs["status"] not in {"ok", "skip"}:
-        raise ValueError(f"model_outputs has invalid status={model_outputs['status']!r}")
 
 
 def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str, Any]]:
@@ -205,9 +170,9 @@ def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str
     if not focal_batches and not dead_ids:
         return pack_prepared({"status": "skip", "step_t": t, "token_index": token_index, "dead_ids": []})
 
-    tilt_by_veh_id: Dict[int, Tuple[int, int, int]] = {}
-    if adapter.per_vehicle_tilting:
-        tilt_by_veh_id = dict(adapter.per_vehicle_tilting)
+    tilt_by_veh_id: Dict[int, Tuple[int, int, int]] = (
+        dict(adapter.per_vehicle_tilting) if adapter.per_vehicle_tilting else {}
+    )
 
     prepared_dict = {
         "status": "ok",
@@ -280,7 +245,7 @@ def apply_predictions(adapter: Any, model_outputs: Optional[Dict[str, Any]]) -> 
     model_outputs = unpack_model_outputs(model_outputs)
     if model_outputs is None:
         return {}
-    _validate_model_outputs_payload(model_outputs)
+    validate_model_outputs_payload(model_outputs)
 
     step_t = int(model_outputs["step_t"])
     action_results = model_outputs["action_results"]
@@ -289,17 +254,15 @@ def apply_predictions(adapter: Any, model_outputs: Optional[Dict[str, Any]]) -> 
     dead_ids = set(model_outputs["dead_ids"])
 
     for veh_id, (goal_val, veh_val, road_val) in rtg_results.items():
-        if veh_id not in adapter._vehicle_data_dict:
-            raise ValueError(f"Unknown veh_id={veh_id} in rtg_results at step_t={step_t}")
-        adapter._vehicle_data_dict[veh_id]["next_rtg_goal"] = goal_val
-        adapter._vehicle_data_dict[veh_id]["next_rtg_veh"] = veh_val
-        adapter._vehicle_data_dict[veh_id]["next_rtg_road"] = road_val
+        veh_data = _require_vehicle_data(adapter._vehicle_data_dict, veh_id, "rtg_results", step_t)
+        veh_data["next_rtg_goal"] = goal_val
+        veh_data["next_rtg_veh"] = veh_val
+        veh_data["next_rtg_road"] = road_val
 
     if adapter._policy.predict_rtgs:
         for veh_id, veh_data in adapter._vehicle_data_dict.items():
             if veh_id in processed_rtg_veh_ids:
-                required_rtg_keys = ("next_rtg_goal", "next_rtg_veh", "next_rtg_road")
-                missing = [key for key in required_rtg_keys if key not in veh_data]
+                missing = [key for key in _NEXT_RTG_KEYS if key not in veh_data]
                 if missing:
                     raise ValueError(
                         f"Missing RTG fields for veh_id={veh_id} at step_t={step_t}: {missing}"
@@ -317,16 +280,14 @@ def apply_predictions(adapter: Any, model_outputs: Optional[Dict[str, Any]]) -> 
                 veh_data["rtgs"].append(np.array([0] * adapter._policy.cfg_model.num_reward_components))
 
     for veh_id, (accel, steer) in action_results.items():
-        if veh_id not in adapter._vehicle_data_dict:
-            raise ValueError(f"Unknown veh_id={veh_id} in action_results at step_t={step_t}")
-        adapter._vehicle_data_dict[veh_id]["next_acceleration"] = accel
-        adapter._vehicle_data_dict[veh_id]["next_steering"] = steer
+        veh_data = _require_vehicle_data(adapter._vehicle_data_dict, veh_id, "action_results", step_t)
+        veh_data["next_acceleration"] = accel
+        veh_data["next_steering"] = steer
 
     for veh_id in dead_ids:
-        if veh_id not in adapter._vehicle_data_dict:
-            raise ValueError(f"Unknown veh_id={veh_id} in dead_ids at step_t={step_t}")
-        adapter._vehicle_data_dict[veh_id]["next_acceleration"] = 0.0
-        adapter._vehicle_data_dict[veh_id]["next_steering"] = 0.0
+        veh_data = _require_vehicle_data(adapter._vehicle_data_dict, veh_id, "dead_ids", step_t)
+        veh_data["next_acceleration"] = 0.0
+        veh_data["next_steering"] = 0.0
 
     actions: Dict[int, Tuple[float, float]] = {}
     for veh_id in adapter._vehicles_to_control:

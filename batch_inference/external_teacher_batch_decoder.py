@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import torch
 
@@ -13,6 +13,48 @@ from .discretization_utils import (
     decode_predicted_rtg,
     get_tilt_logits,
 )
+
+
+def _resolve_idx_in_model(
+    veh_id: int,
+    veh_id_to_idx: Dict[int, int],
+    new_agent_idx_dict: Dict[int, int],
+) -> Optional[int]:
+    agent_key = veh_id_to_idx.get(veh_id)
+    if agent_key is None:
+        return None
+    idx_in_model = new_agent_idx_dict.get(agent_key)
+    if idx_in_model is None:
+        return None
+    return int(idx_in_model)
+
+
+def _write_rtg_discrete(
+    batched_data: MotionData,
+    batch_idx: int,
+    idx_in_model: int,
+    token_index: int,
+    discrete: Tuple[int, int, int],
+) -> None:
+    batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 0] = int(discrete[0])
+    batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 1] = int(discrete[1])
+    batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 2] = int(discrete[2])
+
+
+def _iter_resolved_vehicle_indices(
+    vehicle_ids: Iterable[int],
+    veh_id_to_idx: Dict[int, int],
+    new_agent_idx_dict: Dict[int, int],
+) -> Iterator[Tuple[int, int]]:
+    for veh_id in vehicle_ids:
+        idx_in_model = _resolve_idx_in_model(
+            veh_id=veh_id,
+            veh_id_to_idx=veh_id_to_idx,
+            new_agent_idx_dict=new_agent_idx_dict,
+        )
+        if idx_in_model is None:
+            continue
+        yield int(veh_id), idx_in_model
 
 
 def _decode_rtg_for_job(
@@ -32,7 +74,7 @@ def _decode_rtg_for_job(
     default_tilt = prepared["default_tilt"]
 
     new_agent_idx_dict = focal_batch["new_agent_idx_dict"]
-    data_veh_ids = focal_batch["data_veh_ids"]
+    data_veh_ids = set(focal_batch["data_veh_ids"])
     veh_ids_in_context = focal_batch["veh_ids_in_context"]
     if not bool(focal_batch["predict_rtgs"]):
         return {}, []
@@ -41,19 +83,20 @@ def _decode_rtg_for_job(
     rtg_results: Dict[int, Tuple[float, float, float]] = {}
     processed_rtg_veh_ids: List[int] = []
 
-    for veh_id in veh_ids_in_context:
-        if veh_id not in veh_id_to_idx:
-            continue
-        agent_key = veh_id_to_idx[veh_id]
-        if agent_key not in new_agent_idx_dict:
-            continue
-        idx_in_model = int(new_agent_idx_dict[agent_key])
+    for veh_id, idx_in_model in _iter_resolved_vehicle_indices(
+        vehicle_ids=veh_ids_in_context,
+        veh_id_to_idx=veh_id_to_idx,
+        new_agent_idx_dict=new_agent_idx_dict,
+    ):
         cache_key = (env_idx, veh_id)
         if cache_key in rtg_cache:
-            discrete = rtg_cache[cache_key]["discrete"]
-            batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 0] = int(discrete[0])
-            batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 1] = int(discrete[1])
-            batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 2] = int(discrete[2])
+            _write_rtg_discrete(
+                batched_data=batched_data,
+                batch_idx=batch_idx,
+                idx_in_model=idx_in_model,
+                token_index=token_index,
+                discrete=rtg_cache[cache_key]["discrete"],
+            )
             continue
 
         rtg_logits_3 = rtg_logits[batch_idx, idx_in_model, token_index].reshape(
@@ -83,9 +126,13 @@ def _decode_rtg_for_job(
         g_idx = int(g_idx_t.item())
         v_idx = int(v_idx_t.item())
         r_idx = int(r_idx_t.item())
-        batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 0] = g_idx
-        batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 1] = v_idx
-        batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 2] = r_idx
+        _write_rtg_discrete(
+            batched_data=batched_data,
+            batch_idx=batch_idx,
+            idx_in_model=idx_in_model,
+            token_index=token_index,
+            discrete=(g_idx, v_idx, r_idx),
+        )
 
         continuous_vals = (float(g_val), float(v_val), float(r_val))
         rtg_results[veh_id] = continuous_vals
@@ -147,13 +194,11 @@ def _decode_action_for_job(
     generator = teacher._get_generator(env_idx)
 
     action_results: Dict[int, Tuple[float, float]] = {}
-    for veh_id in data_veh_ids:
-        if veh_id not in veh_id_to_idx:
-            continue
-        agent_key = veh_id_to_idx[veh_id]
-        if agent_key not in new_agent_idx_dict:
-            continue
-        idx_in_model = int(new_agent_idx_dict[agent_key])
+    for veh_id, idx_in_model in _iter_resolved_vehicle_indices(
+        vehicle_ids=data_veh_ids,
+        veh_id_to_idx=veh_id_to_idx,
+        new_agent_idx_dict=new_agent_idx_dict,
+    ):
         logits_1d = action_logits[batch_idx, idx_in_model, token_index]
         accel, steer = decode_predicted_action(
             logits_1d,
@@ -216,15 +261,13 @@ def forward_chunk_batched(teacher: Any, chunk: List[Dict[str, Any]]) -> List[Dic
         batch_meta=batch_meta,
     )
 
-    per_job_results: List[Dict[str, Any]] = []
-    for idx, job in enumerate(chunk):
-        per_job_results.append(
-            {
-                "env_idx": job["env_idx"],
-                "prepared": job["prepared"],
-                "action_results": action_results_by_job[idx],
-                "rtg_results": rtg_results_by_job[idx],
-                "processed_rtg_veh_ids": processed_rtg_veh_ids_by_job[idx],
-            }
-        )
-    return per_job_results
+    return [
+        {
+            "env_idx": job["env_idx"],
+            "prepared": job["prepared"],
+            "action_results": action_results_by_job[idx],
+            "rtg_results": rtg_results_by_job[idx],
+            "processed_rtg_veh_ids": processed_rtg_veh_ids_by_job[idx],
+        }
+        for idx, job in enumerate(chunk)
+    ]
