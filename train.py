@@ -91,6 +91,7 @@ def _build_external_teacher(args, device):
     return ExternalTeacher(
         checkpoint_path=args.opponent_checkpoint,
         device=device,
+        inference_precision=getattr(args, 'inference_precision', 'fp32'),
     )
 
 

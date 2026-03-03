@@ -802,6 +802,12 @@ parser.add_argument(
     type=str2bool, nargs='?', const=True, default=False,
     help='Move ctrl-sim GPU inference to main process (batched across envs).')
 parser.add_argument(
+    '--inference_precision',
+    type=str,
+    choices=['fp32', 'amp_fp16', 'amp_bf16'],
+    default='fp32',
+    help='Inference precision for ExternalTeacher when batch_inference is enabled.')
+parser.add_argument(
     '--opponent_sparse_inference_enabled',
     type=str2bool, nargs='?', const=True, default=False,
     help='Enable sparse opponent inference: reuse cached opponent actions between inference steps.')

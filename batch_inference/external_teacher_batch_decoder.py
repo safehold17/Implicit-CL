@@ -152,8 +152,9 @@ def decode_rtg_stage_batched(
     batch_meta: Dict[str, Any],
     rtg_cache: Dict[Tuple[int, int], Dict[str, Any]],
 ) -> Tuple[MotionData, List[Dict[int, Tuple[float, float, float]]], List[List[int]]]:
-    preds = teacher.model(batched_data, eval=True)
-    rtg_logits = preds["rtg_preds"]
+    with teacher.model_forward_context():
+        preds = teacher.model(batched_data, eval=True)
+    rtg_logits = preds["rtg_preds"].float()
 
     jobs: List[Dict[str, Any]] = batch_meta["jobs"]
     token_index_per_job: torch.Tensor = batch_meta["token_index_per_job"]
@@ -223,8 +224,9 @@ def decode_action_stage_batched(
     batched_data: MotionData,
     batch_meta: Dict[str, Any],
 ) -> List[Dict[int, Tuple[float, float]]]:
-    preds = teacher.model(batched_data, eval=True)
-    action_logits = preds["action_preds"]
+    with teacher.model_forward_context():
+        preds = teacher.model(batched_data, eval=True)
+    action_logits = preds["action_preds"].float()
 
     jobs: List[Dict[str, Any]] = batch_meta["jobs"]
     token_index_per_job: torch.Tensor = batch_meta["token_index_per_job"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import os as _os
 import sys as _sys
 import time
@@ -49,10 +50,12 @@ class ExternalTeacher:
         device: str = "cuda",
         micro_batch: Optional[int] = None,
         base_seed: int = 1,
+        inference_precision: str = "fp32",
     ) -> None:
         self.device = device
         self.micro_batch = micro_batch
         self.base_seed = base_seed
+        self.inference_precision = inference_precision
         self._profile_enabled = self._read_env_flag(
             "CTRLSIM_EXTERNAL_TEACHER_PROFILE",
             default="0",
@@ -63,11 +66,17 @@ class ExternalTeacher:
         )
         self._profile_counter = 0
 
+        (
+            self._autocast_enabled,
+            self._autocast_dtype,
+        ) = self._resolve_inference_precision()
+
         print(f"[ExternalTeacher] Loading CtRL-Sim model from {checkpoint_path}...")
         self.model = CtRLSim.load_from_checkpoint(checkpoint_path)
         self.model.to(device)
         self.model.eval()
         print("[ExternalTeacher] Model loaded successfully.")
+        print(f"[ExternalTeacher] Inference precision: {self.inference_precision}")
 
         ckpt_cfg = self.model.cfg
         ds = ckpt_cfg.dataset.waymo
@@ -164,6 +173,34 @@ class ExternalTeacher:
     def _read_env_flag(name: str, default: str = "0") -> bool:
         value = str(_os.getenv(name, default)).strip().lower()
         return value in {"1", "true", "yes", "on"}
+
+    def _resolve_inference_precision(self) -> Tuple[bool, Optional[torch.dtype]]:
+        allowed = {"fp32", "amp_fp16", "amp_bf16"}
+        if self.inference_precision not in allowed:
+            raise ValueError(
+                f"Unsupported inference_precision={self.inference_precision}. "
+                f"Expected one of {sorted(allowed)}."
+            )
+
+        if self.inference_precision == "fp32":
+            return False, None
+
+        if not str(self.device).startswith("cuda"):
+            raise ValueError(
+                f"inference_precision={self.inference_precision} requires CUDA device, got device={self.device}."
+            )
+
+        if self.inference_precision == "amp_fp16":
+            return True, torch.float16
+
+        if self.inference_precision == "amp_bf16" and not torch.cuda.is_bf16_supported():
+            raise ValueError("amp_bf16 is not supported on this CUDA device.")
+        return True, torch.bfloat16
+
+    def model_forward_context(self):
+        if not self._autocast_enabled:
+            return nullcontext()
+        return torch.autocast(device_type="cuda", dtype=self._autocast_dtype)
 
     def _decode_prepared_batch(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
         decoded_prepared: List[Optional[Dict[str, Any]]] = []

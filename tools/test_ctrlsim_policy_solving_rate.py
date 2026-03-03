@@ -458,6 +458,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--xpid", type=str, required=True)
     parser.add_argument("--batch_inference", action="store_true",
                         help="Use batched GPU inference in main process instead of per-subprocess models.")
+    parser.add_argument(
+        "--inference_precision",
+        type=str,
+        choices=["fp32", "amp_fp16", "amp_bf16"],
+        default="fp32",
+        help="Inference precision for ExternalTeacher in batch_inference mode.",
+    )
     return parser.parse_args()
 
 
@@ -758,6 +765,7 @@ def main() -> None:
         external_teacher = ExternalTeacher(
             checkpoint_path=args.checkpoint_path,
             device=args.device,
+            inference_precision=args.inference_precision,
         )
 
     action_dim = evaluator.venv[env_names[0]].action_space.shape[0]
