@@ -8,12 +8,62 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TypedDict, cast
 
 import numpy as np
 
 PREPARED_IPC_FORMAT = "prepared_v1"
 MODEL_OUTPUTS_IPC_FORMAT = "model_outputs_v1"
+VALID_STATUS_VALUES = {"ok", "skip"}
+MOTION_FIELD_NAMES = (
+    "agent_states",
+    "agent_types",
+    "goals",
+    "actions",
+    "rtgs",
+    "timesteps",
+    "moving_agent_mask",
+    "road_points",
+    "road_types",
+)
+
+
+class SamplingPayload(TypedDict):
+    action_temperature: float
+    nucleus_sampling: bool
+    nucleus_threshold: float
+
+
+class FocalBatchPayload(TypedDict):
+    focal_id: int
+    motion_data_np: Dict[str, Any]
+    new_agent_idx_dict: Dict[int, int]
+    data_veh_ids: List[int]
+    veh_ids_in_context: List[int]
+    predict_rtgs: bool
+
+
+class PreparedPayload(TypedDict):
+    status: str
+    step_t: int
+    token_index: int
+    dead_ids: List[int]
+    sampling: SamplingPayload
+    default_tilt: Tuple[int, int, int]
+    tilt_by_veh_id: Dict[int, Tuple[int, int, int]]
+    veh_id_to_idx: Dict[int, int]
+    focal_batches: List[FocalBatchPayload]
+
+
+class ModelOutputsPayload(TypedDict):
+    status: str
+    env_idx: int
+    step_t: int
+    token_index: int
+    action_results: Dict[int, Tuple[float, float]]
+    rtg_results: Dict[int, Tuple[float, float, float]]
+    processed_rtg_veh_ids: List[int]
+    dead_ids: List[int]
 
 
 def _as_int32_array(values: Sequence[Any]) -> np.ndarray:
@@ -79,58 +129,149 @@ def _unpack_motion_array(name: str, array: np.ndarray) -> np.ndarray:
     return array
 
 
+def _require_keys(payload: Dict[str, Any], required_keys: Sequence[str], payload_name: str) -> None:
+    missing = [key for key in required_keys if key not in payload]
+    if missing:
+        raise ValueError(f"{payload_name} missing required keys: {missing}")
+
+
+def _require_valid_status(status: Any, payload_name: str) -> str:
+    status_str = str(status)
+    if status_str not in VALID_STATUS_VALUES:
+        raise ValueError(
+            f"{payload_name} has invalid status='{status_str}', expected one of {sorted(VALID_STATUS_VALUES)}"
+        )
+    return status_str
+
+
+def _validate_focal_batch_payload(focal_batch: Dict[str, Any], index: int) -> None:
+    _require_keys(
+        focal_batch,
+        (
+            "focal_id",
+            "motion_data_np",
+            "new_agent_idx_dict",
+            "data_veh_ids",
+            "veh_ids_in_context",
+            "predict_rtgs",
+        ),
+        f"prepared.focal_batches[{index}]",
+    )
+    motion_data_np = focal_batch["motion_data_np"]
+    if not isinstance(motion_data_np, dict):
+        raise ValueError(f"prepared.focal_batches[{index}].motion_data_np must be a dict.")
+    _require_keys(
+        motion_data_np,
+        MOTION_FIELD_NAMES,
+        f"prepared.focal_batches[{index}].motion_data_np",
+    )
+
+
+def validate_prepared_payload(prepared: Dict[str, Any]) -> None:
+    _require_keys(prepared, ("status", "step_t", "token_index", "dead_ids"), "prepared")
+    status = _require_valid_status(prepared["status"], "prepared")
+    if status == "skip":
+        return
+
+    _require_keys(
+        prepared,
+        (
+            "sampling",
+            "default_tilt",
+            "tilt_by_veh_id",
+            "veh_id_to_idx",
+            "focal_batches",
+        ),
+        "prepared",
+    )
+    sampling = prepared["sampling"]
+    if not isinstance(sampling, dict):
+        raise ValueError("prepared['sampling'] must be a dict.")
+    _require_keys(
+        sampling,
+        ("action_temperature", "nucleus_sampling", "nucleus_threshold"),
+        "prepared['sampling']",
+    )
+
+    focal_batches = prepared["focal_batches"]
+    if not isinstance(focal_batches, list):
+        raise ValueError("prepared['focal_batches'] must be a list.")
+    for i, focal_batch in enumerate(focal_batches):
+        if not isinstance(focal_batch, dict):
+            raise ValueError(f"prepared.focal_batches[{i}] must be a dict.")
+        _validate_focal_batch_payload(focal_batch, i)
+
+
+def validate_model_outputs_payload(model_outputs: Dict[str, Any]) -> None:
+    _require_keys(
+        model_outputs,
+        (
+            "status",
+            "env_idx",
+            "step_t",
+            "token_index",
+            "action_results",
+            "rtg_results",
+            "processed_rtg_veh_ids",
+            "dead_ids",
+        ),
+        "model_outputs",
+    )
+    _require_valid_status(model_outputs["status"], "model_outputs")
+
+
 def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """将 prepared_dict 打包为紧凑 IPC payload。"""
     if prepared is None:
         return None
 
-    status = str(prepared.get("status", "ok"))
+    validate_prepared_payload(prepared)
+    prepared_typed = cast(PreparedPayload, prepared)
+    status = _require_valid_status(prepared_typed["status"], "prepared")
+
     packed: Dict[str, Any] = {
         "ipc_format": PREPARED_IPC_FORMAT,
         "status": status,
-        "step_t": np.int32(int(prepared.get("step_t", 0))),
-        "token_index": np.int32(int(prepared.get("token_index", 0))),
-        "dead_ids": _as_int32_array(prepared.get("dead_ids", [])),
+        "step_t": np.int32(int(prepared_typed["step_t"])),
+        "token_index": np.int32(int(prepared_typed["token_index"])),
+        "dead_ids": _as_int32_array(prepared_typed["dead_ids"]),
     }
-    if status != "ok":
+    if status == "skip":
         return packed
 
-    sampling = prepared.get("sampling", {})
+    sampling = prepared_typed["sampling"]
     packed["sampling_values"] = _as_float32_array(
         [
-            float(sampling.get("action_temperature", 1.0)),
-            float(sampling.get("nucleus_threshold", 1.0)),
+            float(sampling["action_temperature"]),
+            float(sampling["nucleus_threshold"]),
         ]
     )
     packed["sampling_flags"] = _as_int32_array(
-        [1 if bool(sampling.get("nucleus_sampling", False)) else 0]
+        [1 if bool(sampling["nucleus_sampling"]) else 0]
     )
-    packed["default_tilt"] = _as_int32_array(prepared.get("default_tilt", (0, 0, 0)))
+    packed["default_tilt"] = _as_int32_array(prepared_typed["default_tilt"])
 
-    tilt_by_veh_id = prepared.get("tilt_by_veh_id", {})
+    tilt_by_veh_id = prepared_typed["tilt_by_veh_id"]
     tilt_ids: List[int] = []
     tilt_vals: List[Tuple[int, int, int]] = []
     for veh_id, tilt in tilt_by_veh_id.items():
         tilt_ids.append(int(veh_id))
         tilt_vals.append((int(tilt[0]), int(tilt[1]), int(tilt[2])))
     packed["tilt_veh_ids"] = _as_int32_array(tilt_ids)
-    packed["tilt_values"] = _as_int32_array(tilt_vals).reshape((-1, 3)) if tilt_vals else np.zeros((0, 3), dtype=np.int32)
+    packed["tilt_values"] = (
+        _as_int32_array(tilt_vals).reshape((-1, 3))
+        if tilt_vals
+        else np.zeros((0, 3), dtype=np.int32)
+    )
 
-    veh_keys, veh_vals = _pack_dict_int32(prepared.get("veh_id_to_idx", {}))
+    veh_keys, veh_vals = _pack_dict_int32(prepared_typed["veh_id_to_idx"])
     packed["veh_id_to_idx_keys"] = veh_keys
     packed["veh_id_to_idx_vals"] = veh_vals
 
-    focal_batches = prepared.get("focal_batches", [])
-    packed["focal_ids"] = _as_int32_array([int(fb.get("focal_id", -1)) for fb in focal_batches])
-    packed["seq_len"] = _as_int32_array([int(fb.get("seq_len", 0)) for fb in focal_batches])
-    packed["valid_agent_count"] = _as_int32_array(
-        [int(fb.get("valid_agent_count", 0)) for fb in focal_batches]
-    )
-    packed["valid_road_count"] = _as_int32_array(
-        [int(fb.get("valid_road_count", 0)) for fb in focal_batches]
-    )
+    focal_batches = prepared_typed["focal_batches"]
+    packed["focal_ids"] = _as_int32_array([int(fb["focal_id"]) for fb in focal_batches])
     packed["predict_rtgs"] = np.asarray(
-        [bool(fb.get("predict_rtgs", True)) for fb in focal_batches],
+        [bool(fb["predict_rtgs"]) for fb in focal_batches],
         dtype=np.bool_,
     )
 
@@ -138,37 +279,20 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     map_vals_rows: List[List[int]] = []
     data_veh_rows: List[List[int]] = []
     context_rows: List[List[int]] = []
-
-    motion_agent_states: List[np.ndarray] = []
-    motion_agent_types: List[np.ndarray] = []
-    motion_goals: List[np.ndarray] = []
-    motion_actions: List[np.ndarray] = []
-    motion_rtgs: List[np.ndarray] = []
-    motion_timesteps: List[np.ndarray] = []
-    motion_moving_agent_mask: List[np.ndarray] = []
-    motion_road_points: List[np.ndarray] = []
-    motion_road_types: List[np.ndarray] = []
+    motion_fields = {name: [] for name in MOTION_FIELD_NAMES}
 
     for fb in focal_batches:
-        map_dict = fb.get("new_agent_idx_dict", {})
-        map_items = list(map_dict.items())
+        map_items = list(fb["new_agent_idx_dict"].items())
         map_keys_rows.append([int(k) for k, _ in map_items])
         map_vals_rows.append([int(v) for _, v in map_items])
-        data_veh_rows.append([int(v) for v in fb.get("data_veh_ids", [])])
-        context_rows.append([int(v) for v in fb.get("veh_ids_in_context", [])])
+        data_veh_rows.append([int(v) for v in fb["data_veh_ids"]])
+        context_rows.append([int(v) for v in fb["veh_ids_in_context"]])
 
-        motion_data_np = fb.get("motion_data_np", {})
-        motion_agent_states.append(_pack_motion_array("agent_states", motion_data_np.get("agent_states")))
-        motion_agent_types.append(_pack_motion_array("agent_types", motion_data_np.get("agent_types")))
-        motion_goals.append(_pack_motion_array("goals", motion_data_np.get("goals")))
-        motion_actions.append(_pack_motion_array("actions", motion_data_np.get("actions")))
-        motion_rtgs.append(_pack_motion_array("rtgs", motion_data_np.get("rtgs")))
-        motion_timesteps.append(_pack_motion_array("timesteps", motion_data_np.get("timesteps")))
-        motion_moving_agent_mask.append(
-            _pack_motion_array("moving_agent_mask", motion_data_np.get("moving_agent_mask"))
-        )
-        motion_road_points.append(_pack_motion_array("road_points", motion_data_np.get("road_points")))
-        motion_road_types.append(_pack_motion_array("road_types", motion_data_np.get("road_types")))
+        motion_data_np = fb["motion_data_np"]
+        for field_name in MOTION_FIELD_NAMES:
+            motion_fields[field_name].append(
+                _pack_motion_array(field_name, motion_data_np[field_name])
+            )
 
     map_keys_flat, map_offsets = _pack_ragged_int_lists(map_keys_rows)
     map_vals_flat, _ = _pack_ragged_int_lists(map_vals_rows)
@@ -184,15 +308,8 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     packed["veh_ids_in_context_flat"] = context_flat
     packed["veh_ids_in_context_offsets"] = context_offsets
 
-    packed["motion_agent_states"] = motion_agent_states
-    packed["motion_agent_types"] = motion_agent_types
-    packed["motion_goals"] = motion_goals
-    packed["motion_actions"] = motion_actions
-    packed["motion_rtgs"] = motion_rtgs
-    packed["motion_timesteps"] = motion_timesteps
-    packed["motion_moving_agent_mask"] = motion_moving_agent_mask
-    packed["motion_road_points"] = motion_road_points
-    packed["motion_road_types"] = motion_road_types
+    for field_name, values in motion_fields.items():
+        packed[f"motion_{field_name}"] = values
     return packed
 
 
@@ -203,93 +320,125 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     if packed.get("ipc_format") != PREPARED_IPC_FORMAT:
         raise ValueError("Unexpected prepared IPC payload format.")
 
-    status = str(packed.get("status", "ok"))
+    _require_keys(packed, ("status", "step_t", "token_index", "dead_ids"), "packed prepared payload")
+    status = _require_valid_status(packed["status"], "packed prepared payload")
     prepared: Dict[str, Any] = {
         "status": status,
-        "step_t": int(packed.get("step_t", 0)),
-        "token_index": int(packed.get("token_index", 0)),
-        "dead_ids": [int(v) for v in np.asarray(packed.get("dead_ids", []), dtype=np.int32).tolist()],
+        "step_t": int(packed["step_t"]),
+        "token_index": int(packed["token_index"]),
+        "dead_ids": [int(v) for v in np.asarray(packed["dead_ids"], dtype=np.int32).tolist()],
     }
-    if status != "ok":
+    if status == "skip":
         return prepared
 
-    sampling_values = np.asarray(packed.get("sampling_values", [1.0, 1.0]), dtype=np.float32)
-    sampling_flags = np.asarray(packed.get("sampling_flags", [0]), dtype=np.int32)
-    prepared["sampling"] = {
-        "action_temperature": float(sampling_values[0]) if sampling_values.size >= 1 else 1.0,
-        "nucleus_sampling": bool(int(sampling_flags[0])) if sampling_flags.size >= 1 else False,
-        "nucleus_threshold": float(sampling_values[1]) if sampling_values.size >= 2 else 1.0,
-    }
-    default_tilt = np.asarray(packed.get("default_tilt", [0, 0, 0]), dtype=np.int32)
-    prepared["default_tilt"] = (
-        int(default_tilt[0]) if default_tilt.size >= 1 else 0,
-        int(default_tilt[1]) if default_tilt.size >= 2 else 0,
-        int(default_tilt[2]) if default_tilt.size >= 3 else 0,
+    _require_keys(
+        packed,
+        (
+            "sampling_values",
+            "sampling_flags",
+            "default_tilt",
+            "tilt_veh_ids",
+            "tilt_values",
+            "veh_id_to_idx_keys",
+            "veh_id_to_idx_vals",
+            "focal_ids",
+            "predict_rtgs",
+            "new_agent_idx_keys",
+            "new_agent_idx_vals",
+            "new_agent_idx_offsets",
+            "data_veh_ids_flat",
+            "data_veh_ids_offsets",
+            "veh_ids_in_context_flat",
+            "veh_ids_in_context_offsets",
+        ),
+        "packed prepared payload",
     )
 
-    tilt_ids = np.asarray(packed.get("tilt_veh_ids", []), dtype=np.int32)
-    tilt_values = np.asarray(packed.get("tilt_values", []), dtype=np.int32).reshape((-1, 3))
+    sampling_values = np.asarray(packed["sampling_values"], dtype=np.float32)
+    sampling_flags = np.asarray(packed["sampling_flags"], dtype=np.int32)
+    if sampling_values.shape[0] != 2 or sampling_flags.shape[0] != 1:
+        raise ValueError("packed prepared payload has invalid sampling array shapes.")
+    prepared["sampling"] = {
+        "action_temperature": float(sampling_values[0]),
+        "nucleus_sampling": bool(int(sampling_flags[0])),
+        "nucleus_threshold": float(sampling_values[1]),
+    }
+    default_tilt = np.asarray(packed["default_tilt"], dtype=np.int32).reshape((-1,))
+    if default_tilt.shape[0] != 3:
+        raise ValueError("packed prepared payload has invalid default_tilt shape.")
+    prepared["default_tilt"] = (
+        int(default_tilt[0]),
+        int(default_tilt[1]),
+        int(default_tilt[2]),
+    )
+
+    tilt_ids = np.asarray(packed["tilt_veh_ids"], dtype=np.int32)
+    tilt_values = np.asarray(packed["tilt_values"], dtype=np.int32).reshape((-1, 3))
+    if tilt_ids.shape[0] != tilt_values.shape[0]:
+        raise ValueError("packed prepared payload tilt arrays length mismatch.")
     prepared["tilt_by_veh_id"] = {
         int(veh_id): (int(tilt[0]), int(tilt[1]), int(tilt[2]))
         for veh_id, tilt in zip(tilt_ids.tolist(), tilt_values.tolist())
     }
 
     prepared["veh_id_to_idx"] = _unpack_dict_int32(
-        np.asarray(packed.get("veh_id_to_idx_keys", []), dtype=np.int32),
-        np.asarray(packed.get("veh_id_to_idx_vals", []), dtype=np.int32),
+        np.asarray(packed["veh_id_to_idx_keys"], dtype=np.int32),
+        np.asarray(packed["veh_id_to_idx_vals"], dtype=np.int32),
     )
 
-    focal_ids = np.asarray(packed.get("focal_ids", []), dtype=np.int32)
-    seq_len_arr = np.asarray(packed.get("seq_len", []), dtype=np.int32)
-    valid_agent_arr = np.asarray(packed.get("valid_agent_count", []), dtype=np.int32)
-    valid_road_arr = np.asarray(packed.get("valid_road_count", []), dtype=np.int32)
-    predict_rtgs_arr = np.asarray(packed.get("predict_rtgs", []), dtype=np.bool_)
+    focal_ids = np.asarray(packed["focal_ids"], dtype=np.int32)
+    predict_rtgs_arr = np.asarray(packed["predict_rtgs"], dtype=np.bool_)
 
     new_agent_keys_rows = _unpack_ragged_int_lists(
-        np.asarray(packed.get("new_agent_idx_keys", []), dtype=np.int32),
-        np.asarray(packed.get("new_agent_idx_offsets", [0]), dtype=np.int32),
+        np.asarray(packed["new_agent_idx_keys"], dtype=np.int32),
+        np.asarray(packed["new_agent_idx_offsets"], dtype=np.int32),
     )
     new_agent_vals_rows = _unpack_ragged_int_lists(
-        np.asarray(packed.get("new_agent_idx_vals", []), dtype=np.int32),
-        np.asarray(packed.get("new_agent_idx_offsets", [0]), dtype=np.int32),
+        np.asarray(packed["new_agent_idx_vals"], dtype=np.int32),
+        np.asarray(packed["new_agent_idx_offsets"], dtype=np.int32),
     )
     data_veh_rows = _unpack_ragged_int_lists(
-        np.asarray(packed.get("data_veh_ids_flat", []), dtype=np.int32),
-        np.asarray(packed.get("data_veh_ids_offsets", [0]), dtype=np.int32),
+        np.asarray(packed["data_veh_ids_flat"], dtype=np.int32),
+        np.asarray(packed["data_veh_ids_offsets"], dtype=np.int32),
     )
     context_rows = _unpack_ragged_int_lists(
-        np.asarray(packed.get("veh_ids_in_context_flat", []), dtype=np.int32),
-        np.asarray(packed.get("veh_ids_in_context_offsets", [0]), dtype=np.int32),
+        np.asarray(packed["veh_ids_in_context_flat"], dtype=np.int32),
+        np.asarray(packed["veh_ids_in_context_offsets"], dtype=np.int32),
     )
 
-    motion_agent_states = list(packed.get("motion_agent_states", []))
-    motion_agent_types = list(packed.get("motion_agent_types", []))
-    motion_goals = list(packed.get("motion_goals", []))
-    motion_actions = list(packed.get("motion_actions", []))
-    motion_rtgs = list(packed.get("motion_rtgs", []))
-    motion_timesteps = list(packed.get("motion_timesteps", []))
-    motion_moving_agent_mask = list(packed.get("motion_moving_agent_mask", []))
-    motion_road_points = list(packed.get("motion_road_points", []))
-    motion_road_types = list(packed.get("motion_road_types", []))
+    row_count = len(focal_ids.tolist())
+    if not (
+        row_count
+        == predict_rtgs_arr.shape[0]
+        == len(new_agent_keys_rows)
+        == len(new_agent_vals_rows)
+        == len(data_veh_rows)
+        == len(context_rows)
+    ):
+        raise ValueError("packed prepared payload ragged row counts mismatch.")
+
+    motion_arrays: Dict[str, List[np.ndarray]] = {}
+    for field_name in MOTION_FIELD_NAMES:
+        key = f"motion_{field_name}"
+        if key not in packed:
+            raise ValueError(f"packed prepared payload missing required key '{key}'.")
+        values = list(packed[key])
+        if len(values) != row_count:
+            raise ValueError(f"packed prepared payload '{key}' row count mismatch.")
+        motion_arrays[field_name] = values
 
     focal_batches: List[Dict[str, Any]] = []
     for i, focal_id in enumerate(focal_ids.tolist()):
-        keys_row = new_agent_keys_rows[i] if i < len(new_agent_keys_rows) else []
-        vals_row = new_agent_vals_rows[i] if i < len(new_agent_vals_rows) else []
+        keys_row = new_agent_keys_rows[i]
+        vals_row = new_agent_vals_rows[i]
         new_agent_idx_dict = {int(k): int(v) for k, v in zip(keys_row, vals_row)}
 
         motion_data_np = {
-            "agent_states": _unpack_motion_array("agent_states", np.asarray(motion_agent_states[i])),
-            "agent_types": _unpack_motion_array("agent_types", np.asarray(motion_agent_types[i])),
-            "goals": _unpack_motion_array("goals", np.asarray(motion_goals[i])),
-            "actions": _unpack_motion_array("actions", np.asarray(motion_actions[i])),
-            "rtgs": _unpack_motion_array("rtgs", np.asarray(motion_rtgs[i])),
-            "timesteps": _unpack_motion_array("timesteps", np.asarray(motion_timesteps[i])),
-            "moving_agent_mask": _unpack_motion_array(
-                "moving_agent_mask", np.asarray(motion_moving_agent_mask[i])
-            ),
-            "road_points": _unpack_motion_array("road_points", np.asarray(motion_road_points[i])),
-            "road_types": _unpack_motion_array("road_types", np.asarray(motion_road_types[i])),
+            field_name: _unpack_motion_array(
+                field_name,
+                np.asarray(motion_arrays[field_name][i]),
+            )
+            for field_name in MOTION_FIELD_NAMES
         }
 
         focal_batches.append(
@@ -297,12 +446,9 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
                 "focal_id": int(focal_id),
                 "motion_data_np": motion_data_np,
                 "new_agent_idx_dict": new_agent_idx_dict,
-                "data_veh_ids": data_veh_rows[i] if i < len(data_veh_rows) else [],
-                "veh_ids_in_context": context_rows[i] if i < len(context_rows) else [],
-                "seq_len": int(seq_len_arr[i]) if i < seq_len_arr.size else 0,
-                "valid_agent_count": int(valid_agent_arr[i]) if i < valid_agent_arr.size else 0,
-                "valid_road_count": int(valid_road_arr[i]) if i < valid_road_arr.size else 0,
-                "predict_rtgs": bool(predict_rtgs_arr[i]) if i < predict_rtgs_arr.size else True,
+                "data_veh_ids": data_veh_rows[i],
+                "veh_ids_in_context": context_rows[i],
+                "predict_rtgs": bool(predict_rtgs_arr[i]),
             }
         )
 
@@ -315,36 +461,35 @@ def pack_model_outputs(model_outputs: Optional[Dict[str, Any]]) -> Optional[Dict
     if model_outputs is None:
         return None
 
-    status = str(model_outputs.get("status", "ok"))
-    action_results = model_outputs.get("action_results", {})
+    validate_model_outputs_payload(model_outputs)
+    model_outputs_typed = cast(ModelOutputsPayload, model_outputs)
+    status = _require_valid_status(model_outputs_typed["status"], "model_outputs")
+
+    action_results = model_outputs_typed["action_results"]
     action_veh_ids = _as_int32_array(list(action_results.keys()))
-    if action_veh_ids.size > 0:
-        action_values = _as_float32_array([action_results[int(k)] for k in action_veh_ids.tolist()])
-    else:
-        action_values = np.zeros((0, 2), dtype=np.float32)
+    action_values = _as_float32_array(
+        [action_results[int(k)] for k in action_veh_ids.tolist()]
+    ).reshape((-1, 2))
 
-    rtg_results = model_outputs.get("rtg_results", {})
+    rtg_results = model_outputs_typed["rtg_results"]
     rtg_veh_ids = _as_int32_array(list(rtg_results.keys()))
-    if rtg_veh_ids.size > 0:
-        rtg_values = _as_float32_array([rtg_results[int(k)] for k in rtg_veh_ids.tolist()])
-    else:
-        rtg_values = np.zeros((0, 3), dtype=np.float32)
+    rtg_values = _as_float32_array(
+        [rtg_results[int(k)] for k in rtg_veh_ids.tolist()]
+    ).reshape((-1, 3))
 
-    packed = {
+    return {
         "ipc_format": MODEL_OUTPUTS_IPC_FORMAT,
         "status": status,
-        "env_idx": np.int32(int(model_outputs.get("env_idx", -1))),
-        "step_t": np.int32(int(model_outputs.get("step_t", 0))),
-        "token_index": np.int32(int(model_outputs.get("token_index", 0))),
+        "env_idx": np.int32(int(model_outputs_typed["env_idx"])),
+        "step_t": np.int32(int(model_outputs_typed["step_t"])),
+        "token_index": np.int32(int(model_outputs_typed["token_index"])),
         "action_veh_ids": action_veh_ids,
         "action_values": action_values,
         "rtg_veh_ids": rtg_veh_ids,
         "rtg_values": rtg_values,
-        "processed_rtg_veh_ids": _as_int32_array(model_outputs.get("processed_rtg_veh_ids", [])),
-        "dead_ids": _as_int32_array(model_outputs.get("dead_ids", [])),
-        "error": model_outputs.get("error"),
+        "processed_rtg_veh_ids": _as_int32_array(model_outputs_typed["processed_rtg_veh_ids"]),
+        "dead_ids": _as_int32_array(model_outputs_typed["dead_ids"]),
     }
-    return packed
 
 
 def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -354,32 +499,52 @@ def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str,
     if packed.get("ipc_format") != MODEL_OUTPUTS_IPC_FORMAT:
         raise ValueError("Unexpected model_outputs IPC payload format.")
 
-    action_veh_ids = np.asarray(packed.get("action_veh_ids", []), dtype=np.int32)
-    action_values = np.asarray(packed.get("action_values", []), dtype=np.float32).reshape((-1, 2))
+    _require_keys(
+        packed,
+        (
+            "status",
+            "env_idx",
+            "step_t",
+            "token_index",
+            "action_veh_ids",
+            "action_values",
+            "rtg_veh_ids",
+            "rtg_values",
+            "processed_rtg_veh_ids",
+            "dead_ids",
+        ),
+        "packed model_outputs payload",
+    )
+    status = _require_valid_status(packed["status"], "packed model_outputs payload")
+
+    action_veh_ids = np.asarray(packed["action_veh_ids"], dtype=np.int32)
+    action_values = np.asarray(packed["action_values"], dtype=np.float32).reshape((-1, 2))
+    if action_veh_ids.shape[0] != action_values.shape[0]:
+        raise ValueError("packed model_outputs payload action arrays length mismatch.")
     action_results = {
         int(veh_id): (float(val[0]), float(val[1]))
         for veh_id, val in zip(action_veh_ids.tolist(), action_values.tolist())
     }
 
-    rtg_veh_ids = np.asarray(packed.get("rtg_veh_ids", []), dtype=np.int32)
-    rtg_values = np.asarray(packed.get("rtg_values", []), dtype=np.float32).reshape((-1, 3))
+    rtg_veh_ids = np.asarray(packed["rtg_veh_ids"], dtype=np.int32)
+    rtg_values = np.asarray(packed["rtg_values"], dtype=np.float32).reshape((-1, 3))
+    if rtg_veh_ids.shape[0] != rtg_values.shape[0]:
+        raise ValueError("packed model_outputs payload rtg arrays length mismatch.")
     rtg_results = {
         int(veh_id): (float(val[0]), float(val[1]), float(val[2]))
         for veh_id, val in zip(rtg_veh_ids.tolist(), rtg_values.tolist())
     }
 
     return {
-        "status": str(packed.get("status", "ok")),
-        "env_idx": int(packed.get("env_idx", -1)),
-        "step_t": int(packed.get("step_t", 0)),
-        "token_index": int(packed.get("token_index", 0)),
+        "status": status,
+        "env_idx": int(packed["env_idx"]),
+        "step_t": int(packed["step_t"]),
+        "token_index": int(packed["token_index"]),
         "action_results": action_results,
         "rtg_results": rtg_results,
         "processed_rtg_veh_ids": [
             int(v)
-            for v in np.asarray(packed.get("processed_rtg_veh_ids", []), dtype=np.int32).tolist()
+            for v in np.asarray(packed["processed_rtg_veh_ids"], dtype=np.int32).tolist()
         ],
-        "dead_ids": [int(v) for v in np.asarray(packed.get("dead_ids", []), dtype=np.int32).tolist()],
-        "error": packed.get("error"),
+        "dead_ids": [int(v) for v in np.asarray(packed["dead_ids"], dtype=np.int32).tolist()],
     }
-
