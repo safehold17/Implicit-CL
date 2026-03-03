@@ -61,11 +61,15 @@ class OpponentStateService:
         self.adapter._preproc_data = preproc_data
         self.adapter._vehicles_to_control = list(vehicles_to_control)
         self.adapter._vehicles_to_control_set = set(self.adapter._vehicles_to_control)
+        trajectory_lengths: Dict[int, int] = {}
+        for veh_id in self.adapter._vehicles_to_control:
+            gt_traj_data = self._get_gt_traj_data(veh_id)
+            trajectory_lengths[veh_id] = (
+                int(gt_traj_data[:, 4].sum()) if gt_traj_data is not None else -1
+            )
         self.adapter._vehicles_to_control_sorted = sorted(
             self.adapter._vehicles_to_control,
-            key=lambda veh_id: int(self._get_gt_traj_data(veh_id)[:, 4].sum())
-            if self._get_gt_traj_data(veh_id) is not None
-            else -1,
+            key=trajectory_lengths.__getitem__,
             reverse=True,
         )
         self.adapter._ego_id = ego_id
@@ -241,11 +245,15 @@ class OpponentStateService:
             return []
 
         policy = self.adapter._policy
-        if (
-            t <= self.adapter.history_steps - 1
-            or policy is None
-            or not policy.relevant_agent_idxs
-        ):
+        if t <= self.adapter.history_steps - 1 or policy is None:
+            return [
+                veh_id
+                for veh_id in self.adapter._all_vehicle_ids
+                if veh_id in vehicles_by_id
+            ]
+
+        relevant_agent_idxs = policy.relevant_agent_idxs
+        if not relevant_agent_idxs:
             return [
                 veh_id
                 for veh_id in self.adapter._all_vehicle_ids
@@ -254,8 +262,7 @@ class OpponentStateService:
 
         update_id_set = set(controlled_ids)
         for veh_id in controlled_ids:
-            relevant_idxs = policy.relevant_agent_idxs.get(veh_id, [])
-            for idx in relevant_idxs:
+            for idx in relevant_agent_idxs.get(veh_id, ()):
                 mapped_id = policy.idx_to_veh_id.get(int(idx))
                 if mapped_id in vehicles_by_id:
                     update_id_set.add(mapped_id)
@@ -352,7 +359,8 @@ class OpponentStateService:
 
         self.update_policy_state(t)
 
-        if t >= self.adapter.history_steps - 1:
+        use_model_action = t >= self.adapter.history_steps - 1
+        if use_model_action:
             self.adapter._vehicle_data_dict = self.adapter._policy.predict(
                 self.adapter._vehicle_data_dict,
                 self.adapter._gt_data_dict,
@@ -362,24 +370,24 @@ class OpponentStateService:
                 t,
             )
 
-        use_model_action = t >= self.adapter.history_steps - 1
         actions = {}
         for veh_id in self.adapter._controlled_vehicle_ids_step:
             veh_data = self.adapter._vehicle_data_dict.get(veh_id)
             if veh_data is None:
                 continue
             if use_model_action:
-                veh_exists = veh_data["existence"][-1]
-                if veh_exists:
-                    accel = veh_data["next_acceleration"]
-                    steer = veh_data["next_steering"]
-                else:
-                    accel, steer = 0.0, 0.0
-                actions[veh_id] = (accel, steer)
-            else:
-                veh = self.adapter._step_vehicle_by_id.get(veh_id)
-                if veh is not None:
-                    actions[veh_id] = self._get_gt_action(veh_id, t, veh)
+                if not veh_data["existence"][-1]:
+                    actions[veh_id] = (0.0, 0.0)
+                    continue
+                actions[veh_id] = (
+                    veh_data["next_acceleration"],
+                    veh_data["next_steering"],
+                )
+                continue
+
+            veh = self.adapter._step_vehicle_by_id.get(veh_id)
+            if veh is not None:
+                actions[veh_id] = self._get_gt_action(veh_id, t, veh)
 
         return actions
 
@@ -449,35 +457,29 @@ class OpponentStateService:
         if t + 1 >= len(gt_traj):
             return (0.0, 0.0)
 
-        protected = (veh_id == self.adapter._ego_id) or (veh_id in self.adapter._vehicles_to_control_set)
-        if protected:
-            if veh_id in self.adapter._vehicles_to_control_set:
-                exists = self.get_opponent_vehicle_exists(veh_id)
-                veh_exists = 1 if exists else 0
+        is_controlled = veh_id in self.adapter._vehicles_to_control_set
+        is_protected = (veh_id == self.adapter._ego_id) or is_controlled
+        if is_protected:
+            if is_controlled:
+                veh_exists = 1 if self.get_opponent_vehicle_exists(veh_id) else 0
+            elif veh is None:
+                veh_exists = 0
             else:
-                if veh is not None:
-                    pos = veh.getPosition()
-                    veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
-                else:
-                    veh_exists = 0
+                pos = veh.getPosition()
+                veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
         else:
             veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
-        if (
-            t > 0
-            and self.adapter._vehicle_data_dict.get(veh_id, {}).get("existence")
-            and self.adapter._vehicle_data_dict[veh_id]["existence"][-1] == 0
-        ):
+        exists_history = self.adapter._vehicle_data_dict.get(veh_id, {}).get("existence")
+        if t > 0 and exists_history and exists_history[-1] == 0:
             veh_exists = 0
 
         if not veh_exists:
-            if veh is not None and protected:
-                return (0.0, 0.0)
-            if veh is not None:
-                if (
-                    self.adapter.allow_set_position_for_noncontrolled
-                    and veh_id not in self.adapter._vehicles_to_control_set
-                ):
-                    veh.setPosition(-1000000, -1000000)
+            if (
+                veh is not None
+                and not is_protected
+                and self.adapter.allow_set_position_for_noncontrolled
+            ):
+                veh.setPosition(-1000000, -1000000)
             return (0.0, 0.0)
 
         if veh is None:
@@ -658,20 +660,26 @@ class OpponentStateService:
 
         参考: policy_evaluator.py 第 99-146 行 update_vehicle_data_dict()
         """
+        adapter = self.adapter
         vehicles_to_control_set = getattr(
-            self.adapter,
+            adapter,
             "_vehicles_to_control_set",
-            set(getattr(self.adapter, "_vehicles_to_control", [])),
+            set(getattr(adapter, "_vehicles_to_control", [])),
         )
-        ego_id = getattr(self.adapter, "_ego_id", None)
-        rew_cfg = self.adapter.cfg.nocturne["rew_cfg"]
-        collision_fix = getattr(self.adapter.cfg.nocturne, "collision_fix", True)
+        ego_id = getattr(adapter, "_ego_id", None)
+        rew_cfg = adapter.cfg.nocturne["rew_cfg"]
+        collision_fix = getattr(adapter.cfg.nocturne, "collision_fix", True)
+        goal_dict = adapter._goal_dict
+        goal_dist_normalizer = adapter._goal_dist_normalizer
+        from . import opponent_adapter as _opponent_adapter_module
+        reward_fn = _opponent_adapter_module.compute_reward
         step_vehicle_by_id: Dict[int, Any] = {}
         controlled_vehicle_ids_step: List[int] = []
-        vehicles_by_id = self.adapter._vehicles_by_id_step
+        vehicles_by_id = adapter._vehicles_by_id_step
         vehicles_by_id.clear()
         for veh in vehicles:
             vehicles_by_id[veh.getID()] = veh
+
         update_vehicle_ids = self._get_state_update_vehicle_ids(t, vehicles_by_id)
         for veh_id in update_vehicle_ids:
             veh = vehicles_by_id[veh_id]
@@ -679,14 +687,14 @@ class OpponentStateService:
             if gt_traj_data is None:
                 continue
             veh_data = vehicle_data_dict[veh_id]
-            veh_idx = self.adapter._veh_id_to_idx.get(veh_id, 0)
+            veh_idx = adapter._veh_id_to_idx.get(veh_id, 0)
 
             veh_data["gt_position"].append({"x": gt_traj_data[t, 0], "y": gt_traj_data[t, 1]})
             veh_data["gt_heading"].append(gt_traj_data[t, 2])
             veh_data["gt_speed"].append(gt_traj_data[t, 3])
 
-            if t > 0 and t < self.adapter.steps - 1:
-                gt_accel = (gt_traj_data[t + 1, 3] - gt_traj_data[t - 1, 3]) / (2 * self.adapter.dt)
+            if t > 0 and t < adapter.steps - 1:
+                gt_accel = (gt_traj_data[t + 1, 3] - gt_traj_data[t - 1, 3]) / (2 * adapter.dt)
                 veh_data["gt_acceleration"].append(gt_accel)
             else:
                 veh_data["gt_acceleration"].append(0)
@@ -706,12 +714,12 @@ class OpponentStateService:
             if protected:
                 if is_controlled:
                     sim_exists = sim_position_exists(pos.x, pos.y)
-                    prev_exists = self.adapter._opponent_vehicle_exits.get(veh_id, bool(sim_exists))
-                    hold_until = self.adapter._opponent_goal_hold_until.get(veh_id)
+                    prev_exists = adapter._opponent_vehicle_exits.get(veh_id, bool(sim_exists))
+                    hold_until = adapter._opponent_goal_hold_until.get(veh_id)
                     exists = _keep_exists_on_invalid(sim_exists, prev_exists)
                     if _should_drop_after_goal(t, hold_until):
                         exists = False
-                    self.adapter._opponent_vehicle_exits[veh_id] = bool(exists)
+                    adapter._opponent_vehicle_exits[veh_id] = bool(exists)
                     veh_exists = 1 if exists else 0
                 else:
                     veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
@@ -729,27 +737,26 @@ class OpponentStateService:
                     veh_data["rtgs"].append(veh_data["rtgs"][-1] - dense_rewards[-1])
 
             if is_controlled:
-                from . import opponent_adapter as _opponent_adapter_module
-
-                reward = _opponent_adapter_module.compute_reward(
+                reward = reward_fn(
                     rew_cfg,
                     veh,
-                    self.adapter._goal_dict[veh_id],
-                    self.adapter._goal_dist_normalizer[veh_id],
+                    goal_dict[veh_id],
+                    goal_dist_normalizer[veh_id],
                     vehicle_data_dict,
                     collision_fix=collision_fix,
                 )
             else:
-                reward = self.adapter._zero_reward_template
+                reward = adapter._zero_reward_template
             veh_data["reward"].append(reward)
-        self.adapter._controlled_vehicle_ids_step = controlled_vehicle_ids_step
-        self.adapter._state_update_vehicle_ids_step = update_vehicle_ids
-        self.adapter._step_vehicle_by_id = step_vehicle_by_id
 
-        if self.adapter._policy.real_time_rewards:
-            vehicle_data_dict = self.adapter._compute_dense_reward(t, vehicle_data_dict)
+        adapter._controlled_vehicle_ids_step = controlled_vehicle_ids_step
+        adapter._state_update_vehicle_ids_step = update_vehicle_ids
+        adapter._step_vehicle_by_id = step_vehicle_by_id
+
+        if adapter._policy.real_time_rewards:
+            vehicle_data_dict = adapter._compute_dense_reward(t, vehicle_data_dict)
         else:
-            vehicle_data_dict = self.adapter._compute_nearest_dist_all(t, vehicle_data_dict)
+            vehicle_data_dict = adapter._compute_nearest_dist_all(t, vehicle_data_dict)
 
         return vehicle_data_dict
 

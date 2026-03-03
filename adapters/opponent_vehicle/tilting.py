@@ -50,10 +50,11 @@ class TiltConfig:
     @classmethod
     def from_tuple(cls, tilt_tuple: Tuple[int, int, int]) -> "TiltConfig":
         """从元组创建"""
+        goal_tilt, veh_veh_tilt, veh_edge_tilt = tilt_tuple
         return cls(
-            goal_tilt=tilt_tuple[0],
-            veh_veh_tilt=tilt_tuple[1],
-            veh_edge_tilt=tilt_tuple[2],
+            goal_tilt=goal_tilt,
+            veh_veh_tilt=veh_veh_tilt,
+            veh_edge_tilt=veh_edge_tilt,
         )
 
 
@@ -82,25 +83,29 @@ class PerVehicleAutoregressivePolicy(AutoregressivePolicy):
         使用 batch_inference.discretization_utils 中的纯函数，
         替代直接调用 dset.get_tilt_logits() / dset.undiscretize_rtgs()。
         """
+        cfg_rl_waymo = self.cfg_rl_waymo
         idx = agent_idx_dict[self.veh_id_to_idx[veh_id]]
 
         rtg_logits_3 = rtg_logits[0, idx, token_index].reshape(
-            self.cfg_rl_waymo.rtg_discretization,
+            cfg_rl_waymo.rtg_discretization,
             self.cfg_model.num_reward_components,
         )
 
-        per_vehicle_map = self.tilt_dict.get("per_vehicle", {})
-        if is_tilted and self.tilt_dict.get("tilt", False):
-            if veh_id in per_vehicle_map:
-                g, v, e = per_vehicle_map[veh_id]
-            else:
-                g = getattr(self, "goal_tilt", 0)
-                v = getattr(self, "veh_veh_tilt", 0)
-                e = getattr(self, "veh_edge_tilt", 0)
+        tilt_dict = self.tilt_dict
+        if is_tilted and tilt_dict.get("tilt", False):
+            per_vehicle_map = tilt_dict.get("per_vehicle", {})
+            g, v, e = per_vehicle_map.get(
+                veh_id,
+                (
+                    getattr(self, "goal_tilt", 0),
+                    getattr(self, "veh_veh_tilt", 0),
+                    getattr(self, "veh_edge_tilt", 0),
+                ),
+            )
         else:
             g, v, e = 0, 0, 0
 
-        rtg_discretization = self.cfg_rl_waymo.rtg_discretization
+        rtg_discretization = cfg_rl_waymo.rtg_discretization
         tilt_logits_np = _get_tilt_logits(rtg_discretization, g, v, e)
 
         (goal_idx, veh_idx, road_idx), (goal_val, veh_val, road_val) = (
@@ -108,12 +113,12 @@ class PerVehicleAutoregressivePolicy(AutoregressivePolicy):
                 rtg_logits_3,
                 tilt_logits_np,
                 rtg_discretization,
-                self.cfg_rl_waymo.min_rtg_pos,
-                self.cfg_rl_waymo.max_rtg_pos,
-                self.cfg_rl_waymo.min_rtg_veh,
-                self.cfg_rl_waymo.max_rtg_veh,
-                self.cfg_rl_waymo.min_rtg_road,
-                self.cfg_rl_waymo.max_rtg_road,
+                cfg_rl_waymo.min_rtg_pos,
+                cfg_rl_waymo.max_rtg_pos,
+                cfg_rl_waymo.min_rtg_veh,
+                cfg_rl_waymo.max_rtg_veh,
+                cfg_rl_waymo.min_rtg_road,
+                cfg_rl_waymo.max_rtg_road,
                 device=device,
             )
         )

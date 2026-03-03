@@ -2,19 +2,20 @@
 adapters/opponent_vehicle package initialization.
 Sets up the environment for using ctrl-sim.
 """
-import os
 import sys
+from pathlib import Path
 
 # Ensure ctrl-sim is in python path before importing submodules
-CTRL_SIM_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../third_party/ctrl-sim'))
-if not os.path.exists(CTRL_SIM_ROOT):
+CTRL_SIM_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "ctrl-sim"
+if not CTRL_SIM_ROOT.exists():
     raise FileNotFoundError(
         f"ctrl-sim submodule not found at {CTRL_SIM_ROOT}. "
         "Please run `git submodule update --init --recursive`."
     )
 
-if CTRL_SIM_ROOT not in sys.path:
-    sys.path.insert(0, CTRL_SIM_ROOT)
+ctrl_sim_root_str = str(CTRL_SIM_ROOT)
+if ctrl_sim_root_str not in sys.path:
+    sys.path.insert(0, ctrl_sim_root_str)
 
 from .opponent_adapter import CtrlSimOpponentAdapter, TiltConfig
 from adapters.data_bridge import DataBridge, ScenarioDataLoader

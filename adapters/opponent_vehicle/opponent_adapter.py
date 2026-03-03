@@ -8,16 +8,13 @@ CtRL-Sim 对手策略适配器
 - policies/policy.py Policy 基类
 """
 # 必须首先设置路径，在任何其他导入之前
-import os as _os
 import sys as _sys
+from pathlib import Path as _Path
 
-_CTRLSIM_PATH = _os.path.join(
-    _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))),
-    "third_party",
-    "ctrl-sim",
-)
-if _CTRLSIM_PATH not in _sys.path:
-    _sys.path.insert(0, _CTRLSIM_PATH)
+_CTRLSIM_PATH = _Path(__file__).resolve().parents[2] / "third_party" / "ctrl-sim"
+_CTRLSIM_PATH_STR = str(_CTRLSIM_PATH)
+if _CTRLSIM_PATH_STR not in _sys.path:
+    _sys.path.insert(0, _CTRLSIM_PATH_STR)
 
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -149,11 +146,17 @@ class CtrlSimOpponentAdapter:
     # ===== policy service delegation =====
 
     def _ensure_services(self):
-        if getattr(self, "_policy_service", None) is None:
+        policy_service = getattr(self, "_policy_service", None)
+        reward_service = getattr(self, "_reward_service", None)
+        state_service = getattr(self, "_state_service", None)
+        if policy_service is not None and reward_service is not None and state_service is not None:
+            return
+
+        if policy_service is None:
             self._policy_service = OpponentPolicyService(self)
-        if getattr(self, "_reward_service", None) is None:
+        if reward_service is None:
             self._reward_service = OpponentRewardService(self)
-        if getattr(self, "_state_service", None) is None:
+        if state_service is None:
             self._state_service = OpponentStateService(self)
 
     def _load_checkpoint_cfg(self):
