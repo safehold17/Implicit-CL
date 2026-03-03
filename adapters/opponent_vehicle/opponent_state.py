@@ -6,7 +6,7 @@ import numpy as np
 from adapters.existence import sim_position_exists
 from batch_inference import prepare_and_apply as _batch_io
 from tools.safe_bicycle import safe_backward_action_from_states
-from utils.data import get_object_type_str
+from utils.data import get_object_type_onehot, get_object_type_str
 from utils.sim import get_road_data
 
 from .existence_logic import (
@@ -83,7 +83,6 @@ class OpponentStateService:
         self.adapter._opponent_goal_hold_until = {}
         self.adapter._moving_agent_mask_cache = None
         self.adapter._batch_prepare_cache = {}
-        self.adapter._controlled_reward_prefix = None
 
         self.adapter._veh_id_to_idx = {}
         for idx, veh in enumerate(vehicles):
@@ -113,25 +112,13 @@ class OpponentStateService:
                 self.adapter._opponent_goal_hold_until[veh_id] = None
 
         self.adapter._all_vehicle_ids = list(self.adapter._vehicle_data_dict.keys())
-        self.adapter._veh_id_to_all_idx = {
-            veh_id: idx for idx, veh_id in enumerate(self.adapter._all_vehicle_ids)
-        }
         self.adapter._controlled_vehicle_ids_present = [
             veh_id
             for veh_id in self.adapter._vehicles_to_control
-            if veh_id in self.adapter._veh_id_to_all_idx
+            if veh_id in self.adapter._vehicle_data_dict
         ]
-        if self.adapter._controlled_vehicle_ids_present:
-            self.adapter._controlled_all_indices = np.asarray(
-                [
-                    self.adapter._veh_id_to_all_idx[veh_id]
-                    for veh_id in self.adapter._controlled_vehicle_ids_present
-                ],
-                dtype=np.int64,
-            )
-        else:
-            self.adapter._controlled_all_indices = np.zeros((0,), dtype=np.int64)
         self.adapter._controlled_vehicle_ids_step = []
+        self.adapter._state_update_vehicle_ids_step = list(self.adapter._all_vehicle_ids)
         self.adapter._step_vehicle_by_id = {}
 
         if self.adapter._policy is not None:
@@ -239,6 +226,108 @@ class OpponentStateService:
         """接收推理结果并返回动作，委托给 batch_inference.prepare_and_apply。"""
         return _batch_io.apply_predictions(self.adapter, model_outputs)
 
+    def _get_state_update_vehicle_ids(
+        self,
+        t: int,
+        vehicles_by_id: Dict[int, Any],
+    ) -> List[int]:
+        """确定当前 step 需要更新的车辆集合。"""
+        controlled_ids = [
+            veh_id
+            for veh_id in self.adapter._controlled_vehicle_ids_present
+            if veh_id in vehicles_by_id
+        ]
+        if not controlled_ids:
+            return []
+
+        policy = self.adapter._policy
+        if (
+            t <= self.adapter.history_steps - 1
+            or policy is None
+            or not policy.relevant_agent_idxs
+        ):
+            return [
+                veh_id
+                for veh_id in self.adapter._all_vehicle_ids
+                if veh_id in vehicles_by_id
+            ]
+
+        update_id_set = set(controlled_ids)
+        for veh_id in controlled_ids:
+            relevant_idxs = policy.relevant_agent_idxs.get(veh_id, [])
+            for idx in relevant_idxs:
+                mapped_id = policy.idx_to_veh_id.get(int(idx))
+                if mapped_id in vehicles_by_id:
+                    update_id_set.add(mapped_id)
+
+        return [
+            veh_id
+            for veh_id in self.adapter._all_vehicle_ids
+            if veh_id in update_id_set
+        ]
+
+    def update_policy_state(self, t: int) -> None:
+        """仅写入本 step 需要的车辆状态，避免全量 update_state 开销。"""
+        policy = self.adapter._policy
+        if policy is None:
+            return
+
+        states = policy.states
+        types = policy.types
+        actions = policy.actions
+        rtgs = policy.rtgs
+        timesteps = policy.timesteps
+        goals = policy.goals
+        goal_dim = policy.cfg_rl_waymo.goal_dim
+        use_rtg = policy.use_rtg
+        use_real_time_rtgs = policy.real_time_rewards and policy.use_rtg
+
+        update_vehicle_ids = self.adapter._state_update_vehicle_ids_step
+        for veh_id in update_vehicle_ids:
+            veh_data = self.adapter._vehicle_data_dict.get(veh_id)
+            if veh_data is None:
+                continue
+            if len(veh_data["position"]) <= t:
+                continue
+
+            veh_idx = policy.veh_id_to_idx[veh_id]
+            state_slot = states[veh_idx, t]
+            state_slot[0] = veh_data["position"][t]["x"]
+            state_slot[1] = veh_data["position"][t]["y"]
+            state_slot[2] = veh_data["velocity"][t]["x"]
+            state_slot[3] = veh_data["velocity"][t]["y"]
+            state_slot[4] = veh_data["heading"][t]
+            state_slot[5] = veh_data["length"]
+            state_slot[6] = veh_data["width"]
+            state_slot[7] = veh_data["existence"][t]
+
+            if t == 0:
+                types[veh_idx] = get_object_type_onehot(veh_data["type"])
+            timesteps[veh_idx, t, 0] = veh_data["timestep"][t]
+
+            if t > 0:
+                action_slot = actions[veh_idx, t - 1]
+                action_slot[0] = veh_data["acceleration"][t - 1]
+                action_slot[1] = veh_data["steering"][t - 1]
+                rtg_hist = veh_data["rtgs"]
+                if use_rtg and len(rtg_hist) > t - 1:
+                    rtgs[veh_idx, t - 1] = rtg_hist[t - 1]
+            else:
+                rtg_hist = veh_data["rtgs"]
+
+            if use_real_time_rtgs and len(rtg_hist) > t:
+                rtgs[veh_idx, t] = rtg_hist[t]
+
+            goal_slot = goals[veh_idx, t]
+            goal_slot[0] = veh_data["goal_position"]["x"]
+            goal_slot[1] = veh_data["goal_position"]["y"]
+            if goal_dim > 2:
+                goal_slot[2] = veh_data["goal_velocity_x"]
+            if goal_dim > 3:
+                goal_slot[3] = veh_data["goal_velocity_y"]
+            if goal_dim > 4:
+                goal_slot[4] = veh_data["goal_heading"]
+
     def step(self, t: int, vehicles: List) -> Dict[int, Tuple[float, float]]:
         """
         执行一步推理，返回所有被控车辆的动作
@@ -261,11 +350,7 @@ class OpponentStateService:
             self.adapter._vehicle_data_dict,
         )
 
-        self.adapter._policy.update_state(
-            self.adapter._vehicle_data_dict,
-            self.adapter._vehicles_to_control,
-            t,
-        )
+        self.update_policy_state(t)
 
         if t >= self.adapter.history_steps - 1:
             self.adapter._vehicle_data_dict = self.adapter._policy.predict(
@@ -477,6 +562,10 @@ class OpponentStateService:
 
         参考: policy_evaluator.py 第 70-97 行 initialize_vehicle_data_dict()
         """
+        goal_speed = float(goal_dict["speed"])
+        goal_heading = float(goal_dict["heading"])
+        goal_velocity_x = goal_speed * np.cos(goal_heading)
+        goal_velocity_y = goal_speed * np.sin(goal_heading)
         return {
             "gt_position": [],
             "gt_speed": [],
@@ -495,6 +584,8 @@ class OpponentStateService:
             "goal_position": {"x": goal_dict["pos"][0], "y": goal_dict["pos"][1]},
             "goal_heading": goal_dict["heading"],
             "goal_speed": goal_dict["speed"],
+            "goal_velocity_x": goal_velocity_x,
+            "goal_velocity_y": goal_velocity_y,
             "width": veh.getWidth(),
             "length": veh.getLength(),
             "type": get_object_type_str(veh),
@@ -577,12 +668,18 @@ class OpponentStateService:
         collision_fix = getattr(self.adapter.cfg.nocturne, "collision_fix", True)
         step_vehicle_by_id: Dict[int, Any] = {}
         controlled_vehicle_ids_step: List[int] = []
-        for veh_idx, veh in enumerate(vehicles):
-            veh_id = veh.getID()
+        vehicles_by_id = self.adapter._vehicles_by_id_step
+        vehicles_by_id.clear()
+        for veh in vehicles:
+            vehicles_by_id[veh.getID()] = veh
+        update_vehicle_ids = self._get_state_update_vehicle_ids(t, vehicles_by_id)
+        for veh_id in update_vehicle_ids:
+            veh = vehicles_by_id[veh_id]
             gt_traj_data = self._get_gt_traj_data(veh_id)
             if gt_traj_data is None:
                 continue
             veh_data = vehicle_data_dict[veh_id]
+            veh_idx = self.adapter._veh_id_to_idx.get(veh_id, 0)
 
             veh_data["gt_position"].append({"x": gt_traj_data[t, 0], "y": gt_traj_data[t, 1]})
             veh_data["gt_heading"].append(gt_traj_data[t, 2])
@@ -631,18 +728,22 @@ class OpponentStateService:
                 if dense_rewards:
                     veh_data["rtgs"].append(veh_data["rtgs"][-1] - dense_rewards[-1])
 
-            from . import opponent_adapter as _opponent_adapter_module
+            if is_controlled:
+                from . import opponent_adapter as _opponent_adapter_module
 
-            reward = _opponent_adapter_module.compute_reward(
-                rew_cfg,
-                veh,
-                self.adapter._goal_dict[veh_id],
-                self.adapter._goal_dist_normalizer[veh_id],
-                vehicle_data_dict,
-                collision_fix=collision_fix,
-            )
+                reward = _opponent_adapter_module.compute_reward(
+                    rew_cfg,
+                    veh,
+                    self.adapter._goal_dict[veh_id],
+                    self.adapter._goal_dist_normalizer[veh_id],
+                    vehicle_data_dict,
+                    collision_fix=collision_fix,
+                )
+            else:
+                reward = self.adapter._zero_reward_template
             veh_data["reward"].append(reward)
         self.adapter._controlled_vehicle_ids_step = controlled_vehicle_ids_step
+        self.adapter._state_update_vehicle_ids_step = update_vehicle_ids
         self.adapter._step_vehicle_by_id = step_vehicle_by_id
 
         if self.adapter._policy.real_time_rewards:

@@ -8,13 +8,23 @@ class OpponentRewardService:
     def __init__(self, adapter):
         self.adapter = adapter
 
+    def _get_step_vehicle_ids(self, t: int, vehicle_data_dict: Dict) -> List[int]:
+        veh_ids = self.adapter._state_update_vehicle_ids_step
+        if not veh_ids:
+            veh_ids = self.adapter._all_vehicle_ids
+        if not veh_ids:
+            veh_ids = list(vehicle_data_dict.keys())
+        return [
+            veh_id
+            for veh_id in veh_ids
+            if veh_id in vehicle_data_dict and len(vehicle_data_dict[veh_id]["position"]) > t
+        ]
+
     def _compute_nearest_dist_all(self, t: int, vehicle_data_dict: Dict) -> Dict:
         """
         计算车-车最近距离（对齐 ctrl-sim evaluator.py compute_nearest_dist_all）
         """
-        veh_ids = self.adapter._all_vehicle_ids
-        if not veh_ids:
-            veh_ids = list(vehicle_data_dict.keys())
+        veh_ids = self._get_step_vehicle_ids(t, vehicle_data_dict)
         if not veh_ids:
             return vehicle_data_dict
 
@@ -74,13 +84,20 @@ class OpponentRewardService:
 
         参考: evaluator.py 第 127-170 行 compute_dense_reward()
         """
-        veh_ids = self.adapter._all_vehicle_ids
-        if not veh_ids:
-            veh_ids = list(vehicle_data_dict.keys())
+        veh_ids = self._get_step_vehicle_ids(t, vehicle_data_dict)
         if not veh_ids:
             return vehicle_data_dict
 
-        controlled_ids = self.adapter._controlled_vehicle_ids_present
+        veh_id_to_idx = {veh_id: idx for idx, veh_id in enumerate(veh_ids)}
+        controlled_ids = [
+            veh_id
+            for veh_id in self.adapter._controlled_vehicle_ids_step
+            if veh_id in veh_id_to_idx
+        ]
+        controlled_indices = np.asarray(
+            [veh_id_to_idx[veh_id] for veh_id in controlled_ids],
+            dtype=np.int64,
+        )
         veh_data_list = [vehicle_data_dict[veh_id] for veh_id in veh_ids]
         all_positions = np.array(
             [
@@ -119,10 +136,9 @@ class OpponentRewardService:
         )
 
         if controlled_ids:
-            controlled_all_indices = self.adapter._controlled_all_indices
-            controlled_positions = all_positions[controlled_all_indices]
-            controlled_gt_positions = all_gt_positions[controlled_all_indices]
-            controlled_existence = all_existence[controlled_all_indices]
+            controlled_positions = all_positions[controlled_indices]
+            controlled_gt_positions = all_gt_positions[controlled_indices]
+            controlled_existence = all_existence[controlled_indices]
 
             if len(self.adapter._road_edge_polylines) > 0:
                 controlled_xy = controlled_positions[:, np.newaxis, :]
@@ -144,21 +160,21 @@ class OpponentRewardService:
                 all_positions=all_positions,
                 all_existence=all_existence,
                 target_existence=controlled_existence,
-                target_all_indices=controlled_all_indices,
+                target_all_indices=controlled_indices,
             )
             veh_veh_dist_rewards_gt = self._compute_nearest_dist_to_all(
                 target_positions=controlled_gt_positions,
                 all_positions=all_gt_positions,
                 all_existence=all_existence,
                 target_existence=controlled_existence,
-                target_all_indices=controlled_all_indices,
+                target_all_indices=controlled_indices,
             )
 
             max_veh_veh_distance = cfg_dataset.max_veh_veh_distance
-            nearest_dist_values[controlled_all_indices] = (
+            nearest_dist_values[controlled_indices] = (
                 veh_veh_dist_rewards[:, 0] * max_veh_veh_distance
             )
-            gt_nearest_dist_values[controlled_all_indices] = (
+            gt_nearest_dist_values[controlled_indices] = (
                 veh_veh_dist_rewards_gt[:, 0] * max_veh_veh_distance
             )
 
@@ -171,14 +187,9 @@ class OpponentRewardService:
                 veh_veh_dist_rewards_norm / max_veh_veh_distance
             )
 
-            if (
-                self.adapter._controlled_reward_prefix is None
-                or self.adapter._controlled_reward_prefix.shape[0] != len(controlled_ids)
-            ):
-                self.adapter._controlled_reward_prefix = np.asarray(
-                    [vehicle_data_dict[veh_id]["reward"][0] for veh_id in controlled_ids]
-                )[:, np.newaxis, :]
-            processed_rewards = self.adapter._controlled_reward_prefix
+            processed_rewards = np.asarray(
+                [vehicle_data_dict[veh_id]["reward"][0] for veh_id in controlled_ids]
+            )[:, np.newaxis, :]
             processed_rewards = (
                 processed_rewards
                 * controlled_existence[:, np.newaxis, np.newaxis].astype(float)
@@ -202,7 +213,7 @@ class OpponentRewardService:
             )
 
             dense_template = np.zeros_like(controlled_rewards[0, 0], dtype=np.float32)
-            for controlled_idx, all_idx in enumerate(controlled_all_indices):
+            for controlled_idx, all_idx in enumerate(controlled_indices):
                 dense_rewards_by_idx[int(all_idx)] = controlled_rewards[controlled_idx, 0]
 
         for idx, veh_data in enumerate(veh_data_list):

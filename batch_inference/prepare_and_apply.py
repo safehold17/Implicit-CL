@@ -72,6 +72,183 @@ def _require_vehicle_data(
     return veh_data
 
 
+def _angle_sub_np(current_angle: np.ndarray, target_angle: np.ndarray) -> np.ndarray:
+    diff = (target_angle - current_angle) % (2 * np.pi)
+    mask = diff > np.pi
+    diff[mask] = -(2 * np.pi - diff[mask])
+    return diff
+
+
+def _apply_se2_transform_np(
+    coordinates: np.ndarray,
+    translation: np.ndarray,
+    yaw: float,
+) -> np.ndarray:
+    shifted = coordinates - translation
+    x = shifted[..., 0]
+    y = shifted[..., 1]
+    cos_yaw = np.cos(yaw)
+    sin_yaw = np.sin(yaw)
+    out = np.empty_like(shifted)
+    out[..., 0] = cos_yaw * x - sin_yaw * y
+    out[..., 1] = sin_yaw * x + cos_yaw * y
+    return out
+
+
+def _select_relevant_agents_fast(
+    dset: Any,
+    ag_states: np.ndarray,
+    ag_types: np.ndarray,
+    actions_discrete: np.ndarray,
+    rtgs_values: np.ndarray,
+    goals_step: np.ndarray,
+    origin_agent_idx: int,
+    moving_agent_mask: np.ndarray,
+    cached_relevant_agent_idxs: List[int],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[int, int], List[int]]:
+    cfg = dset.cfg_dataset
+    max_agents = int(cfg.max_num_agents)
+    num_agents = int(ag_states.shape[0])
+    origin_xy = ag_states[origin_agent_idx, 0, :2]
+    delta = ag_states[:, 0, :2] - origin_xy[np.newaxis, :]
+    dist_sq = np.sum(delta * delta, axis=-1)
+    valid_mask = dist_sq < float(cfg.agent_dist_threshold) ** 2
+
+    has_cached = len(cached_relevant_agent_idxs) > 0
+    if has_cached:
+        cached = np.asarray(cached_relevant_agent_idxs, dtype=np.int64)
+        in_range_mask = (cached >= 0) & (cached < num_agents)
+        cached = cached[in_range_mask]
+        if cached.size > 0:
+            valid_cached = cached[valid_mask[cached]]
+            closest_ag_ids = np.unique(valid_cached)
+        else:
+            closest_ag_ids = np.empty((0,), dtype=np.int64)
+        valid_cached_set = set(int(idx) for idx in closest_ag_ids.tolist())
+        relevant_agent_idxs = [int(idx) for idx in cached_relevant_agent_idxs if int(idx) in valid_cached_set]
+    else:
+        candidate_count = min(max_agents, num_agents)
+        if candidate_count <= 0:
+            closest_ag_ids = np.empty((0,), dtype=np.int64)
+        elif candidate_count < num_agents:
+            candidate_idxs = np.argpartition(dist_sq, candidate_count - 1)[:candidate_count]
+            closest_ag_ids = candidate_idxs[valid_mask[candidate_idxs]]
+        else:
+            candidate_idxs = np.arange(num_agents, dtype=np.int64)
+            closest_ag_ids = candidate_idxs[valid_mask[candidate_idxs]]
+        if closest_ag_ids.size > 1:
+            closest_ag_ids = np.sort(closest_ag_ids)
+            if dset.split_name == "train":
+                np.random.shuffle(closest_ag_ids)
+        relevant_agent_idxs = []
+
+    if closest_ag_ids.size > max_agents:
+        closest_ag_ids = closest_ag_ids[:max_agents]
+
+    final_agent_states = np.zeros((max_agents, *ag_states.shape[1:]), dtype=ag_states.dtype)
+    final_agent_types = -np.ones((max_agents, *ag_types.shape[1:]), dtype=ag_types.dtype)
+    final_actions = np.zeros((max_agents, *actions_discrete.shape[1:]), dtype=actions_discrete.dtype)
+    final_rtgs = np.zeros((max_agents, *rtgs_values.shape[1:]), dtype=rtgs_values.dtype)
+    final_goals = np.zeros((max_agents, *goals_step.shape[1:]), dtype=goals_step.dtype)
+    final_moving_agent_mask = np.zeros(max_agents, dtype=moving_agent_mask.dtype)
+
+    num_selected = int(closest_ag_ids.shape[0])
+    if num_selected > 0:
+        final_agent_states[:num_selected] = ag_states[closest_ag_ids]
+        final_agent_types[:num_selected] = ag_types[closest_ag_ids]
+        final_actions[:num_selected] = actions_discrete[closest_ag_ids]
+        final_rtgs[:num_selected] = rtgs_values[closest_ag_ids]
+        final_goals[:num_selected] = goals_step[closest_ag_ids]
+        final_moving_agent_mask[:num_selected] = moving_agent_mask[closest_ag_ids]
+
+    new_agent_idx_dict = {int(old_idx): int(new_idx) for new_idx, old_idx in enumerate(closest_ag_ids.tolist())}
+    return (
+        final_agent_states,
+        final_agent_types,
+        final_actions,
+        final_rtgs,
+        final_goals,
+        final_moving_agent_mask,
+        new_agent_idx_dict,
+        relevant_agent_idxs,
+    )
+
+
+def _normalize_scene_fast(
+    rl: Any,
+    rel_ag_states: np.ndarray,
+    rel_goals: np.ndarray,
+    new_origin_agent_idx: int,
+    road_points_src: np.ndarray,
+    road_types_src: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    yaw = float(rel_ag_states[new_origin_agent_idx, 0, 4])
+    angle_of_rotation = (np.pi / 2.0) + np.sign(-yaw) * np.abs(yaw)
+    translation_xy = rel_ag_states[new_origin_agent_idx, 0, :2].copy()
+    translation = translation_xy[np.newaxis, np.newaxis, :]
+    zero_translation = np.zeros_like(translation)
+
+    rel_ag_states[:, :, :2] = _apply_se2_transform_np(
+        coordinates=rel_ag_states[:, :, :2],
+        translation=translation,
+        yaw=angle_of_rotation,
+    )
+    rel_ag_states[:, :, 2:4] = _apply_se2_transform_np(
+        coordinates=rel_ag_states[:, :, 2:4],
+        translation=zero_translation,
+        yaw=angle_of_rotation,
+    )
+    rel_ag_states[:, :, 4] = _angle_sub_np(
+        rel_ag_states[:, :, 4],
+        -np.asarray(angle_of_rotation).reshape(1, 1),
+    )
+
+    rel_goals[:, :2] = _apply_se2_transform_np(
+        coordinates=rel_goals[:, :2],
+        translation=translation[:, 0],
+        yaw=angle_of_rotation,
+    )
+    if int(rl.goal_dim) == 5:
+        rel_goals[:, 2:4] = _apply_se2_transform_np(
+            coordinates=rel_goals[:, 2:4],
+            translation=np.zeros_like(translation[:, 0]),
+            yaw=angle_of_rotation,
+        )
+        rel_goals[:, 4] = _angle_sub_np(
+            rel_goals[:, 4],
+            -np.asarray(angle_of_rotation).reshape(1),
+        )
+
+    max_roads = int(rl.max_num_road_polylines)
+    final_road_points = np.zeros((max_roads, *road_points_src.shape[1:]), dtype=road_points_src.dtype)
+    final_road_types = -np.ones((max_roads, *road_types_src.shape[1:]), dtype=road_types_src.dtype)
+
+    num_roads = int(road_points_src.shape[0])
+    if max_roads <= 0:
+        return rel_ag_states, final_road_points, final_road_types, rel_goals
+
+    if num_roads > 0:
+        if num_roads > max_roads:
+            relative_xy = road_points_src[:, :, :2] - translation
+            dist_sq = np.sum(relative_xy * relative_xy, axis=-1) * road_points_src[:, :, -1]
+            max_dist_sq = np.max(dist_sq, axis=1)
+            selected = np.argpartition(max_dist_sq, max_roads - 1)[:max_roads]
+            selected = selected[np.argsort(max_dist_sq[selected])]
+        else:
+            selected = np.arange(num_roads, dtype=np.int64)
+
+        num_selected = int(len(selected))
+        final_road_points[:num_selected] = road_points_src[selected]
+        final_road_types[:num_selected] = road_types_src[selected]
+        final_road_points[:num_selected, :, :2] = _apply_se2_transform_np(
+            coordinates=final_road_points[:num_selected, :, :2],
+            translation=translation,
+            yaw=angle_of_rotation,
+        )
+
+    return rel_ag_states, final_road_points, final_road_types, rel_goals
+
+
 def _build_focal_batch(
     adapter: Any,
     t: int,
@@ -80,13 +257,13 @@ def _build_focal_batch(
     remaining_veh_id_set: set[int],
     ag_states: np.ndarray,
     ag_types: np.ndarray,
-    actions: np.ndarray,
-    rtgs: np.ndarray,
-    goals: np.ndarray,
+    actions_discrete: np.ndarray,
+    rtgs_values: np.ndarray,
+    goals_step: np.ndarray,
     rel_timesteps_template: np.ndarray,
     moving_agent_mask: np.ndarray,
-    road_points_scratch: Optional[np.ndarray],
-    road_types_scratch: Optional[np.ndarray],
+    road_points_src: np.ndarray,
+    road_types_src: np.ndarray,
 ) -> Tuple[Optional[Dict[str, Any]], List[int], bool]:
     policy = adapter._policy
     dset = adapter.dataset
@@ -96,23 +273,12 @@ def _build_focal_batch(
     if not policy.states[origin_agent_idx, t, -1]:
         return None, [], True
 
-    road_points_src = adapter._preproc_data["road_points"]
-    road_types_src = adapter._preproc_data["road_types"]
     if len(road_points_src) == 0:
         return None, [], True
-    if road_points_scratch is None or road_types_scratch is None:
-        road_points = road_points_src.copy()
-        road_types = road_types_src.copy()
-    else:
-        np.copyto(road_points_scratch, road_points_src)
-        np.copyto(road_types_scratch, road_types_src)
-        road_points = road_points_scratch
-        road_types = road_types_scratch
 
     has_cached_relevant_agents = focal_id in policy.relevant_agent_idxs
     cached_relevant_agent_idxs = policy.relevant_agent_idxs.get(focal_id, [])
 
-    normalize_timestep = 0
     rel_timesteps = rel_timesteps_template
     (
         rel_ag_states,
@@ -123,16 +289,16 @@ def _build_focal_batch(
         rel_moving_agent_mask,
         new_agent_idx_dict,
         relevant_agent_idxs,
-    ) = dset.select_relevant_agents(
-        ag_states,
-        ag_types,
-        actions,
-        rtgs,
-        goals[:, 0],
-        origin_agent_idx,
-        normalize_timestep,
-        moving_agent_mask,
-        cached_relevant_agent_idxs,
+    ) = _select_relevant_agents_fast(
+        dset=dset,
+        ag_states=ag_states,
+        ag_types=ag_types,
+        actions_discrete=actions_discrete,
+        rtgs_values=rtgs_values,
+        goals_step=goals_step,
+        origin_agent_idx=origin_agent_idx,
+        moving_agent_mask=moving_agent_mask,
+        cached_relevant_agent_idxs=cached_relevant_agent_idxs,
     )
 
     accounted_veh_ids = {policy.idx_to_veh_id[idx] for idx in new_agent_idx_dict.keys()}
@@ -150,16 +316,16 @@ def _build_focal_batch(
     for veh_id in cur_data_veh_ids:
         policy.relevant_agent_idxs[veh_id] = relevant_ids_for_store
 
-    new_origin_agent_idx = new_agent_idx_dict[origin_agent_idx]
-    rel_actions = dset.discretize_actions(rel_actions)
-    if policy.discretize_rtgs:
-        rel_rtgs = dset.discretize_rtgs(rel_rtgs)
-    rel_ag_states, rel_road_points, rel_road_types, rel_goals = dset.normalize_scene(
-        rel_ag_states,
-        road_points,
-        road_types,
-        rel_goals,
-        new_origin_agent_idx,
+    new_origin_agent_idx = new_agent_idx_dict.get(origin_agent_idx)
+    if new_origin_agent_idx is None:
+        return None, [], True
+    rel_ag_states, rel_road_points, rel_road_types, rel_goals = _normalize_scene_fast(
+        rl=rl,
+        rel_ag_states=rel_ag_states,
+        rel_goals=rel_goals,
+        new_origin_agent_idx=new_origin_agent_idx,
+        road_points_src=road_points_src,
+        road_types_src=road_types_src,
     )
     motion_data_np = {
         "agent_states": rel_ag_states,
@@ -193,7 +359,7 @@ def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str
     adapter._last_vehicle_by_id = {}
 
     adapter._vehicle_data_dict = adapter._update_vehicle_data_dict(t, vehicles, adapter._vehicle_data_dict)
-    adapter._policy.update_state(adapter._vehicle_data_dict, adapter._vehicles_to_control, t)
+    adapter.update_policy_state(t)
 
     # warm-up 阶段使用 GT 动作，不做 opponent 模型推理与 focal batch 组装
     if t < adapter.history_steps - 1:
@@ -242,7 +408,7 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
         moving_agent_mask = np.isin(np.arange(policy.states.shape[0]), moving_ids)
         adapter._moving_agent_mask_cache = moving_agent_mask
 
-    ag_states, ag_types, actions, rtgs_src, goals, timesteps_src = _slice_policy_window(policy, t)
+    ag_states, ag_types, actions_src, rtgs_src, goals, timesteps_src = _slice_policy_window(policy, t)
     rtgs = _get_or_create_prepare_buffer(
         adapter=adapter,
         name="rtgs_norm_buffer",
@@ -251,6 +417,26 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
     )
     np.copyto(rtgs, rtgs_src)
     _normalize_rtgs_inplace(rtgs, policy.cfg_rl_waymo)
+    actions_for_discretize = _get_or_create_prepare_buffer(
+        adapter=adapter,
+        name="actions_discretize_work",
+        shape=actions_src.shape,
+        dtype=actions_src.dtype,
+    )
+    np.copyto(actions_for_discretize, actions_src)
+    actions_discrete = adapter.dataset.discretize_actions(actions_for_discretize)
+    if policy.discretize_rtgs:
+        rtgs_discrete = _get_or_create_prepare_buffer(
+            adapter=adapter,
+            name="rtgs_discrete_buffer",
+            shape=rtgs.shape,
+            dtype=rtgs.dtype,
+        )
+        np.copyto(rtgs_discrete, rtgs)
+        rtgs_values = adapter.dataset.discretize_rtgs(rtgs_discrete)
+    else:
+        rtgs_values = rtgs
+
     timesteps = _get_or_create_prepare_buffer(
         adapter=adapter,
         name="timesteps_int_buffer",
@@ -269,23 +455,13 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
         dtype=timesteps.dtype,
     )
     rel_timesteps_template[...] = timesteps[np.newaxis, ...]
-    road_points_scratch: Optional[np.ndarray] = None
-    road_types_scratch: Optional[np.ndarray] = None
     road_points_src = adapter._preproc_data.get("road_points")
     road_types_src = adapter._preproc_data.get("road_types")
-    if road_points_src is not None and road_types_src is not None and len(road_points_src) > 0:
-        road_points_scratch = _get_or_create_prepare_buffer(
-            adapter=adapter,
-            name="road_points_scratch",
-            shape=road_points_src.shape,
-            dtype=road_points_src.dtype,
-        )
-        road_types_scratch = _get_or_create_prepare_buffer(
-            adapter=adapter,
-            name="road_types_scratch",
-            shape=road_types_src.shape,
-            dtype=road_types_src.dtype,
-        )
+    if road_points_src is None:
+        road_points_src = np.zeros((0, 1, 3), dtype=np.float32)
+    if road_types_src is None:
+        road_types_src = np.zeros((0, 1), dtype=np.float32)
+    goals_step = goals[:, 0]
 
     dead_ids: List[int] = []
     focal_batches: List[Dict[str, Any]] = []
@@ -304,13 +480,13 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
             remaining_veh_id_set=unaccounted_veh_id_set,
             ag_states=ag_states,
             ag_types=ag_types,
-            actions=actions,
-            rtgs=rtgs,
-            goals=goals,
+            actions_discrete=actions_discrete,
+            rtgs_values=rtgs_values,
+            goals_step=goals_step,
             rel_timesteps_template=rel_timesteps_template,
             moving_agent_mask=moving_agent_mask,
-            road_points_scratch=road_points_scratch,
-            road_types_scratch=road_types_scratch,
+            road_points_src=road_points_src,
+            road_types_src=road_types_src,
         )
         if is_dead:
             dead_ids.append(focal_id)

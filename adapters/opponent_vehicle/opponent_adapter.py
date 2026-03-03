@@ -123,14 +123,14 @@ class CtrlSimOpponentAdapter:
         self._goal_pos_tolerance: float = 1.0
         self._goal_hold_steps: int = 5
         self._all_vehicle_ids: List[int] = []
-        self._veh_id_to_all_idx: Dict[int, int] = {}
         self._controlled_vehicle_ids_present: List[int] = []
         self._controlled_vehicle_ids_step: List[int] = []
-        self._controlled_all_indices: np.ndarray = np.zeros((0,), dtype=np.int64)
         self._moving_agent_mask_cache: Optional[np.ndarray] = None
         self._batch_prepare_cache: Dict[str, np.ndarray] = {}
-        self._controlled_reward_prefix: Optional[np.ndarray] = None
+        self._state_update_vehicle_ids_step: List[int] = []
+        self._zero_reward_template: Tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._step_vehicle_by_id: Dict[int, Any] = {}
+        self._vehicles_by_id_step: Dict[int, Any] = {}
         # Whether to move non-controlled vehicles out of the scene when GT is missing.
         self.allow_set_position_for_noncontrolled: bool = False
         # 缓存 vehicles 列表，供 apply_predictions warm-up 使用
@@ -260,6 +260,10 @@ class CtrlSimOpponentAdapter:
     def prepare_step(self, t: int, vehicles: List):
         self._ensure_services()
         return self._state_service.prepare_step(t, vehicles)
+
+    def update_policy_state(self, t: int):
+        self._ensure_services()
+        return self._state_service.update_policy_state(t)
 
     def apply_predictions(self, model_outputs: Optional[Dict]):
         self._ensure_services()
