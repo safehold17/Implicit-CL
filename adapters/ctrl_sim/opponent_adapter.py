@@ -256,6 +256,12 @@ class CtrlSimOpponentAdapter:
         self._opponent_goal_hold_until: Dict[int, Optional[int]] = {}
         self._goal_pos_tolerance: float = 1.0
         self._goal_hold_steps: int = 5
+        self._all_vehicle_ids: List[int] = []
+        self._veh_id_to_all_idx: Dict[int, int] = {}
+        self._controlled_vehicle_ids_present: List[int] = []
+        self._controlled_all_indices: np.ndarray = np.zeros((0,), dtype=np.int64)
+        self._moving_agent_mask_cache: Optional[np.ndarray] = None
+        self._batch_prepare_cache: Dict[str, np.ndarray] = {}
         # Whether to move non-controlled vehicles out of the scene when GT is missing.
         self.allow_set_position_for_noncontrolled: bool = False
         # 缓存 vehicles 列表，供 apply_predictions warm-up 使用
@@ -516,6 +522,8 @@ class CtrlSimOpponentAdapter:
         self._opponent_vehicle_exits = {}
         self._opponent_last_valid_pos = {}
         self._opponent_goal_hold_until = {}
+        self._moving_agent_mask_cache = None
+        self._batch_prepare_cache = {}
         
         # 创建车辆索引映射
         self._veh_id_to_idx = {}
@@ -542,6 +550,26 @@ class CtrlSimOpponentAdapter:
                         float(pos.y),
                     )
                 self._opponent_goal_hold_until[veh_id] = None
+
+        self._all_vehicle_ids = list(self._vehicle_data_dict.keys())
+        self._veh_id_to_all_idx = {
+            veh_id: idx for idx, veh_id in enumerate(self._all_vehicle_ids)
+        }
+        self._controlled_vehicle_ids_present = [
+            veh_id
+            for veh_id in self._vehicles_to_control
+            if veh_id in self._veh_id_to_all_idx
+        ]
+        if self._controlled_vehicle_ids_present:
+            self._controlled_all_indices = np.asarray(
+                [
+                    self._veh_id_to_all_idx[veh_id]
+                    for veh_id in self._controlled_vehicle_ids_present
+                ],
+                dtype=np.int64,
+            )
+        else:
+            self._controlled_all_indices = np.zeros((0,), dtype=np.int64)
         
         # 重置策略内部状态（参考: policy.py 第 45-58 行）
         if self._policy is not None:
@@ -1053,7 +1081,9 @@ class CtrlSimOpponentAdapter:
         """
         计算车-车最近距离（对齐 ctrl-sim evaluator.py compute_nearest_dist_all）
         """
-        veh_ids = list(vehicle_data_dict.keys())
+        veh_ids = self._all_vehicle_ids
+        if not veh_ids:
+            veh_ids = list(vehicle_data_dict.keys())
         if not veh_ids:
             return vehicle_data_dict
 
@@ -1094,15 +1124,13 @@ class CtrlSimOpponentAdapter:
 
         参考: evaluator.py 第 127-170 行 compute_dense_reward()
         """
-        veh_ids = list(vehicle_data_dict.keys())
+        veh_ids = self._all_vehicle_ids
+        if not veh_ids:
+            veh_ids = list(vehicle_data_dict.keys())
         if not veh_ids:
             return vehicle_data_dict
 
-        controlled_ids = [
-            veh_id for veh_id in self._vehicles_to_control
-            if veh_id in vehicle_data_dict
-        ]
-        veh_id_to_all_idx = {veh_id: i for i, veh_id in enumerate(veh_ids)}
+        controlled_ids = self._controlled_vehicle_ids_present
 
         all_x = np.array([vehicle_data_dict[v]["position"][t]['x'] for v in veh_ids], dtype=np.float32)
         all_y = np.array([vehicle_data_dict[v]["position"][t]['y'] for v in veh_ids], dtype=np.float32)
@@ -1121,10 +1149,7 @@ class CtrlSimOpponentAdapter:
         dense_template = np.zeros(self.cfg.model.num_reward_components, dtype=np.float32)
 
         if controlled_ids:
-            controlled_all_indices = np.array(
-                [veh_id_to_all_idx[veh_id] for veh_id in controlled_ids],
-                dtype=np.int64,
-            )
+            controlled_all_indices = self._controlled_all_indices
             controlled_positions = all_positions[controlled_all_indices]
             controlled_gt_positions = all_gt_positions[controlled_all_indices]
             controlled_existence = all_existence[controlled_all_indices]

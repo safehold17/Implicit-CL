@@ -17,12 +17,12 @@ def _slice_policy_window(policy: Any, t: int) -> Tuple[np.ndarray, np.ndarray, n
     end = tcl if t < tcl else t + 1
 
     return (
-        policy.states[:, start:end].copy(),
-        policy.types.copy(),
-        policy.actions[:, start:end].copy(),
-        policy.rtgs[:, start:end].copy(),
-        policy.goals[:, start:end].copy(),
-        policy.timesteps[0, start:end].astype(int).copy(),
+        policy.states[:, start:end],
+        policy.types,
+        policy.actions[:, start:end],
+        policy.rtgs[:, start:end],
+        policy.goals[:, start:end],
+        policy.timesteps[0, start:end],
     )
 
 
@@ -36,6 +36,24 @@ def _normalize_rtgs_inplace(rtgs: np.ndarray, rl: Any) -> None:
     rtgs[:, :, 2] = (np.clip(rtgs[:, :, 2], rl.min_rtg_road, rl.max_rtg_road) - rl.min_rtg_road) / (
         rl.max_rtg_road - rl.min_rtg_road
     )
+
+
+def _get_or_create_prepare_buffer(
+    adapter: Any,
+    name: str,
+    shape: Tuple[int, ...],
+    dtype: np.dtype,
+) -> np.ndarray:
+    cache = getattr(adapter, "_batch_prepare_cache", None)
+    if cache is None:
+        cache = {}
+        adapter._batch_prepare_cache = cache
+
+    arr = cache.get(name)
+    if arr is None or arr.shape != shape or arr.dtype != dtype:
+        arr = np.empty(shape, dtype=dtype)
+        cache[name] = arr
+    return arr
 
 
 def _get_control_vehicle_queue(adapter: Any) -> List[int]:
@@ -59,13 +77,16 @@ def _build_focal_batch(
     t: int,
     focal_id: int,
     remaining_veh_ids: List[int],
+    remaining_veh_id_set: set[int],
     ag_states: np.ndarray,
     ag_types: np.ndarray,
     actions: np.ndarray,
     rtgs: np.ndarray,
     goals: np.ndarray,
-    timesteps: np.ndarray,
+    rel_timesteps_template: np.ndarray,
     moving_agent_mask: np.ndarray,
+    road_points_scratch: Optional[np.ndarray],
+    road_types_scratch: Optional[np.ndarray],
 ) -> Tuple[Optional[Dict[str, Any]], List[int], bool]:
     policy = adapter._policy
     dset = adapter.dataset
@@ -75,16 +96,24 @@ def _build_focal_batch(
     if not policy.states[origin_agent_idx, t, -1]:
         return None, [], True
 
-    road_points = adapter._preproc_data["road_points"].copy()
-    road_types = adapter._preproc_data["road_types"].copy()
-    if len(road_points) == 0:
+    road_points_src = adapter._preproc_data["road_points"]
+    road_types_src = adapter._preproc_data["road_types"]
+    if len(road_points_src) == 0:
         return None, [], True
+    if road_points_scratch is None or road_types_scratch is None:
+        road_points = road_points_src.copy()
+        road_types = road_types_src.copy()
+    else:
+        np.copyto(road_points_scratch, road_points_src)
+        np.copyto(road_types_scratch, road_types_src)
+        road_points = road_points_scratch
+        road_types = road_types_scratch
 
     has_cached_relevant_agents = focal_id in policy.relevant_agent_idxs
     cached_relevant_agent_idxs = policy.relevant_agent_idxs.get(focal_id, [])
 
     normalize_timestep = 0
-    rel_timesteps = np.repeat(np.expand_dims(timesteps, 0), rl.max_num_agents, axis=0)
+    rel_timesteps = rel_timesteps_template
     (
         rel_ag_states,
         rel_ag_types,
@@ -106,8 +135,12 @@ def _build_focal_batch(
         cached_relevant_agent_idxs,
     )
 
-    accounted_veh_ids = [policy.idx_to_veh_id[idx] for idx in new_agent_idx_dict.keys()]
-    additionally_accounted = [veh_id for veh_id in remaining_veh_ids if veh_id in accounted_veh_ids]
+    accounted_veh_ids = {policy.idx_to_veh_id[idx] for idx in new_agent_idx_dict.keys()}
+    additionally_accounted = [
+        veh_id
+        for veh_id in remaining_veh_ids
+        if veh_id in remaining_veh_id_set and veh_id in accounted_veh_ids
+    ]
     cur_data_veh_ids = [focal_id] + additionally_accounted
 
     if not has_cached_relevant_agents:
@@ -200,39 +233,91 @@ def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str
 def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], List[int]]:
     """执行 get_data() 逻辑，在 from_numpy() 之前停下，返回 (focal_batches, dead_ids)。"""
     policy = adapter._policy
-    moving_ids = np.where(
-        np.linalg.norm(policy.states[:, 0, :2] - policy.goals[:, 0, :2], axis=1)
-        > policy.cfg_rl_waymo.moving_threshold
-    )[0]
-    moving_agent_mask = np.isin(np.arange(policy.states.shape[0]), moving_ids)
+    moving_agent_mask = adapter._moving_agent_mask_cache
+    if moving_agent_mask is None:
+        moving_ids = np.where(
+            np.linalg.norm(policy.states[:, 0, :2] - policy.goals[:, 0, :2], axis=1)
+            > policy.cfg_rl_waymo.moving_threshold
+        )[0]
+        moving_agent_mask = np.isin(np.arange(policy.states.shape[0]), moving_ids)
+        adapter._moving_agent_mask_cache = moving_agent_mask
 
-    ag_states, ag_types, actions, rtgs, goals, timesteps = _slice_policy_window(policy, t)
+    ag_states, ag_types, actions, rtgs_src, goals, timesteps_src = _slice_policy_window(policy, t)
+    rtgs = _get_or_create_prepare_buffer(
+        adapter=adapter,
+        name="rtgs_norm_buffer",
+        shape=rtgs_src.shape,
+        dtype=rtgs_src.dtype,
+    )
+    np.copyto(rtgs, rtgs_src)
     _normalize_rtgs_inplace(rtgs, policy.cfg_rl_waymo)
+    timesteps = _get_or_create_prepare_buffer(
+        adapter=adapter,
+        name="timesteps_int_buffer",
+        shape=timesteps_src.shape,
+        dtype=np.dtype(np.int64),
+    )
+    np.copyto(timesteps, timesteps_src, casting="unsafe")
+    rel_timesteps_template = _get_or_create_prepare_buffer(
+        adapter=adapter,
+        name="rel_timesteps_template",
+        shape=(
+            policy.cfg_rl_waymo.max_num_agents,
+            timesteps.shape[0],
+            timesteps.shape[1],
+        ),
+        dtype=timesteps.dtype,
+    )
+    rel_timesteps_template[...] = timesteps[np.newaxis, ...]
+    road_points_scratch: Optional[np.ndarray] = None
+    road_types_scratch: Optional[np.ndarray] = None
+    road_points_src = adapter._preproc_data.get("road_points")
+    road_types_src = adapter._preproc_data.get("road_types")
+    if road_points_src is not None and road_types_src is not None and len(road_points_src) > 0:
+        road_points_scratch = _get_or_create_prepare_buffer(
+            adapter=adapter,
+            name="road_points_scratch",
+            shape=road_points_src.shape,
+            dtype=road_points_src.dtype,
+        )
+        road_types_scratch = _get_or_create_prepare_buffer(
+            adapter=adapter,
+            name="road_types_scratch",
+            shape=road_types_src.shape,
+            dtype=road_types_src.dtype,
+        )
 
     dead_ids: List[int] = []
     focal_batches: List[Dict[str, Any]] = []
     unaccounted_veh_ids = _get_control_vehicle_queue(adapter)
-    while unaccounted_veh_ids:
+    unaccounted_veh_id_set = set(unaccounted_veh_ids)
+    while unaccounted_veh_ids and unaccounted_veh_id_set:
         focal_id = unaccounted_veh_ids.pop(0)
+        if focal_id not in unaccounted_veh_id_set:
+            continue
+        unaccounted_veh_id_set.remove(focal_id)
         focal_batch, additionally_accounted, is_dead = _build_focal_batch(
             adapter=adapter,
             t=t,
             focal_id=focal_id,
             remaining_veh_ids=unaccounted_veh_ids,
+            remaining_veh_id_set=unaccounted_veh_id_set,
             ag_states=ag_states,
             ag_types=ag_types,
             actions=actions,
             rtgs=rtgs,
             goals=goals,
-            timesteps=timesteps,
+            rel_timesteps_template=rel_timesteps_template,
             moving_agent_mask=moving_agent_mask,
+            road_points_scratch=road_points_scratch,
+            road_types_scratch=road_types_scratch,
         )
         if is_dead:
             dead_ids.append(focal_id)
             continue
 
         for veh_id in additionally_accounted:
-            unaccounted_veh_ids.remove(veh_id)
+            unaccounted_veh_id_set.discard(veh_id)
         focal_batches.append(focal_batch)
 
     return focal_batches, dead_ids
