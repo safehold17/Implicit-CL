@@ -72,6 +72,71 @@ def _require_vehicle_data(
     return veh_data
 
 
+def _get_step_controlled_ids(adapter: Any) -> List[int]:
+    step_ids = list(getattr(adapter, "_controlled_vehicle_ids_step", []))
+    if step_ids:
+        return step_ids
+    return list(adapter._vehicles_to_control)
+
+
+def _build_actions_from_sparse_cache(
+    adapter: Any,
+    step_t: int,
+) -> Tuple[Dict[int, Tuple[float, float]], List[int]]:
+    actions: Dict[int, Tuple[float, float]] = {}
+    missing_cache_vehicle_ids: List[int] = []
+    for veh_id in _get_step_controlled_ids(adapter):
+        veh_data = _require_vehicle_data(
+            adapter._vehicle_data_dict,
+            veh_id,
+            "sparse_cache",
+            step_t,
+        )
+        if step_t < adapter.history_steps - 1:
+            veh = adapter._last_vehicle_by_id.get(veh_id)
+            action = adapter._get_gt_action(veh_id, step_t, veh)
+        elif not veh_data["existence"][-1]:
+            action = (0.0, 0.0)
+        else:
+            cached_action = adapter.sparse_inference.get_cached_action(veh_id)
+            if cached_action is None:
+                missing_cache_vehicle_ids.append(veh_id)
+                continue
+            action = (float(cached_action[0]), float(cached_action[1]))
+        veh_data["next_acceleration"] = action[0]
+        veh_data["next_steering"] = action[1]
+        actions[veh_id] = action
+    return actions, missing_cache_vehicle_ids
+
+
+def _clear_pending_sparse_actions(adapter: Any) -> None:
+    adapter._pending_sparse_actions_step_t = None
+    adapter._pending_sparse_actions = {}
+
+
+def _set_pending_sparse_actions(
+    adapter: Any,
+    step_t: int,
+    actions: Dict[int, Tuple[float, float]],
+) -> None:
+    adapter._pending_sparse_actions_step_t = int(step_t)
+    adapter._pending_sparse_actions = dict(actions)
+
+
+def _consume_pending_sparse_actions(
+    adapter: Any,
+    step_t: Optional[int] = None,
+) -> Optional[Dict[int, Tuple[float, float]]]:
+    pending_step = getattr(adapter, "_pending_sparse_actions_step_t", None)
+    pending_actions = dict(getattr(adapter, "_pending_sparse_actions", {}))
+    if pending_step is None:
+        return None
+    if step_t is not None and int(pending_step) != int(step_t):
+        return None
+    _clear_pending_sparse_actions(adapter)
+    return pending_actions
+
+
 def _angle_sub_np(current_angle: np.ndarray, target_angle: np.ndarray) -> np.ndarray:
     diff = (target_angle - current_angle) % (2 * np.pi)
     mask = diff > np.pi
@@ -353,6 +418,7 @@ def _build_focal_batch(
 def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str, Any]]:
     """构建 prepared_dict 供主进程 ExternalTeacher.batched_forward() 使用。"""
     if adapter._policy is None or len(vehicles) == 0:
+        _clear_pending_sparse_actions(adapter)
         return None
 
     adapter._last_vehicles = vehicles
@@ -363,7 +429,20 @@ def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str
 
     # warm-up 阶段使用 GT 动作，不做 opponent 模型推理与 focal batch 组装
     if t < adapter.history_steps - 1:
+        _clear_pending_sparse_actions(adapter)
         return None
+
+    should_infer = adapter.sparse_inference.should_infer(
+        t=t,
+        history_steps=adapter.history_steps,
+    )
+    if not should_infer:
+        actions, missing_cache_vehicle_ids = _build_actions_from_sparse_cache(adapter, t)
+        if not missing_cache_vehicle_ids:
+            _set_pending_sparse_actions(adapter, step_t=t, actions=actions)
+            return None
+
+    _clear_pending_sparse_actions(adapter)
 
     focal_batches, dead_ids = build_focal_batches(adapter, t)
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1
@@ -506,10 +585,26 @@ def apply_predictions(adapter: Any, model_outputs: Optional[Dict[str, Any]]) -> 
 
     model_outputs = unpack_model_outputs(model_outputs)
     if model_outputs is None:
+        pending_actions = _consume_pending_sparse_actions(adapter)
+        if pending_actions is not None:
+            return pending_actions
         return {}
     validate_model_outputs_payload(model_outputs)
 
     step_t = int(model_outputs["step_t"])
+    status = str(model_outputs["status"])
+    if status == "skip":
+        pending_actions = _consume_pending_sparse_actions(adapter, step_t=step_t)
+        if pending_actions is not None:
+            return pending_actions
+        actions, missing_cache_vehicle_ids = _build_actions_from_sparse_cache(adapter, step_t)
+        if missing_cache_vehicle_ids:
+            missing = ",".join(str(veh_id) for veh_id in missing_cache_vehicle_ids)
+            raise ValueError(
+                f"Missing sparse-inference cached actions for veh_ids={missing} at step_t={step_t}"
+            )
+        return actions
+
     action_results = model_outputs["action_results"]
     rtg_results = model_outputs["rtg_results"]
     processed_rtg_veh_ids = set(model_outputs["processed_rtg_veh_ids"])
@@ -552,7 +647,7 @@ def apply_predictions(adapter: Any, model_outputs: Optional[Dict[str, Any]]) -> 
         veh_data["next_steering"] = 0.0
 
     actions: Dict[int, Tuple[float, float]] = {}
-    for veh_id in adapter._vehicles_to_control:
+    for veh_id in _get_step_controlled_ids(adapter):
         if step_t < adapter.history_steps - 1:
             veh = adapter._last_vehicle_by_id.get(veh_id)
             actions[veh_id] = adapter._get_gt_action(veh_id, step_t, veh)
@@ -568,4 +663,5 @@ def apply_predictions(adapter: Any, model_outputs: Optional[Dict[str, Any]]) -> 
             f"Missing action for non-dead controlled vehicle veh_id={veh_id} at step_t={step_t}."
         )
 
+    adapter.sparse_inference.cache_actions(actions)
     return actions

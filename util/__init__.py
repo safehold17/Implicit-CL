@@ -229,6 +229,12 @@ def _make_env(args):
             'student_steer_discretization': getattr(
                 args, 'student_steer_discretization', 13
             ),
+            'opponent_sparse_inference_enabled': getattr(
+                args, 'opponent_sparse_inference_enabled', False
+            ),
+            'opponent_sparse_inference_interval': getattr(
+                args, 'opponent_sparse_inference_interval', 2
+            ),
             'batch_inference': getattr(args, 'batch_inference', False),
         }
         env_kwargs.update(nocturne_kwargs)

@@ -664,6 +664,15 @@ parser.add_argument(
     '--remove_background_vehicles',
     type=str2bool, nargs='?', const=True, default=True,
     help='Remove moving vehicles other than ego/opponent in Nocturne env.')
+parser.add_argument(
+    '--opponent_sparse_inference_enabled',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Enable sparse opponent inference: reuse cached opponent actions between inference steps.')
+parser.add_argument(
+    '--opponent_sparse_inference_interval',
+    type=int,
+    default=2,
+    help='Sparse opponent inference interval N (infer once every N steps when enabled).')
 
 # ============== reward coefficient ==============
 parser.add_argument(

@@ -834,7 +834,10 @@ class AdversarialRunner(object):
             elif self.external_teacher is not None:
                 # Three-phase step: prepare → batched GPU inference → complete
                 prepared = self.venv.step_prepare(_action)
-                model_outputs = self.external_teacher.batched_forward(prepared)
+                if all(item is None for item in prepared):
+                    model_outputs = [None] * len(prepared)
+                else:
+                    model_outputs = self.external_teacher.batched_forward(prepared)
                 obs, reward, done, infos = self.venv.step_complete(
                     model_outputs, reset_random=reset_random,
                 )

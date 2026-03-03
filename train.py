@@ -334,6 +334,8 @@ if __name__ == '__main__':
                 scenario_index_path=args.scenario_index_path,
                 opponent_checkpoint=args.opponent_checkpoint,
                 opponent_vehicle_number=args.opponent_vehicle_number,
+                opponent_sparse_inference_enabled=args.opponent_sparse_inference_enabled,
+                opponent_sparse_inference_interval=args.opponent_sparse_inference_interval,
                 scenario_data_dir=args.scenario_data_dir,
                 preprocess_dir=args.preprocess_dir,
                 vehicle_map_path=args.vehicle_map_path,

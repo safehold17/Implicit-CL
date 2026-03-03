@@ -87,6 +87,8 @@ class OpponentStateService:
         self.adapter._opponent_goal_hold_until = {}
         self.adapter._moving_agent_mask_cache = None
         self.adapter._batch_prepare_cache = {}
+        self.adapter._pending_sparse_actions_step_t = None
+        self.adapter._pending_sparse_actions = {}
 
         self.adapter._veh_id_to_idx = {}
         for idx, veh in enumerate(vehicles):
@@ -127,6 +129,7 @@ class OpponentStateService:
 
         if self.adapter._policy is not None:
             self.adapter._policy.reset(self.adapter._vehicle_data_dict)
+        self.adapter.sparse_inference.clear_on_reset()
 
     def cache_last_valid_positions(self, vehicles: List):
         for veh in vehicles:
@@ -335,6 +338,34 @@ class OpponentStateService:
             if goal_dim > 4:
                 goal_slot[4] = veh_data["goal_heading"]
 
+    def _build_sparse_cached_actions(
+        self,
+        t: int,
+    ) -> Tuple[Dict[int, Tuple[float, float]], List[int]]:
+        actions: Dict[int, Tuple[float, float]] = {}
+        missing_cache_vehicle_ids: List[int] = []
+        for veh_id in self.adapter._controlled_vehicle_ids_step:
+            veh_data = self.adapter._vehicle_data_dict.get(veh_id)
+            if veh_data is None:
+                continue
+            if t < self.adapter.history_steps - 1:
+                veh = self.adapter._step_vehicle_by_id.get(veh_id)
+                if veh is None:
+                    continue
+                action = self._get_gt_action(veh_id, t, veh)
+            elif not veh_data["existence"][-1]:
+                action = (0.0, 0.0)
+            else:
+                cached_action = self.adapter.sparse_inference.get_cached_action(veh_id)
+                if cached_action is None:
+                    missing_cache_vehicle_ids.append(veh_id)
+                    continue
+                action = (float(cached_action[0]), float(cached_action[1]))
+            veh_data["next_acceleration"] = action[0]
+            veh_data["next_steering"] = action[1]
+            actions[veh_id] = action
+        return actions, missing_cache_vehicle_ids
+
     def step(self, t: int, vehicles: List) -> Dict[int, Tuple[float, float]]:
         """
         执行一步推理，返回所有被控车辆的动作
@@ -360,34 +391,49 @@ class OpponentStateService:
         self.update_policy_state(t)
 
         use_model_action = t >= self.adapter.history_steps - 1
+        should_infer = use_model_action and self.adapter.sparse_inference.should_infer(
+            t=t,
+            history_steps=self.adapter.history_steps,
+        )
+        actions: Dict[int, Tuple[float, float]] = {}
+        missing_cache_vehicle_ids: List[int] = []
+        if use_model_action and not should_infer:
+            actions, missing_cache_vehicle_ids = self._build_sparse_cached_actions(t)
+            should_infer = len(missing_cache_vehicle_ids) > 0
+
         if use_model_action:
-            self.adapter._vehicle_data_dict = self.adapter._policy.predict(
-                self.adapter._vehicle_data_dict,
-                self.adapter._gt_data_dict,
-                self.adapter._preproc_data,
-                self.adapter.dataset,
-                self.adapter._vehicles_to_control,
-                t,
-            )
-
-        actions = {}
-        for veh_id in self.adapter._controlled_vehicle_ids_step:
-            veh_data = self.adapter._vehicle_data_dict.get(veh_id)
-            if veh_data is None:
-                continue
-            if use_model_action:
-                if not veh_data["existence"][-1]:
-                    actions[veh_id] = (0.0, 0.0)
-                    continue
-                actions[veh_id] = (
-                    veh_data["next_acceleration"],
-                    veh_data["next_steering"],
+            if should_infer:
+                self.adapter._vehicle_data_dict = self.adapter._policy.predict(
+                    self.adapter._vehicle_data_dict,
+                    self.adapter._gt_data_dict,
+                    self.adapter._preproc_data,
+                    self.adapter.dataset,
+                    self.adapter._vehicles_to_control,
+                    t,
                 )
-                continue
-
-            veh = self.adapter._step_vehicle_by_id.get(veh_id)
-            if veh is not None:
-                actions[veh_id] = self._get_gt_action(veh_id, t, veh)
+                actions = {}
+                for veh_id in self.adapter._controlled_vehicle_ids_step:
+                    veh_data = self.adapter._vehicle_data_dict.get(veh_id)
+                    if veh_data is None:
+                        continue
+                    if not veh_data["existence"][-1]:
+                        action = (0.0, 0.0)
+                    else:
+                        action = (
+                            float(veh_data["next_acceleration"]),
+                            float(veh_data["next_steering"]),
+                        )
+                    veh_data["next_acceleration"] = action[0]
+                    veh_data["next_steering"] = action[1]
+                    actions[veh_id] = action
+                self.adapter.sparse_inference.cache_actions(actions)
+            elif missing_cache_vehicle_ids:
+                missing = ",".join(str(veh_id) for veh_id in missing_cache_vehicle_ids)
+                raise ValueError(
+                    f"Missing sparse-inference cached actions for veh_ids={missing} at step t={t}"
+                )
+        else:
+            actions, _ = self._build_sparse_cached_actions(t)
 
         return actions
 

@@ -30,6 +30,7 @@ from .existence_logic import (
 from .opponent_policy import OpponentPolicyService
 from .opponent_reward import OpponentRewardService
 from .opponent_state import OpponentStateService
+from .sparse_inference import SparseInferenceConfig, SparseInferenceController
 from .tilting import TiltConfig
 
 
@@ -64,6 +65,8 @@ class CtrlSimOpponentAdapter:
         action_temperature: float = 1.0,
         nucleus_sampling: bool = False,
         nucleus_threshold: float = 0.8,
+        opponent_sparse_inference_enabled: bool = False,
+        opponent_sparse_inference_interval: int = 2,
         load_on_init: bool = True,
     ):
         """
@@ -74,6 +77,8 @@ class CtrlSimOpponentAdapter:
             action_temperature: 动作采样温度（参考: cfgs/policy/ctrl_sim.yaml）
             nucleus_sampling: 是否使用 nucleus sampling
             nucleus_threshold: nucleus sampling 阈值
+            opponent_sparse_inference_enabled: 是否启用每 N 步推理
+            opponent_sparse_inference_interval: 每 N 步推理的 N
             load_on_init: 是否在初始化时立即加载模型/数据集
         """
         self.cfg = cfg
@@ -91,6 +96,11 @@ class CtrlSimOpponentAdapter:
         self.action_temperature = action_temperature
         self.nucleus_sampling = nucleus_sampling
         self.nucleus_threshold = nucleus_threshold
+        self.sparse_inference_cfg = SparseInferenceConfig(
+            enabled=bool(opponent_sparse_inference_enabled),
+            interval=int(opponent_sparse_inference_interval),
+        )
+        self.sparse_inference = SparseInferenceController(self.sparse_inference_cfg)
 
         # 当前 tilting 配置
         self.current_tilt = TiltConfig()
@@ -128,6 +138,8 @@ class CtrlSimOpponentAdapter:
         self._zero_reward_template: Tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._step_vehicle_by_id: Dict[int, Any] = {}
         self._vehicles_by_id_step: Dict[int, Any] = {}
+        self._pending_sparse_actions_step_t: Optional[int] = None
+        self._pending_sparse_actions: Dict[int, Tuple[float, float]] = {}
         # Whether to move non-controlled vehicles out of the scene when GT is missing.
         self.allow_set_position_for_noncontrolled: bool = False
         # 缓存 vehicles 列表，供 apply_predictions warm-up 使用

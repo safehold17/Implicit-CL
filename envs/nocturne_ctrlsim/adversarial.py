@@ -130,6 +130,13 @@ class NocturneCtrlSimAdversarial(gym.Env):
             )
         tilt_range = kwargs.get('tilt_range', None)
         batch_inference = kwargs.get('batch_inference', False)
+        opponent_sparse_inference_enabled = kwargs.get(
+            "opponent_sparse_inference_enabled",
+            False,
+        )
+        opponent_sparse_inference_interval = int(
+            kwargs.get("opponent_sparse_inference_interval", 2)
+        )
 
         self.fixed_environment = fixed_environment
         self._set_process_seed(seed)
@@ -187,6 +194,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
             cfg=cfg,
             checkpoint_path=opponent_checkpoint,
             device=device,
+            opponent_sparse_inference_enabled=opponent_sparse_inference_enabled,
+            opponent_sparse_inference_interval=opponent_sparse_inference_interval,
             load_on_init=(opponent_runtime_mode == 'normal'),
         )
         if self.batch_inference:
