@@ -1,11 +1,8 @@
 """ClearML dataset helpers."""
 
-from __future__ import annotations
-
 import logging
 
 log = logging.getLogger(__name__)
-
 
 def download_clearml_dataset(dataset_project: str, dataset_name: str) -> str:
     """Download a ClearML dataset and return the local path."""

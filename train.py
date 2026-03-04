@@ -68,7 +68,7 @@ def init_clearml(args):
 
     task.connect(vars(args))
 
-    # example of configuration of Docker environment for remote execution
+    # An example of configuration of Docker environment for remote execution
     task.set_base_docker(
         "nvcr.io/nvidia/pytorch:21.07-py3",
         docker_setup_bash_script=[
