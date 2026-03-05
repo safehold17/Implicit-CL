@@ -14,6 +14,14 @@ from .existence_logic import (
     _keep_exists_on_invalid,
     _should_drop_after_goal,
 )
+from .opponent_state_helpers import (
+    append_gt_state_for_step,
+    extract_road_edge_polylines,
+    get_sim_state_entries,
+    get_state_update_vehicle_ids,
+    resolve_vehicle_exists,
+    store_next_action,
+)
 
 
 class OpponentStateService:
@@ -77,7 +85,7 @@ class OpponentStateService:
         self.adapter._last_vehicle_by_id = {}
 
         road_data = get_road_data(scenario)
-        self.adapter._road_edge_polylines = self._extract_road_edge_polylines(road_data)
+        self.adapter._road_edge_polylines = extract_road_edge_polylines(road_data)
 
         self.adapter._vehicle_data_dict = {}
         self.adapter._goal_dict = {}
@@ -89,6 +97,9 @@ class OpponentStateService:
         self.adapter._batch_prepare_cache = {}
         self.adapter._pending_sparse_actions_step_t = None
         self.adapter._pending_sparse_actions = {}
+        self.adapter._constant_state_vehicle_ids = set()
+        self.adapter._constant_state_by_id = {}
+        static_speed_threshold = 1e-3
 
         self.adapter._veh_id_to_idx = {}
         for idx, veh in enumerate(vehicles):
@@ -106,6 +117,25 @@ class OpponentStateService:
                 veh,
                 self.adapter._goal_dict[veh_id]["pos"],
             )
+            if veh_id not in self.adapter._vehicles_to_control_set:
+                speed = abs(float(veh.getSpeed()))
+                if speed <= static_speed_threshold:
+                    pos = veh.getPosition()
+                    velocity = veh.velocity()
+                    gt_state = gt_traj_data[0]
+                    self.adapter._constant_state_vehicle_ids.add(veh_id)
+                    self.adapter._constant_state_by_id[veh_id] = {
+                        "position": {"x": float(pos.x), "y": float(pos.y)},
+                        "velocity": {"x": float(velocity.x), "y": float(velocity.y)},
+                        "heading": float(veh.getHeading()),
+                        "existence": 1 if sim_position_exists(pos.x, pos.y) else 0,
+                        "gt_position": {
+                            "x": float(gt_state[0]),
+                            "y": float(gt_state[1]),
+                        },
+                        "gt_heading": float(gt_state[2]),
+                        "gt_speed": float(gt_state[3]),
+                    }
             if veh_id in self.adapter._vehicles_to_control_set:
                 pos = veh.getPosition()
                 sim_exists = sim_position_exists(pos.x, pos.y)
@@ -233,49 +263,6 @@ class OpponentStateService:
         """接收推理结果并返回动作，委托给 batch_inference.prepare_and_apply。"""
         return _batch_io.apply_predictions(self.adapter, model_outputs)
 
-    def _get_state_update_vehicle_ids(
-        self,
-        t: int,
-        vehicles_by_id: Dict[int, Any],
-    ) -> List[int]:
-        """确定当前 step 需要更新的车辆集合。"""
-        controlled_ids = [
-            veh_id
-            for veh_id in self.adapter._controlled_vehicle_ids_present
-            if veh_id in vehicles_by_id
-        ]
-        if not controlled_ids:
-            return []
-
-        policy = self.adapter._policy
-        if t <= self.adapter.history_steps - 1 or policy is None:
-            return [
-                veh_id
-                for veh_id in self.adapter._all_vehicle_ids
-                if veh_id in vehicles_by_id
-            ]
-
-        relevant_agent_idxs = policy.relevant_agent_idxs
-        if not relevant_agent_idxs:
-            return [
-                veh_id
-                for veh_id in self.adapter._all_vehicle_ids
-                if veh_id in vehicles_by_id
-            ]
-
-        update_id_set = set(controlled_ids)
-        for veh_id in controlled_ids:
-            for idx in relevant_agent_idxs.get(veh_id, ()):
-                mapped_id = policy.idx_to_veh_id.get(int(idx))
-                if mapped_id in vehicles_by_id:
-                    update_id_set.add(mapped_id)
-
-        return [
-            veh_id
-            for veh_id in self.adapter._all_vehicle_ids
-            if veh_id in update_id_set
-        ]
-
     def update_policy_state(self, t: int) -> None:
         """仅写入本 step 需要的车辆状态，避免全量 update_state 开销。"""
         policy = self.adapter._policy
@@ -348,9 +335,7 @@ class OpponentStateService:
             if veh is None:
                 continue
             action = self._get_gt_action(veh_id, t, veh)
-            veh_data["next_acceleration"] = action[0]
-            veh_data["next_steering"] = action[1]
-            actions[veh_id] = action
+            store_next_action(veh_data, veh_id, action, actions)
         return actions
 
     def _build_sparse_repeat_actions(self) -> Dict[int, Tuple[float, float]]:
@@ -368,9 +353,7 @@ class OpponentStateService:
                     action = (float(accel_hist[-1]), float(steer_hist[-1]))
                 else:
                     action = (0.0, 0.0)
-            veh_data["next_acceleration"] = action[0]
-            veh_data["next_steering"] = action[1]
-            actions[veh_id] = action
+            store_next_action(veh_data, veh_id, action, actions)
         return actions
 
     def _collect_predicted_actions(self) -> Dict[int, Tuple[float, float]]:
@@ -386,9 +369,7 @@ class OpponentStateService:
                     float(veh_data["next_acceleration"]),
                     float(veh_data["next_steering"]),
                 )
-            veh_data["next_acceleration"] = action[0]
-            veh_data["next_steering"] = action[1]
-            actions[veh_id] = action
+            store_next_action(veh_data, veh_id, action, actions)
         return actions
 
     def _predict_actions_with_policy(
@@ -508,8 +489,11 @@ class OpponentStateService:
         """
         for veh in vehicles:
             veh_id = veh.getID()
+            is_controlled = veh_id in self.adapter._vehicles_to_control_set
             if veh_id in controlled_actions:
                 action = controlled_actions[veh_id]
+            elif (not is_controlled) and (t < self.adapter.history_steps - 1):
+                action = (0.0, 0.0)
             else:
                 action = self._get_gt_action(veh_id, t, veh)
             self.record_action(veh_id, action)
@@ -584,21 +568,6 @@ class OpponentStateService:
         gt_traj = np.asarray(data["traj"])
         self.adapter._gt_traj_by_id[veh_id] = gt_traj
         return gt_traj
-
-    def _extract_road_edge_polylines(self, road_data: List[Dict]) -> List:
-        """
-        提取道路边界多边形
-
-        参考: evaluator.py 第 112-125 行 extract_road_edge_polylines()
-        """
-        road_edge_polylines = []
-        for road in road_data:
-            if road["type"] == "road_edge":
-                geometry = road["geometry"]
-                if isinstance(geometry, list):
-                    polyline = np.array([[pt["x"], pt["y"]] for pt in geometry])
-                    road_edge_polylines.append(polyline)
-        return road_edge_polylines
 
     def _initialize_goal_dict(self, veh, gt_traj_data: np.ndarray) -> Dict:
         """
@@ -741,6 +710,7 @@ class OpponentStateService:
         goal_dict = adapter._goal_dict
         goal_dist_normalizer = adapter._goal_dist_normalizer
         from . import opponent_adapter as _opponent_adapter_module
+
         reward_fn = _opponent_adapter_module.compute_reward
         step_vehicle_by_id: Dict[int, Any] = {}
         controlled_vehicle_ids_step: List[int] = []
@@ -749,7 +719,11 @@ class OpponentStateService:
         for veh in vehicles:
             vehicles_by_id[veh.getID()] = veh
 
-        update_vehicle_ids = self._get_state_update_vehicle_ids(t, vehicles_by_id)
+        update_vehicle_ids = get_state_update_vehicle_ids(
+            adapter=adapter,
+            t=t,
+            vehicles_by_id=vehicles_by_id,
+        )
         for veh_id in update_vehicle_ids:
             veh = vehicles_by_id[veh_id]
             gt_traj_data = self._get_gt_traj_data(veh_id)
@@ -757,43 +731,46 @@ class OpponentStateService:
                 continue
             veh_data = vehicle_data_dict[veh_id]
             veh_idx = adapter._veh_id_to_idx.get(veh_id, 0)
+            is_controlled = veh_id in vehicles_to_control_set
+            constant_state = (
+                adapter._constant_state_by_id.get(veh_id)
+                if (not is_controlled and veh_id in adapter._constant_state_vehicle_ids)
+                else None
+            )
 
-            veh_data["gt_position"].append({"x": gt_traj_data[t, 0], "y": gt_traj_data[t, 1]})
-            veh_data["gt_heading"].append(gt_traj_data[t, 2])
-            veh_data["gt_speed"].append(gt_traj_data[t, 3])
+            append_gt_state_for_step(
+                veh_data=veh_data,
+                gt_traj_data=gt_traj_data,
+                t=t,
+                steps=adapter.steps,
+                dt=adapter.dt,
+                constant_state=constant_state,
+            )
 
-            if t > 0 and t < adapter.steps - 1:
-                gt_accel = (gt_traj_data[t + 1, 3] - gt_traj_data[t - 1, 3]) / (2 * adapter.dt)
-                veh_data["gt_acceleration"].append(gt_accel)
-            else:
-                veh_data["gt_acceleration"].append(0)
+            pos, pos_entry, velocity_entry, heading = get_sim_state_entries(
+                veh=veh,
+                constant_state=constant_state,
+            )
 
-            pos = veh.getPosition()
-            velocity = veh.velocity()
-            veh_data["position"].append({"x": pos.x, "y": pos.y})
-            veh_data["velocity"].append({"x": velocity.x, "y": velocity.y})
-            veh_data["heading"].append(veh.getHeading())
+            veh_data["position"].append(pos_entry)
+            veh_data["velocity"].append(velocity_entry)
+            veh_data["heading"].append(heading)
             veh_data["timestep"].append(t)
 
-            is_controlled = veh_id in vehicles_to_control_set
             if is_controlled:
                 controlled_vehicle_ids_step.append(veh_id)
                 step_vehicle_by_id[veh_id] = veh
-            protected = (veh_id == ego_id) or is_controlled
-            if protected:
-                if is_controlled:
-                    sim_exists = sim_position_exists(pos.x, pos.y)
-                    prev_exists = adapter._opponent_vehicle_exits.get(veh_id, bool(sim_exists))
-                    hold_until = adapter._opponent_goal_hold_until.get(veh_id)
-                    exists = _keep_exists_on_invalid(sim_exists, prev_exists)
-                    if _should_drop_after_goal(t, hold_until):
-                        exists = False
-                    adapter._opponent_vehicle_exits[veh_id] = bool(exists)
-                    veh_exists = 1 if exists else 0
-                else:
-                    veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
-            else:
-                veh_exists = gt_traj_data[t, 4]
+
+            veh_exists = resolve_vehicle_exists(
+                adapter=adapter,
+                veh_id=veh_id,
+                t=t,
+                is_controlled=is_controlled,
+                ego_id=ego_id,
+                gt_traj_data=gt_traj_data,
+                pos=pos,
+                constant_state=constant_state,
+            )
             if t > 0 and not is_controlled and veh_data["existence"][-1] == 0:
                 veh_exists = 0
             veh_data["existence"].append(veh_exists)

@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -6,6 +6,33 @@ import numpy as np
 class OpponentRewardService:
     def __init__(self, adapter):
         self.adapter = adapter
+
+    @staticmethod
+    def _get_step_or_last(entries: List[Any], t: int) -> Any:
+        if not entries:
+            raise IndexError("Cannot read from empty history.")
+        if t < len(entries):
+            return entries[t]
+        return entries[-1]
+
+    def _get_context_vehicle_ids(self, vehicle_data_dict: Dict) -> List[int]:
+        veh_ids = self.adapter._all_vehicle_ids
+        if not veh_ids:
+            veh_ids = list(vehicle_data_dict.keys())
+
+        context_vehicle_ids: List[int] = []
+        for veh_id in veh_ids:
+            veh_data = vehicle_data_dict.get(veh_id)
+            if veh_data is None:
+                continue
+            if not veh_data.get("position"):
+                continue
+            if not veh_data.get("gt_position"):
+                continue
+            if not veh_data.get("existence"):
+                continue
+            context_vehicle_ids.append(veh_id)
+        return context_vehicle_ids
 
     @staticmethod
     def _build_xy_exist(
@@ -16,9 +43,9 @@ class OpponentRewardService:
         return np.asarray(
             [
                 [
-                    veh_data[pos_key][t]["x"],
-                    veh_data[pos_key][t]["y"],
-                    veh_data["existence"][t],
+                    OpponentRewardService._get_step_or_last(veh_data[pos_key], t)["x"],
+                    OpponentRewardService._get_step_or_last(veh_data[pos_key], t)["y"],
+                    OpponentRewardService._get_step_or_last(veh_data["existence"], t),
                 ]
                 for veh_data in veh_data_list
             ],
@@ -33,7 +60,10 @@ class OpponentRewardService:
     ) -> np.ndarray:
         return np.asarray(
             [
-                [veh_data[pos_key][t]["x"], veh_data[pos_key][t]["y"]]
+                [
+                    OpponentRewardService._get_step_or_last(veh_data[pos_key], t)["x"],
+                    OpponentRewardService._get_step_or_last(veh_data[pos_key], t)["y"],
+                ]
                 for veh_data in veh_data_list
             ],
             dtype=np.float32,
@@ -59,36 +89,56 @@ class OpponentRewardService:
         """
         计算车-车最近距离（对齐 ctrl-sim evaluator.py compute_nearest_dist_all）
         """
-        veh_ids = self._get_step_vehicle_ids(t, vehicle_data_dict)
-        if not veh_ids:
+        step_vehicle_ids = self._get_step_vehicle_ids(t, vehicle_data_dict)
+        if not step_vehicle_ids:
             return vehicle_data_dict
 
-        dataset = self.adapter.dataset
-        veh_data_list = [vehicle_data_dict[veh_id] for veh_id in veh_ids]
-        ag_data_xy_exist = self._build_xy_exist(veh_data_list, t, "position")
-        all_existence = ag_data_xy_exist[:, 0, 2]
-        existence_scale = all_existence[:, np.newaxis]
+        context_vehicle_ids = self._get_context_vehicle_ids(vehicle_data_dict)
+        if not context_vehicle_ids:
+            return vehicle_data_dict
 
-        veh_veh_dist_rewards = (
-            dataset.compute_dist_to_nearest_vehicle_rewards(
-                ag_data_xy_exist,
-                normalize=False,
-            )
-            * existence_scale
+        context_idx_map = {
+            veh_id: idx for idx, veh_id in enumerate(context_vehicle_ids)
+        }
+        target_vehicle_ids = [
+            veh_id for veh_id in step_vehicle_ids if veh_id in context_idx_map
+        ]
+        if not target_vehicle_ids:
+            return vehicle_data_dict
+
+        context_data_list = [vehicle_data_dict[veh_id] for veh_id in context_vehicle_ids]
+        all_xy_exist = self._build_xy_exist(context_data_list, t, "position")
+        all_positions = all_xy_exist[:, 0, :2]
+        all_existence = all_xy_exist[:, 0, 2]
+        all_gt_positions = self._build_xy(context_data_list, t, "gt_position")
+
+        target_all_indices = np.asarray(
+            [context_idx_map[veh_id] for veh_id in target_vehicle_ids],
+            dtype=np.int64,
+        )
+        target_positions = all_positions[target_all_indices]
+        target_gt_positions = all_gt_positions[target_all_indices]
+        target_existence = all_existence[target_all_indices]
+
+        veh_veh_dist_rewards = self._compute_nearest_dist_to_all(
+            target_positions=target_positions,
+            all_positions=all_positions,
+            all_existence=all_existence,
+            target_existence=target_existence,
+            target_all_indices=target_all_indices,
+        )
+        veh_veh_dist_rewards_gt = self._compute_nearest_dist_to_all(
+            target_positions=target_gt_positions,
+            all_positions=all_gt_positions,
+            all_existence=all_existence,
+            target_existence=target_existence,
+            target_all_indices=target_all_indices,
         )
 
-        gt_ag_data = self._build_xy_exist(veh_data_list, t, "gt_position")
-        veh_veh_dist_rewards_gt = (
-            dataset.compute_dist_to_nearest_vehicle_rewards(
-                gt_ag_data,
-                normalize=False,
-            )
-            * existence_scale
-        )
-
-        for idx, veh_data in enumerate(veh_data_list):
-            veh_data["nearest_dist"].append(veh_veh_dist_rewards[idx, 0])
-            veh_data["gt_nearest_dist"].append(veh_veh_dist_rewards_gt[idx, 0])
+        for idx, veh_id in enumerate(target_vehicle_ids):
+            veh_data = vehicle_data_dict[veh_id]
+            veh_data["nearest_dist"].append(float(veh_veh_dist_rewards[idx, 0]))
+            veh_data["gt_nearest_dist"].append(float(veh_veh_dist_rewards_gt[idx, 0]))
 
         return vehicle_data_dict
 
@@ -102,39 +152,43 @@ class OpponentRewardService:
 
         参考: evaluator.py 第 127-170 行 compute_dense_reward()
         """
-        veh_ids = self._get_step_vehicle_ids(t, vehicle_data_dict)
-        if not veh_ids:
+        step_vehicle_ids = self._get_step_vehicle_ids(t, vehicle_data_dict)
+        if not step_vehicle_ids:
+            return vehicle_data_dict
+
+        context_vehicle_ids = self._get_context_vehicle_ids(vehicle_data_dict)
+        if not context_vehicle_ids:
             return vehicle_data_dict
 
         adapter = self.adapter
         dataset = adapter.dataset
-        veh_id_to_idx = {veh_id: idx for idx, veh_id in enumerate(veh_ids)}
+        context_idx_map = {
+            veh_id: idx for idx, veh_id in enumerate(context_vehicle_ids)
+        }
         controlled_ids = [
             veh_id
             for veh_id in adapter._controlled_vehicle_ids_step
-            if veh_id in veh_id_to_idx
+            if veh_id in context_idx_map
         ]
         controlled_indices = np.asarray(
-            [veh_id_to_idx[veh_id] for veh_id in controlled_ids],
+            [context_idx_map[veh_id] for veh_id in controlled_ids],
             dtype=np.int64,
         )
 
-        veh_data_list = [vehicle_data_dict[veh_id] for veh_id in veh_ids]
-        all_xy_exist = self._build_xy_exist(veh_data_list, t, "position")
+        context_data_list = [vehicle_data_dict[veh_id] for veh_id in context_vehicle_ids]
+        all_xy_exist = self._build_xy_exist(context_data_list, t, "position")
         all_positions = all_xy_exist[:, 0, :2]
         all_existence = all_xy_exist[:, 0, 2]
-        all_gt_positions = self._build_xy(veh_data_list, t, "gt_position")
-        num_agents = len(veh_ids)
-
-        nearest_dist_values = np.zeros(num_agents, dtype=np.float32)
-        gt_nearest_dist_values = np.zeros(num_agents, dtype=np.float32)
-        dense_rewards_by_idx: List[Optional[np.ndarray]] = [None] * num_agents
+        all_gt_positions = self._build_xy(context_data_list, t, "gt_position")
 
         cfg_dataset = adapter.cfg.dataset.waymo
         dense_template = np.zeros(
             adapter.cfg.model.num_reward_components,
             dtype=np.float32,
         )
+        nearest_dist_by_context_idx: Dict[int, float] = {}
+        gt_nearest_dist_by_context_idx: Dict[int, float] = {}
+        dense_rewards_by_context_idx: Dict[int, np.ndarray] = {}
 
         if controlled_ids:
             controlled_positions = all_positions[controlled_indices]
@@ -172,12 +226,17 @@ class OpponentRewardService:
             )
 
             max_veh_veh_distance = cfg_dataset.max_veh_veh_distance
-            nearest_dist_values[controlled_indices] = (
-                veh_veh_dist_rewards[:, 0] * max_veh_veh_distance
-            )
-            gt_nearest_dist_values[controlled_indices] = (
+            nearest_dist_values = veh_veh_dist_rewards[:, 0] * max_veh_veh_distance
+            gt_nearest_dist_values = (
                 veh_veh_dist_rewards_gt[:, 0] * max_veh_veh_distance
             )
+            for local_idx, context_idx in enumerate(controlled_indices):
+                nearest_dist_by_context_idx[int(context_idx)] = float(
+                    nearest_dist_values[local_idx]
+                )
+                gt_nearest_dist_by_context_idx[int(context_idx)] = float(
+                    gt_nearest_dist_values[local_idx]
+                )
 
             veh_veh_dist_rewards_norm = np.clip(
                 veh_veh_dist_rewards,
@@ -189,7 +248,14 @@ class OpponentRewardService:
             )
 
             processed_rewards = np.asarray(
-                [vehicle_data_dict[veh_id]["reward"][0] for veh_id in controlled_ids],
+                [
+                    (
+                        np.asarray(vehicle_data_dict[veh_id]["reward"][-1], dtype=np.float32)
+                        if vehicle_data_dict[veh_id]["reward"]
+                        else np.asarray(adapter._zero_reward_template, dtype=np.float32)
+                    )
+                    for veh_id in controlled_ids
+                ],
                 dtype=np.float32,
             )[:, np.newaxis, :]
             processed_rewards = (
@@ -215,15 +281,25 @@ class OpponentRewardService:
             )
 
             dense_template = np.zeros_like(controlled_rewards[0, 0], dtype=np.float32)
-            for controlled_idx, all_idx in enumerate(controlled_indices):
-                dense_rewards_by_idx[int(all_idx)] = controlled_rewards[controlled_idx, 0]
+            for controlled_idx, context_idx in enumerate(controlled_indices):
+                dense_rewards_by_context_idx[int(context_idx)] = controlled_rewards[
+                    controlled_idx,
+                    0,
+                ]
 
-        for idx, veh_data in enumerate(veh_data_list):
-            veh_data["nearest_dist"].append(float(nearest_dist_values[idx]))
-            veh_data["gt_nearest_dist"].append(float(gt_nearest_dist_values[idx]))
-            dense_reward = dense_rewards_by_idx[idx]
+        for veh_id in step_vehicle_ids:
+            context_idx = context_idx_map.get(veh_id)
+            if context_idx is None:
+                continue
+            veh_data = vehicle_data_dict[veh_id]
+            veh_data["nearest_dist"].append(
+                nearest_dist_by_context_idx.get(context_idx, 0.0)
+            )
+            veh_data["gt_nearest_dist"].append(
+                gt_nearest_dist_by_context_idx.get(context_idx, 0.0)
+            )
             veh_data["dense_reward"].append(
-                dense_reward if dense_reward is not None else dense_template.copy()
+                dense_rewards_by_context_idx.get(context_idx, dense_template.copy())
             )
 
         return vehicle_data_dict
