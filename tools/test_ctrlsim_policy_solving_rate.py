@@ -99,6 +99,9 @@ class CtrlSimEgoWrapper:
 
     def _reset_ego_adapter(self):
         self.ego_id = self.env.ego_vehicle.getID() if self.env.ego_vehicle else None
+        self.ego_adapter._veh_id_to_preproc_idx = dict(
+            getattr(self.env, "_veh_id_to_preproc_idx", {})
+        )
         self.ego_adapter.reset(
             self.env.scenario,
             self.env.vehicles,
@@ -793,7 +796,11 @@ def main() -> None:
             inference_precision=args.inference_precision,
         )
 
-    action_dim = evaluator.venv[env_names[0]].action_space.shape[0]
+    action_space = evaluator.venv[env_names[0]].action_space
+    if evaluator.is_discrete_actions:
+        action_dim = 1
+    else:
+        action_dim = action_space.shape[0]
     agent = DummyEvalAgent(action_dim=action_dim)
 
     episode_metrics = evaluate_with_metrics(
