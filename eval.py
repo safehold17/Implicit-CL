@@ -158,6 +158,12 @@ def parse_args():
 		'--batch_inference',
 		type=str2bool, nargs='?', const=True, default=False,
 		help='Enable main-process batched ctrl-sim inference for Nocturne evaluation.')
+	parser.add_argument(
+		'--inference_precision',
+		type=str,
+		choices=['fp32', 'amp_fp16', 'amp_bf16'],
+		default='fp32',
+		help='Inference precision for ExternalTeacher when batch_inference is enabled.')
 
 	return parser.parse_args()
 
@@ -594,6 +600,7 @@ def _collect_nocturne_required_args(flags, cli_args):
 		"opponent_sparse_inference_interval",
 		"sparse_inference_action_repeat",
 		"batch_inference",
+		"inference_precision",
 		"scenario_data_dir",
 		"preprocess_dir",
 		"vehicle_map_path",
@@ -768,6 +775,7 @@ if __name__ == '__main__':
 				external_teacher = ExternalTeacher(
 					checkpoint_path=opponent_checkpoint,
 					device=device,
+					inference_precision=nocturne_required.get("inference_precision", "fp32"),
 				)
 
 			# Evaluate environment batch in increments of chunk size
