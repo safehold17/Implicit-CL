@@ -6,6 +6,8 @@ import os
 import sys
 import numpy as np
 
+from .utils.common import is_valid_world_position
+
 
 _CTRLSIM_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -28,15 +30,6 @@ def _angle_diff(a: float, b: float) -> float:
     return diff
 
 
-def _position_exists(x: float, y: float) -> bool:
-    """Check if a simulation position is valid."""
-    if not (np.isfinite(x) and np.isfinite(y)):
-        return False
-    if (x == -10000.0 and y == -10000.0) or (x == -1000000.0 and y == -1000000.0):
-        return False
-    return True
-
-
 def _compute_veh_veh_shaped_reward(env, ego_id: int, ego_pos_arr: np.ndarray) -> float:
     """Compute CtrlSim-style veh-veh shaped reward in [0, 1]."""
     if not getattr(env, 'use_veh_veh_shaped', True):
@@ -53,7 +46,7 @@ def _compute_veh_veh_shaped_reward(env, ego_id: int, ego_pos_arr: np.ndarray) ->
         if not getattr(veh, 'physics_simulated', True):
             continue
         pos = veh.getPosition()
-        if not _position_exists(pos.x, pos.y):
+        if not is_valid_world_position(pos.x, pos.y):
             continue
         dist = float(np.linalg.norm(ego_pos_arr - np.array([pos.x, pos.y])))
         if dist < nearest_dist:

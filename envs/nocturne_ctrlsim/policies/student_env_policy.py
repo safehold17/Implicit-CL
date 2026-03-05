@@ -6,6 +6,7 @@ import heapq
 import math
 import numpy as np
 
+from ..utils.common import angle_of_rotation, angle_sub, to_local
 
 ROAD_FEATURE_DIM = 13
 ROAD_TYPE_DIM = 7
@@ -25,25 +26,6 @@ STATIC_ROAD_TYPE_MAPPING = {
     "speed_bump": 5,
 }
 ROAD_TYPE_ONEHOT = np.eye(ROAD_TYPE_DIM, dtype=np.float32)
-
-
-def angle_of_rotation(yaw: float) -> float:
-    return (math.pi / 2.0) - float(yaw)
-
-
-def angle_sub(current_angle: float, target_angle: float) -> float:
-    diff = (target_angle - current_angle) % (2 * math.pi)
-    if diff > math.pi:
-        diff = -(2 * math.pi - diff)
-    return diff
-
-
-def to_local(dx: float, dy: float, angle: float) -> tuple[float, float]:
-    cos_a = math.cos(angle)
-    sin_a = math.sin(angle)
-    local_x = dx * cos_a + dy * sin_a
-    local_y = -dx * sin_a + dy * cos_a
-    return local_x, local_y
 
 
 def apply_student_action(env, action: np.ndarray) -> None:

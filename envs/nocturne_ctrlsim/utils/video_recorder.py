@@ -15,10 +15,11 @@ import matplotlib.transforms as transforms
 from typing import Dict, List, Optional, Tuple
 from tqdm import tqdm
 
-
-def radians_to_degrees(radians):
-    """将弧度转换为角度"""
-    return radians * 180.0 / math.pi
+from .common import (
+    compute_square_view_bounds,
+    is_valid_world_position,
+    radians_to_degrees,
+)
 
 
 class NocturneVideoRecorder:
@@ -112,11 +113,7 @@ class NocturneVideoRecorder:
             x = pos.x
             y = pos.y
 
-            if not np.isfinite(x) or not np.isfinite(y):
-                continue
-            if abs(x) > 1e5 or abs(y) > 1e5:
-                continue
-            if x == -10000 and y == -10000:
+            if not is_valid_world_position(x, y):
                 continue
 
             vehicle_data.append({
@@ -129,9 +126,7 @@ class NocturneVideoRecorder:
             })
             
             # 记录位置用于计算视图范围
-            # Filter extreme positions before adding to history (prevents view range explosion)
-            if np.isfinite(x) and np.isfinite(y) and abs(x) <= 1e5 and abs(y) <= 1e5:
-                self.all_positions.append([x, y])
+            self.all_positions.append([x, y])
 
         # 保存帧
         self._save_frame(
@@ -159,27 +154,7 @@ class NocturneVideoRecorder:
         plt.figure(figsize=(10, 10))
         
         # 计算视图范围
-        if len(self.all_positions) > 0:
-            positions = np.array(self.all_positions)
-            x_min = np.min(positions[:, 0]) - 25
-            x_max = np.max(positions[:, 0]) + 25
-            y_min = np.min(positions[:, 1]) - 25
-            y_max = np.max(positions[:, 1]) + 25
-            
-            # 保持正方形视图
-            x_range = x_max - x_min
-            y_range = y_max - y_min
-            if x_range > y_range:
-                diff = (x_range - y_range) / 2
-                y_min -= diff
-                y_max += diff
-            else:
-                diff = (y_range - x_range) / 2
-                x_min -= diff
-                x_max += diff
-        else:
-            x_min, x_max = -50, 50
-            y_min, y_max = -50, 50
+        x_min, x_max, y_min, y_max = compute_square_view_bounds(self.all_positions)
         
         # 绘制道路（如果提供）
         if roads_data is not None:

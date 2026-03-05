@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 import numpy as np
 
+from .utils.common import clamp01, merge_episode_progress
 
 
 def compute_current_progress(env) -> float:
@@ -21,7 +22,7 @@ def compute_current_progress(env) -> float:
         return 0.0
 
     progress = 1.0 - dist_to_goal / env._ego_goal_dist_normalizer
-    return float(max(0.0, min(1.0, progress)))
+    return clamp01(progress)
 
 
 def update_episode_progress(
@@ -35,11 +36,11 @@ def update_episode_progress(
     Once position threshold has been reached, lock episode progress to 1.0.
     Otherwise, keep the best progress reached in this episode.
     """
-    prev = float(max(0.0, min(1.0, previous_progress)))
-    curr = float(max(0.0, min(1.0, current_progress)))
-    if position_reached:
-        return 1.0
-    return max(prev, curr)
+    return merge_episode_progress(
+        previous_progress=previous_progress,
+        current_progress=current_progress,
+        position_reached=position_reached,
+    )
 
 
 def check_done(env) -> bool:

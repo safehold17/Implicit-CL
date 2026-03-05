@@ -8,7 +8,7 @@ import numpy as np
 
 from tools.safe_bicycle import safe_backward_action_from_states
 
-from .scenario_helpers import get_vehicle_by_id
+from ..scenario_helpers import get_vehicle_by_id
 
 
 def _get_gt_traj_array(env, veh_id: int) -> Optional[np.ndarray]:

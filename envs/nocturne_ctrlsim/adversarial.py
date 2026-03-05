@@ -22,14 +22,14 @@ from .scenario_helpers import (
     remove_background_moving_vehicles,
 )
 
-from .opponent_policy import (
+from .policies.opponent_policy import (
     get_goal_point_for_vehicle,
     get_gt_action,
     initialize_ego_goal_state,
     is_ego_position_reached,
 )
 from .student_reward import compute_student_reward
-from .student_env_policy import (
+from .policies.student_env_policy import (
     apply_student_action,
     get_student_observation,
 )
@@ -43,11 +43,11 @@ from .simulation_info import (
     update_episode_progress,
 )
 
-from .vehicle_map_helpers import load_vehicle_ids_for_scenario
+from .utils.vehicle_map_helpers import load_vehicle_ids_for_scenario
 
-from .video_recorder import NocturneVideoRecorder
+from .utils.video_recorder import NocturneVideoRecorder
 
-from . import visualization as viz
+from .utils import visualization as viz
 
 from tools.build_scenario_index import ScenarioIndex
 

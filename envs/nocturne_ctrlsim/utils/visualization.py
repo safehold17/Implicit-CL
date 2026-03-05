@@ -6,6 +6,7 @@ from typing import Optional
 
 import numpy as np
 
+from .common import compute_square_view_bounds, is_valid_world_position
 from .video_recorder import NocturneVideoRecorder
 
 
@@ -28,11 +29,7 @@ def render(env, mode: str = "human"):
         pos = veh.getPosition()
         x = pos.x
         y = pos.y
-        if not math.isfinite(x) or not math.isfinite(y):
-            continue
-        if abs(x) > 1e5 or abs(y) > 1e5:
-            continue
-        if x == -10000 and y == -10000:
+        if not is_valid_world_position(x, y):
             continue
         vehicle_data.append(
             {
@@ -73,20 +70,7 @@ def render(env, mode: str = "human"):
             if road.get("type") != "road_edge":
                 _draw_road(road.get("geometry", []), color="lightgray", linewidth=0.3)
 
-    positions = np.array(positions)
-    x_min = np.min(positions[:, 0]) - 25
-    x_max = np.max(positions[:, 0]) + 25
-    y_min = np.min(positions[:, 1]) - 25
-    y_max = np.max(positions[:, 1]) + 25
-
-    if (x_max - x_min) > (y_max - y_min):
-        diff = (x_max - x_min) - (y_max - y_min)
-        y_min -= diff / 2
-        y_max += diff / 2
-    else:
-        diff = (y_max - y_min) - (x_max - x_min)
-        x_min -= diff / 2
-        x_max += diff / 2
+    x_min, x_max, y_min, y_max = compute_square_view_bounds(positions)
 
     line_scale = (x_max - x_min) / 140 if x_max > x_min else 1.0
     lw = 0.35 / line_scale
@@ -364,4 +348,3 @@ def stop_recording(env, video_name: Optional[str] = None) -> Optional[str]:
     except Exception as e:
         print(f"Error saving video: {e}")
         return None
-
