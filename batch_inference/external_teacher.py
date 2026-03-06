@@ -26,6 +26,7 @@ from .external_teacher_batch_decoder import (
     decode_action_stage_batched,
     decode_rtg_stage_batched,
     forward_chunk_batched,
+    get_next_worker_rng_state,
 )
 from .external_teacher_job_scheduler import (
     build_chunks,
@@ -353,6 +354,12 @@ class ExternalTeacher:
             "rtg_results": {},
             "processed_rtg_veh_ids": [],
             "dead_ids": prepared["dead_ids"],
+            "next_worker_rng_state": get_next_worker_rng_state(
+                teacher=self,
+                env_idx=env_idx,
+                step_t=prepared["step_t"],
+                fallback_rng_state=prepared.get("worker_rng_state"),
+            ),
         }
 
     def _collect_flat_jobs(
@@ -402,7 +409,26 @@ class ExternalTeacher:
             results[env_idx] = env_output
 
         self._fill_empty_ok_env_results(per_env_prepared, results)
+        self._attach_next_worker_rng_states(per_env_prepared, results)
         return results
+
+    def _attach_next_worker_rng_states(
+        self,
+        per_env_prepared: List[Optional[Dict[str, Any]]],
+        results: List[Optional[Dict[str, Any]]],
+    ) -> None:
+        for env_idx, prepared in enumerate(per_env_prepared):
+            if prepared is None:
+                continue
+            result = results[env_idx]
+            if result is None:
+                continue
+            result["next_worker_rng_state"] = get_next_worker_rng_state(
+                teacher=self,
+                env_idx=env_idx,
+                step_t=prepared["step_t"],
+                fallback_rng_state=prepared.get("worker_rng_state"),
+            )
 
     def _estimate_job_tokens(self, job: Dict[str, Any]) -> int:
         return estimate_job_tokens(job)

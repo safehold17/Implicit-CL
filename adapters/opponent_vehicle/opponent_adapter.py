@@ -279,9 +279,14 @@ class CtrlSimOpponentAdapter:
             current_step=current_step,
         )
 
-    def prepare_step(self, t: int, vehicles: List):
+    def prepare_step(
+        self,
+        t: int,
+        vehicles: List,
+        worker_rng_state: Optional[np.ndarray] = None,
+    ):
         self._ensure_services()
-        return self._state_service.prepare_step(t, vehicles)
+        return self._state_service.prepare_step(t, vehicles, worker_rng_state=worker_rng_state)
 
     def update_policy_state(self, t: int):
         self._ensure_services()

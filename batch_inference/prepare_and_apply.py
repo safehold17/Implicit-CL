@@ -5,10 +5,39 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 
 from .ipc_codec import pack_prepared, unpack_model_outputs, validate_model_outputs_payload
 
 _NEXT_RTG_KEYS = ("next_rtg_goal", "next_rtg_veh", "next_rtg_road")
+
+
+def capture_sampling_rng_state(device: Any) -> np.ndarray:
+    torch_device = torch.device(device)
+    if torch_device.type == "cuda":
+        rng_state = torch.cuda.get_rng_state(torch_device)
+    else:
+        rng_state = torch.get_rng_state()
+    return rng_state.detach().cpu().numpy().astype(np.uint8, copy=False)
+
+
+def _resolve_sampling_rng_state(adapter: Any, worker_rng_state: Optional[np.ndarray]) -> np.ndarray:
+    if worker_rng_state is not None:
+        return np.asarray(worker_rng_state, dtype=np.uint8)
+
+    return capture_sampling_rng_state(adapter.device)
+
+
+def restore_sampling_rng_state(device: Any, rng_state: Any) -> None:
+    state_tensor = torch.as_tensor(
+        np.asarray(rng_state, dtype=np.uint8),
+        dtype=torch.uint8,
+    )
+    torch_device = torch.device(device)
+    if torch_device.type == "cuda":
+        torch.cuda.set_rng_state(state_tensor, device=torch_device)
+        return
+    torch.set_rng_state(state_tensor)
 
 
 def _slice_policy_window(policy: Any, t: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -473,7 +502,12 @@ def _build_focal_batch(
     return focal_batch, additionally_accounted, False
 
 
-def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str, Any]]:
+def prepare_step(
+    adapter: Any,
+    t: int,
+    vehicles: List[Any],
+    worker_rng_state: Optional[np.ndarray] = None,
+) -> Optional[Dict[str, Any]]:
     """构建 prepared_dict 供主进程 ExternalTeacher.batched_forward() 使用。"""
     if adapter._policy is None or len(vehicles) == 0:
         _clear_pending_sparse_actions(adapter)
@@ -507,8 +541,17 @@ def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str
 
     focal_batches, dead_ids = build_focal_batches(adapter, t)
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1
+    sampling_rng_state = _resolve_sampling_rng_state(adapter, worker_rng_state)
     if not focal_batches and not dead_ids:
-        return pack_prepared({"status": "skip", "step_t": t, "token_index": token_index, "dead_ids": []})
+        return pack_prepared(
+            {
+                "status": "skip",
+                "step_t": t,
+                "token_index": token_index,
+                "dead_ids": [],
+                "worker_rng_state": sampling_rng_state,
+            }
+        )
 
     tilt_by_veh_id: Dict[int, Tuple[int, int, int]] = (
         dict(adapter.per_vehicle_tilting) if adapter.per_vehicle_tilting else {}
@@ -519,6 +562,7 @@ def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str
         "step_t": t,
         "token_index": token_index,
         "dead_ids": dead_ids,
+        "worker_rng_state": sampling_rng_state,
         "sampling": {
             "action_temperature": adapter.action_temperature,
             "nucleus_sampling": adapter.nucleus_sampling,
@@ -659,6 +703,10 @@ def apply_predictions(adapter: Any, model_outputs: Optional[Dict[str, Any]]) -> 
             return pending_actions
         return {}
     validate_model_outputs_payload(model_outputs)
+    restore_sampling_rng_state(
+        adapter.device,
+        model_outputs["next_worker_rng_state"],
+    )
 
     step_t = int(model_outputs["step_t"])
     try:

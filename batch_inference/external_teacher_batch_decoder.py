@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
+import numpy as np
 import torch
 
 from utils.data import MotionData
@@ -49,6 +50,73 @@ def _get_decode_generator(teacher: Any) -> torch.Generator:
     return generator
 
 
+def _as_rng_state_tensor(worker_rng_state: Any) -> Optional[torch.Tensor]:
+    if worker_rng_state is None:
+        return None
+    if isinstance(worker_rng_state, torch.Tensor):
+        return worker_rng_state.detach().cpu().clone().to(dtype=torch.uint8)
+    return torch.as_tensor(
+        np.asarray(worker_rng_state, dtype=np.uint8),
+        dtype=torch.uint8,
+    )
+
+
+def _get_env_sampling_generator(
+    teacher: Any,
+    env_idx: int,
+    step_t: int,
+    worker_rng_state: Any,
+) -> torch.Generator:
+    cache = getattr(teacher, "_env_sampling_generators", None)
+    if cache is None:
+        cache = {}
+        teacher._env_sampling_generators = cache
+
+    cached_entry = cache.get(int(env_idx))
+    if cached_entry is not None and int(cached_entry["step_t"]) == int(step_t):
+        return cached_entry["generator"]
+
+    generator = torch.Generator(device=torch.device(teacher.device))
+    rng_state = _as_rng_state_tensor(worker_rng_state)
+    if rng_state is None:
+        rng_state = _get_device_rng_state(teacher.device)
+    generator.set_state(rng_state)
+    cache[int(env_idx)] = {
+        "step_t": int(step_t),
+        "generator": generator,
+    }
+    return generator
+
+
+def get_next_worker_rng_state(
+    teacher: Any,
+    env_idx: int,
+    step_t: int,
+    fallback_rng_state: Any,
+) -> np.ndarray:
+    cache = getattr(teacher, "_env_sampling_generators", None)
+    if cache is not None:
+        cached_entry = cache.get(int(env_idx))
+        if cached_entry is not None and int(cached_entry["step_t"]) == int(step_t):
+            return (
+                cached_entry["generator"]
+                .get_state()
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.uint8, copy=False)
+            )
+    if fallback_rng_state is not None:
+        return np.asarray(fallback_rng_state, dtype=np.uint8)
+    return (
+        _get_device_rng_state(teacher.device)
+        .detach()
+        .cpu()
+        .numpy()
+        .astype(np.uint8, copy=False)
+    )
+
+
 def _get_tilt_logits_tensor(
     teacher: Any,
     goal_tilt: int,
@@ -80,15 +148,19 @@ def _get_tilt_logits_tensor(
 def _reserve_action_rng_states_for_job(
     teacher: Any,
     job: Dict[str, Any],
+    env_generator: Optional[torch.Generator] = None,
 ) -> Dict[int, torch.Tensor]:
     data_veh_ids = job["focal_batch"].get("data_veh_ids", [])
     sampling = job["prepared"].get("sampling")
     if not data_veh_ids or sampling is None:
         return {}
+    if env_generator is None:
+        env_generator = _get_decode_generator(teacher)
+        env_generator.set_state(_get_device_rng_state(teacher.device))
     dummy_logits = _get_action_reservation_logits(teacher)
     reserved_states: Dict[int, torch.Tensor] = {}
     for veh_id in data_veh_ids:
-        reserved_states[int(veh_id)] = _get_device_rng_state(teacher.device)
+        reserved_states[int(veh_id)] = env_generator.get_state().clone()
         decode_predicted_action(
             dummy_logits,
             sampling["action_temperature"],
@@ -100,6 +172,7 @@ def _reserve_action_rng_states_for_job(
             teacher.max_accel,
             teacher.min_steer,
             teacher.max_steer,
+            generator=env_generator,
         )
     return reserved_states
 
@@ -154,6 +227,7 @@ def _decode_rtg_for_job(
     job: Dict[str, Any],
     token_index: int,
     rtg_cache: RTGCache,
+    env_generator: Optional[torch.Generator] = None,
 ) -> Tuple[Dict[int, Tuple[float, float, float]], List[int]]:
     prepared = job["prepared"]
     focal_batch = job["focal_batch"]
@@ -166,6 +240,9 @@ def _decode_rtg_for_job(
     veh_ids_in_context = focal_batch["veh_ids_in_context"]
     if not bool(focal_batch["predict_rtgs"]):
         return {}, []
+    if env_generator is None:
+        env_generator = _get_decode_generator(teacher)
+        env_generator.set_state(_get_device_rng_state(teacher.device))
 
     rtg_results: Dict[int, Tuple[float, float, float]] = {}
     processed_rtg_veh_ids: List[int] = []
@@ -213,6 +290,7 @@ def _decode_rtg_for_job(
             teacher.min_rtg_road,
             teacher.max_rtg_road,
             device=teacher.device,
+            generator=env_generator,
         )
 
         g_idx = int(g_idx_t)
@@ -252,6 +330,12 @@ def decode_rtg_stage_batched(
 
     for batch_idx, job in enumerate(jobs):
         token_index = int(token_index_per_job[batch_idx])
+        env_generator = _get_env_sampling_generator(
+            teacher=teacher,
+            env_idx=int(job["env_idx"]),
+            step_t=int(job["prepared"]["step_t"]),
+            worker_rng_state=job["prepared"].get("worker_rng_state"),
+        )
         rtg_results, processed_rtg_veh_ids = _decode_rtg_for_job(
             teacher=teacher,
             batched_data=batched_data,
@@ -260,6 +344,7 @@ def decode_rtg_stage_batched(
             job=job,
             token_index=token_index,
             rtg_cache=rtg_cache,
+            env_generator=env_generator,
         )
         rtg_results_by_job.append(rtg_results)
         processed_rtg_veh_ids_by_job.append(processed_rtg_veh_ids)
@@ -389,6 +474,12 @@ def forward_chunk_batched(teacher: Any, chunk: List[Dict[str, Any]]) -> List[Dic
 
     for batch_idx, job in enumerate(jobs):
         token_index = int(token_index_per_job[batch_idx])
+        env_generator = _get_env_sampling_generator(
+            teacher=teacher,
+            env_idx=int(job["env_idx"]),
+            step_t=int(job["prepared"]["step_t"]),
+            worker_rng_state=job["prepared"].get("worker_rng_state"),
+        )
         rtg_decode_start = time.perf_counter() if profile_enabled else 0.0
         rtg_results, processed_rtg_veh_ids = _decode_rtg_for_job(
             teacher=teacher,
@@ -398,6 +489,7 @@ def forward_chunk_batched(teacher: Any, chunk: List[Dict[str, Any]]) -> List[Dic
             job=job,
             token_index=token_index,
             rtg_cache=rtg_cache,
+            env_generator=env_generator,
         )
         rtg_decode_ms += _elapsed_ms(rtg_decode_start, profile_enabled)
         rtg_results_by_job.append(rtg_results)
@@ -407,13 +499,10 @@ def forward_chunk_batched(teacher: Any, chunk: List[Dict[str, Any]]) -> List[Dic
             _reserve_action_rng_states_for_job(
                 teacher=teacher,
                 job=job,
+                env_generator=env_generator,
             )
         )
         rng_reserve_ms += _elapsed_ms(rng_reserve_start, profile_enabled)
-
-    final_rng_state_start = time.perf_counter() if profile_enabled else 0.0
-    _ = _get_device_rng_state(teacher.device)
-    rng_reserve_ms += _elapsed_ms(final_rng_state_start, profile_enabled)
 
     action_results_by_job = teacher._decode_action_stage_batched(
         batched_data=batched_data,

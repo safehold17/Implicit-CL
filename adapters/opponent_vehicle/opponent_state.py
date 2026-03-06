@@ -280,9 +280,14 @@ class OpponentStateService:
                 prev_exists,
             )
 
-    def prepare_step(self, t: int, vehicles: List) -> Optional[Dict]:
+    def prepare_step(
+        self,
+        t: int,
+        vehicles: List,
+        worker_rng_state: Optional[np.ndarray] = None,
+    ) -> Optional[Dict]:
         """构建 prepared_dict，委托给 batch_inference.prepare_and_apply。"""
-        return _batch_io.prepare_step(self.adapter, t, vehicles)
+        return _batch_io.prepare_step(self.adapter, t, vehicles, worker_rng_state=worker_rng_state)
 
     def apply_predictions(
         self,

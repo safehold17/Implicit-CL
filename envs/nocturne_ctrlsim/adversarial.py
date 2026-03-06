@@ -57,6 +57,7 @@ from tools.build_scenario_index import ScenarioIndex
 from adapters.config_loader import create_minimal_config
 from adapters.data_bridge import DataBridge
 from adapters.opponent_vehicle import CtrlSimOpponentAdapter
+from batch_inference.prepare_and_apply import capture_sampling_rng_state
 class NocturneCtrlSimAdversarial(gym.Env):
     """
     DCD adversarial environment: Nocturne scenario + CtRL-Sim opponent
@@ -1189,7 +1190,12 @@ class NocturneCtrlSimAdversarial(gym.Env):
 
         runtime_mode = getattr(self, "opponent_runtime_mode", "normal")
         if runtime_mode == "normal" and len(self.opponent_vehicle_ids) > 0:
-            return self.opponent.prepare_step(self.current_step - 1, self.vehicles)
+            worker_rng_state = capture_sampling_rng_state(self.device)
+            return self.opponent.prepare_step(
+                self.current_step - 1,
+                self.vehicles,
+                worker_rng_state=worker_rng_state,
+            )
         return None
 
     def step_complete(
