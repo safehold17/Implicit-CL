@@ -90,12 +90,41 @@ def undiscretize_rtgs(rtgs: np.ndarray,
     return continuous
 
 
+def undiscretize_action_index(action_idx: int,
+                              accel_discretization: int, steer_discretization: int,
+                              min_accel: float, max_accel: float,
+                              min_steer: float, max_steer: float) -> tuple[float, float]:
+    accel_idx = action_idx // steer_discretization
+    steer_idx = action_idx % steer_discretization
+    accel = accel_idx / (accel_discretization - 1)
+    steer = steer_idx / (steer_discretization - 1)
+    accel = accel * (max_accel - min_accel) + min_accel
+    steer = steer * (max_steer - min_steer) + min_steer
+    return float(accel), float(steer)
+
+
+def undiscretize_rtg_indices(goal_idx: int,
+                             veh_idx: int,
+                             road_idx: int,
+                             rtg_discretization: int,
+                             min_rtg_pos: float, max_rtg_pos: float,
+                             min_rtg_veh: float, max_rtg_veh: float,
+                             min_rtg_road: float, max_rtg_road: float) -> tuple[float, float, float]:
+    goal = goal_idx / (rtg_discretization - 1)
+    veh = veh_idx / (rtg_discretization - 1)
+    road = road_idx / (rtg_discretization - 1)
+    goal = goal * (max_rtg_pos - min_rtg_pos) + min_rtg_pos
+    veh = veh * (max_rtg_veh - min_rtg_veh) + min_rtg_veh
+    road = road * (max_rtg_road - min_rtg_road) + min_rtg_road
+    return float(goal), float(veh), float(road)
+
+
 # ---------------------------------------------------------------------------
 # RTG decode (logits → sample → undiscretize)
 # ---------------------------------------------------------------------------
 
 def decode_predicted_rtg(rtg_logits_3: torch.Tensor,
-                         tilt_logits_np: np.ndarray,
+                         tilt_logits_np,
                          rtg_discretization: int,
                          min_rtg_pos: float, max_rtg_pos: float,
                          min_rtg_veh: float, max_rtg_veh: float,
@@ -119,7 +148,10 @@ def decode_predicted_rtg(rtg_logits_3: torch.Tensor,
         next_rtg_discrete: (goal_idx, veh_idx, road_idx) — 离散索引 tuple[int, int, int]
         next_rtg_continuous: (goal_val, veh_val, road_val) — 连续值 tuple[float, float, float]
     """
-    tilt = torch.from_numpy(tilt_logits_np).to(device)
+    if isinstance(tilt_logits_np, torch.Tensor):
+        tilt = tilt_logits_np
+    else:
+        tilt = torch.from_numpy(tilt_logits_np).to(device)
 
     goal_dis = F.softmax(rtg_logits_3[:, 0] + tilt[:, 0], dim=0)
     veh_dis = F.softmax(rtg_logits_3[:, 1] + tilt[:, 1], dim=0)
@@ -129,17 +161,23 @@ def decode_predicted_rtg(rtg_logits_3: torch.Tensor,
     veh_idx = torch.multinomial(veh_dis, 1, generator=generator)
     road_idx = torch.multinomial(road_dis, 1, generator=generator)
 
-    # undiscretize
-    rtg_np = np.array([[[goal_idx.item(), veh_idx.item(), road_idx.item()]]])
-    continuous = undiscretize_rtgs(
-        rtg_np, rtg_discretization,
-        min_rtg_pos, max_rtg_pos,
-        min_rtg_veh, max_rtg_veh,
-        min_rtg_road, max_rtg_road,
+    goal_idx_int = int(goal_idx)
+    veh_idx_int = int(veh_idx)
+    road_idx_int = int(road_idx)
+    continuous = undiscretize_rtg_indices(
+        goal_idx_int,
+        veh_idx_int,
+        road_idx_int,
+        rtg_discretization,
+        min_rtg_pos,
+        max_rtg_pos,
+        min_rtg_veh,
+        max_rtg_veh,
+        min_rtg_road,
+        max_rtg_road,
     )
 
-    return (goal_idx, veh_idx, road_idx), \
-           (continuous[0, 0, 0], continuous[0, 0, 1], continuous[0, 0, 2])
+    return (goal_idx_int, veh_idx_int, road_idx_int), continuous
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +224,13 @@ def decode_predicted_action(action_logits: torch.Tensor,
         action_dis = F.softmax(action_logits / action_temperature, dim=0)
 
     action_idx = torch.multinomial(action_dis, 1, generator=generator)
-    action_np = action_idx.reshape(1, 1).cpu().numpy()
-
-    continuous = undiscretize_actions(
-        action_np,
-        accel_discretization, steer_discretization,
-        min_accel, max_accel,
-        min_steer, max_steer,
+    action_idx_int = int(action_idx)
+    return undiscretize_action_index(
+        action_idx_int,
+        accel_discretization,
+        steer_discretization,
+        min_accel,
+        max_accel,
+        min_steer,
+        max_steer,
     )
-    return float(continuous[0, 0, 0]), float(continuous[0, 0, 1])

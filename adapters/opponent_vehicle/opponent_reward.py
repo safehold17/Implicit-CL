@@ -2,10 +2,105 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+_CYCLIC_MAP_FEATURE_TOLERANCE_M2 = 1.0
+
+
+def _dot_product_2d_np(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    return lhs[..., 0] * rhs[..., 0] + lhs[..., 1] * rhs[..., 1]
+
+
+def _cross_product_2d_np(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    return lhs[..., 0] * rhs[..., 1] - lhs[..., 1] * rhs[..., 0]
+
+
+def _compute_signed_distance_to_polyline_np(
+    xys: np.ndarray,
+    polyline: np.ndarray,
+) -> np.ndarray:
+    is_cyclic = (
+        np.square(polyline[0] - polyline[-1]).sum()
+        < _CYCLIC_MAP_FEATURE_TOLERANCE_M2
+    )
+    xy_starts = polyline[None, :-1, :2]
+    xy_ends = polyline[None, 1:, :2]
+    start_to_point = xys[:, None, :2] - xy_starts
+    start_to_end = xy_ends - xy_starts
+
+    rel_t = np.nan_to_num(
+        _dot_product_2d_np(start_to_point, start_to_end)
+        / _dot_product_2d_np(start_to_end, start_to_end)
+    )
+    n = np.sign(_cross_product_2d_np(start_to_point, start_to_end))
+    distance_to_segment = np.linalg.norm(
+        start_to_point - (start_to_end * np.clip(rel_t, 0.0, 1.0)[..., None]),
+        axis=-1,
+    )
+
+    start_to_end_padded = np.concatenate(
+        [start_to_end[:, -1:], start_to_end, start_to_end[:, :1]],
+        axis=1,
+    )
+    is_locally_convex = (
+        _cross_product_2d_np(
+            start_to_end_padded[:, :-1],
+            start_to_end_padded[:, 1:],
+        )
+        > 0.0
+    )
+    n_prior = np.concatenate(
+        [np.where(is_cyclic, n[:, -1:], n[:, :1]), n[:, :-1]],
+        axis=-1,
+    )
+    n_next = np.concatenate(
+        [n[:, 1:], np.where(is_cyclic, n[:, :1], n[:, -1:])],
+        axis=-1,
+    )
+    sign_if_before = np.where(
+        is_locally_convex[:, :-1],
+        np.maximum(n, n_prior),
+        np.minimum(n, n_prior),
+    )
+    sign_if_after = np.where(
+        is_locally_convex[:, 1:],
+        np.maximum(n, n_next),
+        np.minimum(n, n_next),
+    )
+    sign_to_segment = np.where(
+        rel_t < 0.0,
+        sign_if_before,
+        np.where(rel_t < 1.0, n, sign_if_after),
+    )
+    min_segment_idx = np.argmin(distance_to_segment, axis=-1)
+    distance_sign = np.take_along_axis(
+        sign_to_segment,
+        min_segment_idx[:, None],
+        axis=1,
+    )[:, 0]
+    return distance_sign * np.min(distance_to_segment, axis=-1)
+
+
+def _compute_signed_distance_to_polylines_np(
+    xys: np.ndarray,
+    polylines: tuple[np.ndarray, ...],
+) -> np.ndarray:
+    distances = [
+        _compute_signed_distance_to_polyline_np(xys, polyline)
+        for polyline in polylines
+        if len(polyline) >= 2
+    ]
+    if not distances:
+        return np.zeros((len(xys),), dtype=np.float32)
+    stacked = np.stack(distances, axis=-1)
+    nearest_idx = np.argmin(np.abs(stacked), axis=-1)
+    return np.take_along_axis(stacked, nearest_idx[:, None], axis=1)[:, 0]
+
 
 class OpponentRewardService:
     def __init__(self, adapter):
         self.adapter = adapter
+
+    def _road_edge_scaling_factor(self) -> float:
+        return float(self.adapter.cfg.dataset.waymo.dist_to_road_edge_scaling_factor)
 
     @staticmethod
     def _get_step_or_last(entries: List[Any], t: int) -> Any:
@@ -68,6 +163,65 @@ class OpponentRewardService:
             ],
             dtype=np.float32,
         )
+
+    def prepare_road_edge_cache(self) -> None:
+        adapter = self.adapter
+        road_edge_polylines = tuple(
+            np.asarray(polyline, dtype=np.float32)
+            for polyline in adapter._road_edge_polylines
+            if len(polyline) >= 2
+        )
+        adapter._road_edge_polylines_cpu = road_edge_polylines
+        adapter._constant_road_edge_reward_by_id = (
+            self._build_constant_road_edge_reward_cache()
+        )
+
+    def _build_constant_road_edge_reward_cache(self) -> Dict[int, float]:
+        adapter = self.adapter
+        constant_vehicle_ids = sorted(
+            veh_id
+            for veh_id in adapter._constant_state_vehicle_ids
+            if veh_id in adapter._constant_state_by_id
+        )
+        if not constant_vehicle_ids or not adapter._road_edge_polylines_cpu:
+            return {}
+
+        positions = np.asarray(
+            [
+                [
+                    adapter._constant_state_by_id[veh_id]["position"]["x"],
+                    adapter._constant_state_by_id[veh_id]["position"]["y"],
+                ]
+                for veh_id in constant_vehicle_ids
+            ],
+            dtype=np.float32,
+        )
+        rewards = self._compute_road_edge_rewards(
+            positions,
+        )
+        return {
+            veh_id: float(rewards[idx, 0])
+            for idx, veh_id in enumerate(constant_vehicle_ids)
+        }
+
+    def _compute_road_edge_rewards(
+        self,
+        target_positions: np.ndarray,
+    ) -> np.ndarray:
+        adapter = self.adapter
+        num_targets = len(target_positions)
+        if num_targets == 0:
+            return np.zeros((0, 1), dtype=np.float32)
+
+        dist_to_road_edge = _compute_signed_distance_to_polylines_np(
+            np.asarray(target_positions, dtype=np.float32),
+            adapter._road_edge_polylines_cpu,
+        )
+        rewards = (
+            -np.asarray(dist_to_road_edge, dtype=np.float32)
+            / self._road_edge_scaling_factor()
+        )
+        return rewards.reshape(num_targets, 1)
 
     def _get_step_vehicle_ids(self, t: int, vehicle_data_dict: Dict) -> List[int]:
         veh_ids = self.adapter._state_update_vehicle_ids_step
@@ -165,11 +319,14 @@ class OpponentRewardService:
         context_idx_map = {
             veh_id: idx for idx, veh_id in enumerate(context_vehicle_ids)
         }
-        target_vehicle_ids = [
-            veh_id
-            for veh_id in step_vehicle_ids
-            if veh_id in context_idx_map
-        ]
+        target_vehicle_ids = []
+        for veh_id in step_vehicle_ids:
+            if veh_id not in context_idx_map:
+                continue
+            veh_data = vehicle_data_dict[veh_id]
+            if not self._get_step_or_last(veh_data["existence"], t):
+                continue
+            target_vehicle_ids.append(veh_id)
         target_indices = np.asarray(
             [context_idx_map[veh_id] for veh_id in target_vehicle_ids],
             dtype=np.int64,
@@ -195,20 +352,33 @@ class OpponentRewardService:
             target_gt_positions = all_gt_positions[target_indices]
             target_existence = all_existence[target_indices]
 
-            if adapter._road_edge_polylines:
-                target_xy = target_positions[:, np.newaxis, :]
-                veh_edge_dist_rewards = (
-                    dataset.compute_dist_to_nearest_road_edge_rewards(
-                        target_xy,
-                        adapter._road_edge_polylines,
+            veh_edge_dist_rewards = np.zeros(
+                (len(target_vehicle_ids), 1),
+                dtype=np.float32,
+            )
+            if adapter._road_edge_polylines_cpu:
+                dynamic_target_indices: List[int] = []
+                dynamic_target_positions: List[np.ndarray] = []
+                constant_road_edge_reward_by_id = (
+                    adapter._constant_road_edge_reward_by_id
+                )
+                for local_idx, veh_id in enumerate(target_vehicle_ids):
+                    cached_reward = constant_road_edge_reward_by_id.get(veh_id)
+                    if cached_reward is not None:
+                        veh_edge_dist_rewards[local_idx, 0] = cached_reward
+                        continue
+                    dynamic_target_indices.append(local_idx)
+                    dynamic_target_positions.append(target_positions[local_idx])
+
+                if dynamic_target_positions:
+                    dynamic_rewards = self._compute_road_edge_rewards(
+                        np.asarray(dynamic_target_positions, dtype=np.float32),
                     )
-                )
-                veh_edge_dist_rewards = (
-                    veh_edge_dist_rewards
-                    * target_existence[:, np.newaxis]
-                )
-            else:
-                veh_edge_dist_rewards = np.zeros((len(target_vehicle_ids), 1), dtype=np.float32)
+                    veh_edge_dist_rewards[
+                        np.asarray(dynamic_target_indices, dtype=np.int64),
+                        0,
+                    ] = dynamic_rewards[:, 0]
+                veh_edge_dist_rewards *= target_existence[:, np.newaxis]
 
             veh_veh_dist_rewards = self._compute_nearest_dist_to_all(
                 target_positions=target_positions,

@@ -125,6 +125,8 @@ class CtrlSimOpponentAdapter:
         self._vehicles_to_control_sorted: List[int] = []
         self._vehicles_to_control_set: set[int] = set()
         self._road_edge_polylines: List = []
+        self._road_edge_polylines_cpu: Tuple[np.ndarray, ...] = ()
+        self._constant_road_edge_reward_by_id: Dict[int, float] = {}
         self._goal_dict: Dict = {}
         self._goal_dist_normalizer: Dict = {}
         self._ego_id: Optional[int] = None

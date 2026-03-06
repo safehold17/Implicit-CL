@@ -41,6 +41,27 @@ def _assert_required_keys(payload: Dict[str, Any], required: Tuple[str, ...], pa
         raise ValueError(f"{payload_name} missing required keys: {missing}")
 
 
+def _merge_profile_sums(target: Dict[str, Any], source: Dict[str, Any]) -> None:
+    for key, value in source.items():
+        if isinstance(value, dict):
+            child = target.setdefault(key, {})
+            _merge_profile_sums(child, value)
+            continue
+        target[key] = float(target.get(key, 0.0)) + float(value)
+
+
+def _aggregate_forward_chunk_profiles(chunk_profiles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    aggregate: Dict[str, Any] = {
+        "chunk_count": len(chunk_profiles),
+        "stage_ms": {},
+        "detail_ms": {},
+    }
+    for profile in chunk_profiles:
+        _merge_profile_sums(aggregate["stage_ms"], profile.get("stage_ms", {}))
+        _merge_profile_sums(aggregate["detail_ms"], profile.get("detail_ms", {}))
+    return aggregate
+
+
 class ExternalTeacher:
     """主进程 GPU 批量推理引擎。"""
 
@@ -98,6 +119,9 @@ class ExternalTeacher:
         self.num_reward_components = mdl.num_reward_components
 
         self._collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]] = {}
+        self._last_forward_chunk_profile: Optional[Dict[str, Any]] = None
+        self._last_forward_chunk_profiles: List[Dict[str, Any]] = []
+        self._last_batched_forward_profile: Optional[Dict[str, Any]] = None
 
     def batched_forward(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
         """跨 env 批量推理。"""
@@ -120,11 +144,12 @@ class ExternalTeacher:
                 pack_start = time.perf_counter() if profile_enabled else 0.0
                 packed_outputs = self._pack_outputs(results)
                 pack_ms = (time.perf_counter() - pack_start) * 1000.0 if profile_enabled else 0.0
-                self._maybe_log_profile(
-                    num_envs=num_envs,
-                    flat_jobs=flat_jobs,
-                    chunks=[],
-                    stage_ms={
+                forward_detail_ms = _aggregate_forward_chunk_profiles([])
+                self._last_batched_forward_profile = {
+                    "num_envs": num_envs,
+                    "flat_job_count": 0,
+                    "chunk_count": 0,
+                    "stage_ms": {
                         "unpack": unpack_ms,
                         "collect": collect_ms,
                         "build_chunks": 0.0,
@@ -133,6 +158,14 @@ class ExternalTeacher:
                         "pack": pack_ms,
                         "total": (time.perf_counter() - total_start) * 1000.0 if profile_enabled else 0.0,
                     },
+                    "forward_detail_ms": forward_detail_ms,
+                }
+                self._maybe_log_profile(
+                    num_envs=num_envs,
+                    flat_jobs=flat_jobs,
+                    chunks=[],
+                    stage_ms=self._last_batched_forward_profile["stage_ms"],
+                    forward_detail_ms=forward_detail_ms,
                 )
                 return packed_outputs
 
@@ -152,11 +185,14 @@ class ExternalTeacher:
             packed_outputs = self._pack_outputs(per_env_outputs)
             pack_ms = (time.perf_counter() - pack_start) * 1000.0 if profile_enabled else 0.0
 
-            self._maybe_log_profile(
-                num_envs=num_envs,
-                flat_jobs=flat_jobs,
-                chunks=chunks,
-                stage_ms={
+            forward_detail_ms = _aggregate_forward_chunk_profiles(
+                getattr(self, "_last_forward_chunk_profiles", []),
+            )
+            self._last_batched_forward_profile = {
+                "num_envs": num_envs,
+                "flat_job_count": len(flat_jobs),
+                "chunk_count": len(chunks),
+                "stage_ms": {
                     "unpack": unpack_ms,
                     "collect": collect_ms,
                     "build_chunks": build_chunks_ms,
@@ -165,6 +201,14 @@ class ExternalTeacher:
                     "pack": pack_ms,
                     "total": (time.perf_counter() - total_start) * 1000.0 if profile_enabled else 0.0,
                 },
+                "forward_detail_ms": forward_detail_ms,
+            }
+            self._maybe_log_profile(
+                num_envs=num_envs,
+                flat_jobs=flat_jobs,
+                chunks=chunks,
+                stage_ms=self._last_batched_forward_profile["stage_ms"],
+                forward_detail_ms=forward_detail_ms,
             )
             return packed_outputs
         finally:
@@ -218,8 +262,19 @@ class ExternalTeacher:
 
     def _run_forward_chunks(self, chunks: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         all_per_focal: List[Dict[str, Any]] = []
+        chunk_profiles: List[Dict[str, Any]] = []
         for chunk in chunks:
             all_per_focal.extend(self._forward_chunk_batched(chunk))
+            chunk_profile = getattr(self, "_last_forward_chunk_profile", None)
+            if self._profile_enabled and chunk_profile is not None:
+                chunk_profiles.append(
+                    {
+                        "chunk_jobs": int(chunk_profile.get("chunk_jobs", len(chunk))),
+                        "stage_ms": dict(chunk_profile.get("stage_ms", {})),
+                        "detail_ms": dict(chunk_profile.get("detail_ms", {})),
+                    }
+                )
+        self._last_forward_chunk_profiles = chunk_profiles
         return all_per_focal
 
     def _maybe_log_profile(
@@ -228,6 +283,7 @@ class ExternalTeacher:
         flat_jobs: List[Dict[str, Any]],
         chunks: List[List[Dict[str, Any]]],
         stage_ms: Dict[str, float],
+        forward_detail_ms: Optional[Dict[str, Any]] = None,
     ) -> None:
         if not self._profile_enabled:
             return
@@ -246,11 +302,14 @@ class ExternalTeacher:
 
         cs_min, cs_avg, cs_max = _summary(chunk_sizes)
         ct_min, ct_avg, ct_max = _summary(chunk_tokens)
+        collate_detail = (forward_detail_ms or {}).get("detail_ms", {}).get("collate", {})
         print(
             (
                 "[ExternalTeacher][Profile] call=%d envs=%d flat_jobs=%d chunks=%d "
                 "chunk_jobs[min/avg/max]=%d/%.2f/%d chunk_tokens[min/avg/max]=%d/%.1f/%d "
-                "ms(unpack=%.2f collect=%.2f build=%.2f forward=%.2f scatter=%.2f pack=%.2f total=%.2f)"
+                "ms(unpack=%.2f collect=%.2f build=%.2f forward=%.2f scatter=%.2f pack=%.2f total=%.2f) "
+                "forward_detail(ms collate=%.2f model_rtg=%.2f rtg_decode=%.2f rng=%.2f model_action=%.2f action_decode=%.2f) "
+                "collate_detail(ms fill=%.2f from_numpy=%.2f to_device=%.2f token_index=%.2f)"
             )
             % (
                 self._profile_counter,
@@ -270,6 +329,16 @@ class ExternalTeacher:
                 stage_ms.get("scatter", 0.0),
                 stage_ms.get("pack", 0.0),
                 stage_ms.get("total", 0.0),
+                (forward_detail_ms or {}).get("stage_ms", {}).get("collate", 0.0),
+                (forward_detail_ms or {}).get("stage_ms", {}).get("model_rtg", 0.0),
+                (forward_detail_ms or {}).get("stage_ms", {}).get("rtg_decode", 0.0),
+                (forward_detail_ms or {}).get("stage_ms", {}).get("rng_reserve", 0.0),
+                (forward_detail_ms or {}).get("stage_ms", {}).get("model_action", 0.0),
+                (forward_detail_ms or {}).get("stage_ms", {}).get("action_decode", 0.0),
+                collate_detail.get("fill_buffers", 0.0),
+                collate_detail.get("from_numpy", 0.0),
+                collate_detail.get("to_device", 0.0),
+                collate_detail.get("token_index_to_device", 0.0),
             )
         )
 
@@ -349,6 +418,7 @@ class ExternalTeacher:
             chunk=chunk,
             device=self.device,
             collate_numpy_buffers=self._collate_numpy_buffers,
+            profile_enabled=self._profile_enabled,
         )
 
     @torch.no_grad()
@@ -366,14 +436,12 @@ class ExternalTeacher:
         batched_data,
         batch_meta,
         reserved_rng_states_by_job=None,
-        final_rng_state=None,
     ):
         return decode_action_stage_batched(
             teacher=self,
             batched_data=batched_data,
             batch_meta=batch_meta,
             reserved_rng_states_by_job=reserved_rng_states_by_job,
-            final_rng_state=final_rng_state,
         )
 
     def _forward_chunk_batched(self, chunk: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

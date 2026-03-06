@@ -173,6 +173,8 @@ class OpponentStateService:
                     )
                 self.adapter._opponent_goal_hold_until[veh_id] = None
 
+        self.adapter._reward_service.prepare_road_edge_cache()
+
         self.adapter._all_vehicle_ids = list(self.adapter._vehicle_data_dict.keys())
         self.adapter._controlled_vehicle_ids_present = [
             veh_id
