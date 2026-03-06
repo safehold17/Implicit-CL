@@ -172,8 +172,12 @@ def fill_collate_buffers(chunk: List[Dict[str, Any]], buffers: Dict[str, np.ndar
         buffers["road_types_b"][batch_idx, :n_roads] = motion_data_np["road_types"]
 
         raw_token_index = int(prepared["token_index"])
-        clamped_token_index = max(0, min(raw_token_index, seq_len - 1))
-        buffers["token_index_per_job"][batch_idx] = clamped_token_index
+        if raw_token_index < 0:
+            resolved_token_index = seq_len + raw_token_index
+        else:
+            resolved_token_index = raw_token_index
+        resolved_token_index = max(0, min(resolved_token_index, seq_len - 1))
+        buffers["token_index_per_job"][batch_idx] = resolved_token_index
 
 
 def build_motion_data_from_buffers(buffers: Dict[str, np.ndarray], device: str) -> MotionData:

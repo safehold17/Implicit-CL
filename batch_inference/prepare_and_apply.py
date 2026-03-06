@@ -106,6 +106,30 @@ def _build_sparse_repeat_actions(
     return actions
 
 
+def _build_warmup_gt_actions(
+    adapter: Any,
+    step_t: int,
+) -> Dict[int, Tuple[float, float]]:
+    actions: Dict[int, Tuple[float, float]] = {}
+    for veh_id in _get_step_controlled_ids(adapter):
+        veh_data = _require_vehicle_data(
+            adapter._vehicle_data_dict,
+            veh_id,
+            "warmup_gt",
+            step_t,
+        )
+        veh = adapter._last_vehicle_by_id.get(veh_id)
+        action = adapter._get_gt_action(veh_id, step_t, veh)
+        if action is None:
+            action = (0.0, 0.0)
+        accel = float(action[0])
+        steer = float(action[1])
+        veh_data["next_acceleration"] = accel
+        veh_data["next_steering"] = steer
+        actions[veh_id] = (accel, steer)
+    return actions
+
+
 def _clear_pending_sparse_actions(adapter: Any) -> None:
     adapter._pending_sparse_actions_step_t = None
     adapter._pending_sparse_actions = {}
@@ -184,7 +208,7 @@ def _select_relevant_agents_fast(
     dset: Any,
     ag_states: np.ndarray,
     ag_types: np.ndarray,
-    actions_discrete: np.ndarray,
+    actions_values: np.ndarray,
     rtgs_values: np.ndarray,
     goals_step: np.ndarray,
     origin_agent_idx: int,
@@ -232,7 +256,7 @@ def _select_relevant_agents_fast(
 
     final_agent_states = np.zeros((max_agents, *ag_states.shape[1:]), dtype=ag_states.dtype)
     final_agent_types = -np.ones((max_agents, *ag_types.shape[1:]), dtype=ag_types.dtype)
-    final_actions = np.zeros((max_agents, *actions_discrete.shape[1:]), dtype=actions_discrete.dtype)
+    final_actions = np.zeros((max_agents, *actions_values.shape[1:]), dtype=actions_values.dtype)
     final_rtgs = np.zeros((max_agents, *rtgs_values.shape[1:]), dtype=rtgs_values.dtype)
     final_goals = np.zeros((max_agents, *goals_step.shape[1:]), dtype=goals_step.dtype)
     final_moving_agent_mask = np.zeros(max_agents, dtype=moving_agent_mask.dtype)
@@ -241,7 +265,7 @@ def _select_relevant_agents_fast(
     if num_selected > 0:
         final_agent_states[:num_selected] = ag_states[closest_ag_ids]
         final_agent_types[:num_selected] = ag_types[closest_ag_ids]
-        final_actions[:num_selected] = actions_discrete[closest_ag_ids]
+        final_actions[:num_selected] = actions_values[closest_ag_ids]
         final_rtgs[:num_selected] = rtgs_values[closest_ag_ids]
         final_goals[:num_selected] = goals_step[closest_ag_ids]
         final_moving_agent_mask[:num_selected] = moving_agent_mask[closest_ag_ids]
@@ -313,23 +337,23 @@ def _normalize_scene_fast(
         return rel_ag_states, final_road_points, final_road_types, rel_goals
 
     if num_roads > 0:
-        if num_roads > max_roads:
-            relative_xy = road_points_src[:, :, :2] - translation
-            dist_sq = np.sum(relative_xy * relative_xy, axis=-1) * road_points_src[:, :, -1]
-            max_dist_sq = np.max(dist_sq, axis=1)
-            selected = np.argpartition(max_dist_sq, max_roads - 1)[:max_roads]
-            selected = selected[np.argsort(max_dist_sq[selected])]
-        else:
-            selected = np.arange(num_roads, dtype=np.int64)
-
-        num_selected = int(len(selected))
-        final_road_points[:num_selected] = road_points_src[selected]
-        final_road_types[:num_selected] = road_types_src[selected]
-        final_road_points[:num_selected, :, :2] = _apply_se2_transform_np(
-            coordinates=final_road_points[:num_selected, :, :2],
+        normalized_road_points = road_points_src.copy()
+        normalized_road_points[:, :, :2] = _apply_se2_transform_np(
+            coordinates=normalized_road_points[:, :, :2],
             translation=translation,
             yaw=angle_of_rotation,
         )
+        if num_roads > max_roads:
+            max_road_dist_to_orig = (
+                np.linalg.norm(normalized_road_points[:, :, :2], axis=-1)
+                * normalized_road_points[:, :, -1]
+            ).max(axis=1)
+            selected = np.argsort(max_road_dist_to_orig)[:max_roads]
+            final_road_points[:] = normalized_road_points[selected]
+            final_road_types[:] = road_types_src[selected]
+        else:
+            final_road_points[:num_roads] = normalized_road_points
+            final_road_types[:num_roads] = road_types_src
 
     return rel_ag_states, final_road_points, final_road_types, rel_goals
 
@@ -342,7 +366,7 @@ def _build_focal_batch(
     remaining_veh_id_set: set[int],
     ag_states: np.ndarray,
     ag_types: np.ndarray,
-    actions_discrete: np.ndarray,
+    actions_values: np.ndarray,
     rtgs_values: np.ndarray,
     goals_step: np.ndarray,
     rel_timesteps_template: np.ndarray,
@@ -378,7 +402,7 @@ def _build_focal_batch(
         dset=dset,
         ag_states=ag_states,
         ag_types=ag_types,
-        actions_discrete=actions_discrete,
+        actions_values=actions_values,
         rtgs_values=rtgs_values,
         goals_step=goals_step,
         origin_agent_idx=origin_agent_idx,
@@ -386,13 +410,15 @@ def _build_focal_batch(
         cached_relevant_agent_idxs=cached_relevant_agent_idxs,
     )
 
-    accounted_veh_ids = {policy.idx_to_veh_id[idx] for idx in new_agent_idx_dict.keys()}
-    additionally_accounted = [
-        veh_id
-        for veh_id in remaining_veh_ids
-        if veh_id in remaining_veh_id_set and veh_id in accounted_veh_ids
-    ]
-    cur_data_veh_ids = [focal_id] + additionally_accounted
+    accounted_veh_ids = [policy.idx_to_veh_id[idx] for idx in new_agent_idx_dict.keys()]
+    cur_data_veh_ids = [focal_id]
+    additionally_accounted: List[int] = []
+    for veh_id in remaining_veh_ids:
+        if veh_id in remaining_veh_id_set and veh_id in accounted_veh_ids:
+            cur_data_veh_ids.append(veh_id)
+            additionally_accounted.append(veh_id)
+            remaining_veh_id_set.discard(veh_id)
+            remaining_veh_ids.remove(veh_id)
 
     if not has_cached_relevant_agents:
         relevant_ids_for_store = list(new_agent_idx_dict.keys())
@@ -404,6 +430,7 @@ def _build_focal_batch(
     new_origin_agent_idx = new_agent_idx_dict.get(origin_agent_idx)
     if new_origin_agent_idx is None:
         return None, [], True
+    rel_actions = dset.discretize_actions(rel_actions)
     rel_ag_states, rel_road_points, rel_road_types, rel_goals = _normalize_scene_fast(
         rl=rl,
         rel_ag_states=rel_ag_states,
@@ -444,15 +471,15 @@ def prepare_step(adapter: Any, t: int, vehicles: List[Any]) -> Optional[Dict[str
 
     _clear_predict_rtgs_override(adapter)
     adapter._last_vehicles = vehicles
-    adapter._last_vehicle_by_id = {}
+    adapter._last_vehicle_by_id = {veh.getID(): veh for veh in vehicles}
 
     adapter._vehicle_data_dict = adapter._update_vehicle_data_dict(t, vehicles, adapter._vehicle_data_dict)
     adapter.update_policy_state(t)
 
-    # warm-up 阶段使用 GT 动作，不做 opponent 模型推理与 focal batch 组装
+    # warm-up 阶段仍需要执行 predict() 来推进 RTG 历史，但最终动作仍回退到 GT。
     if t < adapter.history_steps - 1:
-        _clear_pending_sparse_actions(adapter)
-        return None
+        warmup_actions = _build_warmup_gt_actions(adapter, t)
+        _set_pending_sparse_actions(adapter, step_t=t, actions=warmup_actions)
 
     is_sparse_step = adapter.sparse_inference.is_sparse_step(
         t=t,
@@ -519,14 +546,6 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
     )
     np.copyto(rtgs, rtgs_src)
     _normalize_rtgs_inplace(rtgs, policy.cfg_rl_waymo)
-    actions_for_discretize = _get_or_create_prepare_buffer(
-        adapter=adapter,
-        name="actions_discretize_work",
-        shape=actions_src.shape,
-        dtype=actions_src.dtype,
-    )
-    np.copyto(actions_for_discretize, actions_src)
-    actions_discrete = adapter.dataset.discretize_actions(actions_for_discretize)
     if policy.discretize_rtgs:
         rtgs_discrete = _get_or_create_prepare_buffer(
             adapter=adapter,
@@ -582,7 +601,7 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
             remaining_veh_id_set=unaccounted_veh_id_set,
             ag_states=ag_states,
             ag_types=ag_types,
-            actions_discrete=actions_discrete,
+            actions_values=actions_src,
             rtgs_values=rtgs_values,
             goals_step=goals_step,
             rel_timesteps_template=rel_timesteps_template,
@@ -667,11 +686,27 @@ def apply_predictions(adapter: Any, model_outputs: Optional[Dict[str, Any]]) -> 
             veh_data["next_acceleration"] = 0.0
             veh_data["next_steering"] = 0.0
 
+        if step_t < adapter.history_steps - 1:
+            _consume_pending_sparse_actions(adapter, step_t=step_t)
+
         actions: Dict[int, Tuple[float, float]] = {}
         for veh_id in _get_step_controlled_ids(adapter):
+            veh_data = _require_vehicle_data(
+                adapter._vehicle_data_dict,
+                veh_id,
+                "controlled_vehicle_ids_step",
+                step_t,
+            )
             if step_t < adapter.history_steps - 1:
                 veh = adapter._last_vehicle_by_id.get(veh_id)
                 actions[veh_id] = adapter._get_gt_action(veh_id, step_t, veh)
+                continue
+
+            if not veh_data["existence"][-1]:
+                veh = adapter._last_vehicle_by_id.get(veh_id)
+                if veh is not None:
+                    veh.setPosition(-1000000, -1000000)
+                actions[veh_id] = (0.0, 0.0)
                 continue
 
             if veh_id in action_results:

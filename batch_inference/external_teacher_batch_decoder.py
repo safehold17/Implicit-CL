@@ -41,6 +41,17 @@ def _write_rtg_discrete(
     batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 2] = int(discrete[2])
 
 
+def _write_rtg_discrete_np(
+    motion_data_np: Dict[str, Any],
+    idx_in_model: int,
+    token_index: int,
+    discrete: Tuple[int, int, int],
+) -> None:
+    motion_data_np["rtgs"][idx_in_model, token_index, 0] = int(discrete[0])
+    motion_data_np["rtgs"][idx_in_model, token_index, 1] = int(discrete[1])
+    motion_data_np["rtgs"][idx_in_model, token_index, 2] = int(discrete[2])
+
+
 def _iter_resolved_vehicle_indices(
     vehicle_ids: Iterable[int],
     veh_id_to_idx: Dict[int, int],
@@ -74,6 +85,7 @@ def _decode_rtg_for_job(
     default_tilt = prepared["default_tilt"]
 
     new_agent_idx_dict = focal_batch["new_agent_idx_dict"]
+    motion_data_np = focal_batch["motion_data_np"]
     data_veh_ids = set(focal_batch["data_veh_ids"])
     veh_ids_in_context = focal_batch["veh_ids_in_context"]
     if not bool(focal_batch["predict_rtgs"]):
@@ -91,8 +103,14 @@ def _decode_rtg_for_job(
         cache_key = (env_idx, veh_id)
         if cache_key in rtg_cache:
             _write_rtg_discrete(
-                batched_data=batched_data,
-                batch_idx=batch_idx,
+            batched_data=batched_data,
+            batch_idx=batch_idx,
+            idx_in_model=idx_in_model,
+            token_index=token_index,
+            discrete=rtg_cache[cache_key]["discrete"],
+        )
+            _write_rtg_discrete_np(
+                motion_data_np=motion_data_np,
                 idx_in_model=idx_in_model,
                 token_index=token_index,
                 discrete=rtg_cache[cache_key]["discrete"],
@@ -129,6 +147,12 @@ def _decode_rtg_for_job(
         _write_rtg_discrete(
             batched_data=batched_data,
             batch_idx=batch_idx,
+            idx_in_model=idx_in_model,
+            token_index=token_index,
+            discrete=(g_idx, v_idx, r_idx),
+        )
+        _write_rtg_discrete_np(
+            motion_data_np=motion_data_np,
             idx_in_model=idx_in_model,
             token_index=token_index,
             discrete=(g_idx, v_idx, r_idx),
@@ -250,18 +274,43 @@ def forward_chunk_batched(teacher: Any, chunk: List[Dict[str, Any]]) -> List[Dic
         return []
 
     batched_data, batch_meta = teacher._collate_chunk_with_padding(chunk)
+    with teacher.model_forward_context():
+        preds = teacher.model(batched_data, eval=True)
+    rtg_logits = preds["rtg_preds"].float()
+
     rtg_cache: Dict[Tuple[int, int], Dict[str, Any]] = {}
-    batched_data, rtg_results_by_job, processed_rtg_veh_ids_by_job = decode_rtg_stage_batched(
-        teacher=teacher,
-        batched_data=batched_data,
-        batch_meta=batch_meta,
-        rtg_cache=rtg_cache,
-    )
-    action_results_by_job = decode_action_stage_batched(
-        teacher=teacher,
-        batched_data=batched_data,
-        batch_meta=batch_meta,
-    )
+    jobs: List[Dict[str, Any]] = batch_meta["jobs"]
+    token_index_per_job: torch.Tensor = batch_meta["token_index_per_job"]
+    rtg_results_by_job: List[Dict[int, Tuple[float, float, float]]] = []
+    processed_rtg_veh_ids_by_job: List[List[int]] = []
+    action_results_by_job: List[Dict[int, Tuple[float, float]]] = []
+
+    for batch_idx, job in enumerate(jobs):
+        token_index = int(token_index_per_job[batch_idx].item())
+        rtg_results, processed_rtg_veh_ids = _decode_rtg_for_job(
+            teacher=teacher,
+            batched_data=batched_data,
+            rtg_logits=rtg_logits,
+            batch_idx=batch_idx,
+            job=job,
+            token_index=token_index,
+            rtg_cache=rtg_cache,
+        )
+        rtg_results_by_job.append(rtg_results)
+        processed_rtg_veh_ids_by_job.append(processed_rtg_veh_ids)
+
+        single_batched_data, _ = teacher._collate_chunk_with_padding([job])
+        with teacher.model_forward_context():
+            action_preds = teacher.model(single_batched_data, eval=True)
+        action_results_by_job.append(
+            _decode_action_for_job(
+                teacher=teacher,
+                action_logits=action_preds["action_preds"].float(),
+                batch_idx=0,
+                job=job,
+                token_index=token_index,
+            )
+        )
 
     return [
         {

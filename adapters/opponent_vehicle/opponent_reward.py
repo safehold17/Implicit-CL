@@ -148,7 +148,7 @@ class OpponentRewardService:
         vehicle_data_dict: Dict,
     ) -> Dict:
         """
-        计算 dense reward（仅对受控车辆）
+        计算 dense reward
 
         参考: evaluator.py 第 127-170 行 compute_dense_reward()
         """
@@ -165,13 +165,13 @@ class OpponentRewardService:
         context_idx_map = {
             veh_id: idx for idx, veh_id in enumerate(context_vehicle_ids)
         }
-        controlled_ids = [
+        target_vehicle_ids = [
             veh_id
-            for veh_id in adapter._controlled_vehicle_ids_step
+            for veh_id in step_vehicle_ids
             if veh_id in context_idx_map
         ]
-        controlled_indices = np.asarray(
-            [context_idx_map[veh_id] for veh_id in controlled_ids],
+        target_indices = np.asarray(
+            [context_idx_map[veh_id] for veh_id in target_vehicle_ids],
             dtype=np.int64,
         )
 
@@ -190,39 +190,39 @@ class OpponentRewardService:
         gt_nearest_dist_by_context_idx: Dict[int, float] = {}
         dense_rewards_by_context_idx: Dict[int, np.ndarray] = {}
 
-        if controlled_ids:
-            controlled_positions = all_positions[controlled_indices]
-            controlled_gt_positions = all_gt_positions[controlled_indices]
-            controlled_existence = all_existence[controlled_indices]
+        if target_vehicle_ids:
+            target_positions = all_positions[target_indices]
+            target_gt_positions = all_gt_positions[target_indices]
+            target_existence = all_existence[target_indices]
 
             if adapter._road_edge_polylines:
-                controlled_xy = controlled_positions[:, np.newaxis, :]
+                target_xy = target_positions[:, np.newaxis, :]
                 veh_edge_dist_rewards = (
                     dataset.compute_dist_to_nearest_road_edge_rewards(
-                        controlled_xy,
+                        target_xy,
                         adapter._road_edge_polylines,
                     )
                 )
                 veh_edge_dist_rewards = (
                     veh_edge_dist_rewards
-                    * controlled_existence[:, np.newaxis]
+                    * target_existence[:, np.newaxis]
                 )
             else:
-                veh_edge_dist_rewards = np.zeros((len(controlled_ids), 1), dtype=np.float32)
+                veh_edge_dist_rewards = np.zeros((len(target_vehicle_ids), 1), dtype=np.float32)
 
             veh_veh_dist_rewards = self._compute_nearest_dist_to_all(
-                target_positions=controlled_positions,
+                target_positions=target_positions,
                 all_positions=all_positions,
                 all_existence=all_existence,
-                target_existence=controlled_existence,
-                target_all_indices=controlled_indices,
+                target_existence=target_existence,
+                target_all_indices=target_indices,
             )
             veh_veh_dist_rewards_gt = self._compute_nearest_dist_to_all(
-                target_positions=controlled_gt_positions,
+                target_positions=target_gt_positions,
                 all_positions=all_gt_positions,
                 all_existence=all_existence,
-                target_existence=controlled_existence,
-                target_all_indices=controlled_indices,
+                target_existence=target_existence,
+                target_all_indices=target_indices,
             )
 
             max_veh_veh_distance = cfg_dataset.max_veh_veh_distance
@@ -230,7 +230,7 @@ class OpponentRewardService:
             gt_nearest_dist_values = (
                 veh_veh_dist_rewards_gt[:, 0] * max_veh_veh_distance
             )
-            for local_idx, context_idx in enumerate(controlled_indices):
+            for local_idx, context_idx in enumerate(target_indices):
                 nearest_dist_by_context_idx[int(context_idx)] = float(
                     nearest_dist_values[local_idx]
                 )
@@ -254,36 +254,36 @@ class OpponentRewardService:
                         if vehicle_data_dict[veh_id]["reward"]
                         else np.asarray(adapter._zero_reward_template, dtype=np.float32)
                     )
-                    for veh_id in controlled_ids
+                    for veh_id in target_vehicle_ids
                 ],
                 dtype=np.float32,
             )[:, np.newaxis, :]
             processed_rewards = (
                 processed_rewards
-                * controlled_existence[:, np.newaxis, np.newaxis]
+                * target_existence[:, np.newaxis, np.newaxis]
             )
-            controlled_ag_data = np.concatenate(
+            target_ag_data = np.concatenate(
                 [
-                    controlled_positions,
-                    controlled_existence[:, np.newaxis],
+                    target_positions,
+                    target_existence[:, np.newaxis],
                 ],
                 axis=1,
             )[:, np.newaxis, :]
-            controlled_rewards = dataset.compute_rewards(
-                controlled_ag_data,
+            target_rewards = dataset.compute_rewards(
+                target_ag_data,
                 processed_rewards,
                 veh_edge_dist_rewards,
                 veh_veh_dist_rewards_norm,
             )
-            controlled_rewards = np.concatenate(
-                [controlled_rewards[:, :, :1], controlled_rewards[:, :, 3:]],
+            target_rewards = np.concatenate(
+                [target_rewards[:, :, :1], target_rewards[:, :, 3:]],
                 axis=-1,
             )
 
-            dense_template = np.zeros_like(controlled_rewards[0, 0], dtype=np.float32)
-            for controlled_idx, context_idx in enumerate(controlled_indices):
-                dense_rewards_by_context_idx[int(context_idx)] = controlled_rewards[
-                    controlled_idx,
+            dense_template = np.zeros_like(target_rewards[0, 0], dtype=np.float32)
+            for target_idx, context_idx in enumerate(target_indices):
+                dense_rewards_by_context_idx[int(context_idx)] = target_rewards[
+                    target_idx,
                     0,
                 ]
 

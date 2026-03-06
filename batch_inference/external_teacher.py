@@ -372,6 +372,6 @@ class ExternalTeacher:
     def _get_generator(self, env_idx: int) -> torch.Generator:
         if env_idx not in self._generators:
             generator = torch.Generator(device=self.device)
-            generator.manual_seed(self.base_seed + env_idx * 100003)
+            generator.manual_seed(self.base_seed + env_idx)
             self._generators[env_idx] = generator
         return self._generators[env_idx]

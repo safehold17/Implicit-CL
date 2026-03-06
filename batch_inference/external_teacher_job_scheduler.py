@@ -40,7 +40,6 @@ def collect_flat_jobs(
                 }
             )
 
-    flat_jobs.sort(key=lambda job: (int(job["env_idx"]), int(job["focal_batch"]["focal_id"])))
     return flat_jobs
 
 

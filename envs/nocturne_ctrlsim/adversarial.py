@@ -8,11 +8,13 @@ Support DCD framework requirements:
 - Level mutation and editing
 """
 import os
+import random
 import warnings
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gym
 import numpy as np
+import torch
 
 from .level import ScenarioLevel
 
@@ -419,8 +421,12 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """Set process-level RNG streams used by this environment instance."""
         seed = int(seed)
         self.seed_value = seed
+        random.seed(seed)
         if reseed_numpy:
             np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
         # Keep mutation randomness process-specific and reproducible.
         self._mutation_random_state = np.random.RandomState(seed)
         # Keep level-seed generation reproducible and process-local.

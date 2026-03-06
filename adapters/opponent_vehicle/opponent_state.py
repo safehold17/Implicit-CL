@@ -69,17 +69,22 @@ class OpponentStateService:
         self.adapter._preproc_data = preproc_data
         self.adapter._vehicles_to_control = list(vehicles_to_control)
         self.adapter._vehicles_to_control_set = set(self.adapter._vehicles_to_control)
-        trajectory_lengths: Dict[int, int] = {}
-        for veh_id in self.adapter._vehicles_to_control:
-            gt_traj_data = self._get_gt_traj_data(veh_id)
-            trajectory_lengths[veh_id] = (
-                int(gt_traj_data[:, 4].sum()) if gt_traj_data is not None else -1
+        if self.adapter._vehicles_to_control:
+            trajectory_lengths = np.array(
+                [
+                    int(gt_traj_data[:, 4].sum()) if gt_traj_data is not None else -1
+                    for gt_traj_data in (
+                        self._get_gt_traj_data(veh_id)
+                        for veh_id in self.adapter._vehicles_to_control
+                    )
+                ],
+                dtype=np.int64,
             )
-        self.adapter._vehicles_to_control_sorted = sorted(
-            self.adapter._vehicles_to_control,
-            key=trajectory_lengths.__getitem__,
-            reverse=True,
-        )
+            sorted_idxs = np.argsort(trajectory_lengths)[::-1]
+            vehicles_np = np.asarray(self.adapter._vehicles_to_control, dtype=np.int64)
+            self.adapter._vehicles_to_control_sorted = list(vehicles_np[sorted_idxs].tolist())
+        else:
+            self.adapter._vehicles_to_control_sorted = []
         self.adapter._ego_id = ego_id
         self.adapter._last_vehicles = None
         self.adapter._last_vehicle_by_id = {}
@@ -384,6 +389,10 @@ class OpponentStateService:
         original_predict_rtgs = bool(policy.predict_rtgs)
         if action_only_with_recursive_rtg:
             policy.predict_rtgs = False
+
+        # warm-up 跳过 predict 时，首次模型步可能还没有 relevant_agent_idxs 条目。
+        for veh_id in self.adapter._controlled_vehicle_ids_present:
+            policy.relevant_agent_idxs.setdefault(veh_id, [])
         try:
             self.adapter._vehicle_data_dict = policy.predict(
                 self.adapter._vehicle_data_dict,
@@ -423,6 +432,10 @@ class OpponentStateService:
 
         use_model_action = t >= self.adapter.history_steps - 1
         if not use_model_action:
+            self._predict_actions_with_policy(
+                t=t,
+                action_only_with_recursive_rtg=False,
+            )
             return self._build_warmup_gt_actions(t)
 
         is_sparse_step = self.adapter.sparse_inference.is_sparse_step(
@@ -489,11 +502,8 @@ class OpponentStateService:
         """
         for veh in vehicles:
             veh_id = veh.getID()
-            is_controlled = veh_id in self.adapter._vehicles_to_control_set
             if veh_id in controlled_actions:
                 action = controlled_actions[veh_id]
-            elif (not is_controlled) and (t < self.adapter.history_steps - 1):
-                action = (0.0, 0.0)
             else:
                 action = self._get_gt_action(veh_id, t, veh)
             self.record_action(veh_id, action)
@@ -782,17 +792,14 @@ class OpponentStateService:
                 if dense_rewards:
                     veh_data["rtgs"].append(veh_data["rtgs"][-1] - dense_rewards[-1])
 
-            if is_controlled:
-                reward = reward_fn(
-                    rew_cfg,
-                    veh,
-                    goal_dict[veh_id],
-                    goal_dist_normalizer[veh_id],
-                    vehicle_data_dict,
-                    collision_fix=collision_fix,
-                )
-            else:
-                reward = adapter._zero_reward_template
+            reward = reward_fn(
+                rew_cfg,
+                veh,
+                goal_dict[veh_id],
+                goal_dist_normalizer[veh_id],
+                vehicle_data_dict,
+                collision_fix=collision_fix,
+            )
             veh_data["reward"].append(reward)
 
         adapter._controlled_vehicle_ids_step = controlled_vehicle_ids_step

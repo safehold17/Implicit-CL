@@ -271,6 +271,27 @@ class CtrlSimEgoWrapper:
             self._stop_recording()
         return obs, reward, done, info
 
+    def _apply_ego_action(self, accel: float, steer: float) -> None:
+        ego_veh = self.env.ego_vehicle
+        if ego_veh is None:
+            return
+        if accel > 0:
+            ego_veh.acceleration = accel
+        else:
+            ego_veh.brake(abs(accel))
+        ego_veh.steering = steer
+
+    def _step_with_ego_action(self, accel: float, steer: float, opponent_actions):
+        self.env.current_step += 1
+        self._apply_ego_action(accel, steer)
+        obs, reward, done, info = self.env._step_post_actions(opponent_actions)
+        self.ego_adapter.record_all_actions(
+            self.env.current_step - 1,
+            self.env.vehicles,
+            {self.ego_id: (accel, steer)} if self.ego_id is not None else {},
+        )
+        return self._postprocess_step(obs, reward, done, info)
+
     def step(self, _action):
         t = self.env.current_step
         ego_actions = self.ego_adapter.step(t, self.env.vehicles)
@@ -278,21 +299,12 @@ class CtrlSimEgoWrapper:
             accel, steer = ego_actions[self.ego_id]
         else:
             accel, steer = 0.0, 0.0
-
-        action = np.array(
-            [
-                np.clip(accel / 10.0, -1.0, 1.0),
-                np.clip(steer / 0.7, -1.0, 1.0),
-            ],
-            dtype=np.float32,
-        )
-        obs, reward, done, info = self.env.step(action)
-        self.ego_adapter.record_all_actions(
-            self.env.current_step - 1,
-            self.env.vehicles,
-            {self.ego_id: (accel, steer)} if self.ego_id is not None else {},
-        )
-        return self._postprocess_step(obs, reward, done, info)
+        runtime_mode = getattr(self.env, "opponent_runtime_mode", "normal")
+        if runtime_mode == "normal" and len(self.env.opponent_vehicle_ids) > 0:
+            opponent_actions = self.env.opponent.step(t, self.env.vehicles)
+        else:
+            opponent_actions = {}
+        return self._step_with_ego_action(accel, steer, opponent_actions)
 
     # ========== Batch inference two-phase step ==========
 
@@ -313,43 +325,19 @@ class CtrlSimEgoWrapper:
         opp_outputs = model_outputs.get("opponent")
 
         # 1. Apply ego predictions → get physical ego action
-        ego_actions = self.ego_adapter.apply_predictions(ego_outputs) if ego_outputs else {}
+        ego_actions = self.ego_adapter.apply_predictions(ego_outputs)
         if self.ego_id is not None and self.ego_id in ego_actions:
             accel, steer = ego_actions[self.ego_id]
         else:
             accel, steer = 0.0, 0.0
 
-        # 2. Increment step counter
-        self.env.current_step += 1
-
-        # 3. Apply ego action directly to vehicle
-        ego_veh = self.env.ego_vehicle
-        if ego_veh is not None:
-            if accel > 0:
-                ego_veh.acceleration = accel
-            else:
-                ego_veh.brake(abs(accel))
-            ego_veh.steering = steer
-
-        # 4. Apply opponent predictions
+        # 2. Apply opponent predictions
         runtime_mode = getattr(self.env, "opponent_runtime_mode", "normal")
         if runtime_mode == "normal" and len(self.env.opponent_vehicle_ids) > 0:
             opponent_actions = self.env.opponent.apply_predictions(opp_outputs)
         else:
             opponent_actions = {}
-
-        # 5. sim.step + reward/done (shared tail)
-        obs, reward, done, info = self.env._step_post_actions(opponent_actions)
-
-        # 6. Record ego actions for next adapter.update_state
-        self.ego_adapter.record_all_actions(
-            self.env.current_step - 1,
-            self.env.vehicles,
-            {self.ego_id: (accel, steer)} if self.ego_id is not None else {},
-        )
-
-        # 7. Postprocess (goal check, recording, info enrichment)
-        return self._postprocess_step(obs, reward, done, info)
+        return self._step_with_ego_action(accel, steer, opponent_actions)
 
     def close(self):
         self.env.close()
@@ -793,6 +781,7 @@ def main() -> None:
         external_teacher = ExternalTeacher(
             checkpoint_path=args.checkpoint_path,
             device=args.device,
+            base_seed=base_seed,
             inference_precision=args.inference_precision,
         )
 
