@@ -118,6 +118,8 @@ class CtrlSimOpponentAdapter:
         self._vehicle_data_dict: Dict = {}
         self._gt_data_dict: Dict = {}
         self._gt_traj_by_id: Dict[int, np.ndarray] = {}
+        self._gt_action_target_cache: Dict[int, Dict[str, np.ndarray]] = {}
+        self._gt_action_runtime_cache: Dict[Tuple[Any, ...], Tuple[float, float]] = {}
         self._preproc_data: Dict = {}
         self._vehicles_to_control: List[int] = []
         self._vehicles_to_control_sorted: List[int] = []

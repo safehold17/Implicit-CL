@@ -27,6 +27,7 @@ from .scenario_helpers import (
 from .policies.opponent_policy import (
     get_goal_point_for_vehicle,
     get_gt_action,
+    build_episode_gt_action_cache,
     initialize_ego_goal_state,
     is_ego_position_reached,
 )
@@ -268,6 +269,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # Ground truth and preprocessed data
         self._gt_data_dict: Dict = {}
         self._gt_traj_cache: Dict = {}
+        self._gt_action_target_cache: Dict = {}
+        self._gt_action_runtime_cache: Dict = {}
         self._preproc_data: Optional[Dict] = None
         self._veh_id_to_preproc_idx: Dict[int, int] = {}
         
@@ -730,6 +733,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             for veh_id, data in self._gt_data_dict.items()
             if isinstance(data, dict) and "traj" in data
         }
+        build_episode_gt_action_cache(self)
         
         # Load Nocturne scenario (must after getting GT data)
         load_scenario(self, level.scenario_id)

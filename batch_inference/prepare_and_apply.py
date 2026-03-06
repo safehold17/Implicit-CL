@@ -209,7 +209,9 @@ def _select_relevant_agents_fast(
     ag_states: np.ndarray,
     ag_types: np.ndarray,
     actions_values: np.ndarray,
+    pad_action_values: np.ndarray,
     rtgs_values: np.ndarray,
+    pad_rtg_values: np.ndarray,
     goals_step: np.ndarray,
     origin_agent_idx: int,
     moving_agent_mask: np.ndarray,
@@ -256,8 +258,10 @@ def _select_relevant_agents_fast(
 
     final_agent_states = np.zeros((max_agents, *ag_states.shape[1:]), dtype=ag_states.dtype)
     final_agent_types = -np.ones((max_agents, *ag_types.shape[1:]), dtype=ag_types.dtype)
-    final_actions = np.zeros((max_agents, *actions_values.shape[1:]), dtype=actions_values.dtype)
-    final_rtgs = np.zeros((max_agents, *rtgs_values.shape[1:]), dtype=rtgs_values.dtype)
+    final_actions = np.empty((max_agents, *actions_values.shape[1:]), dtype=actions_values.dtype)
+    final_actions[:] = pad_action_values
+    final_rtgs = np.empty((max_agents, *rtgs_values.shape[1:]), dtype=rtgs_values.dtype)
+    final_rtgs[:] = pad_rtg_values
     final_goals = np.zeros((max_agents, *goals_step.shape[1:]), dtype=goals_step.dtype)
     final_moving_agent_mask = np.zeros(max_agents, dtype=moving_agent_mask.dtype)
 
@@ -337,23 +341,29 @@ def _normalize_scene_fast(
         return rel_ag_states, final_road_points, final_road_types, rel_goals
 
     if num_roads > 0:
-        normalized_road_points = road_points_src.copy()
+        selected_road_points = road_points_src
+        selected_road_types = road_types_src
+        if num_roads > max_roads:
+            road_valid_mask = road_points_src[:, :, -1]
+            road_delta = road_points_src[:, :, :2] - translation_xy[np.newaxis, np.newaxis, :]
+            road_dist_sq = np.sum(road_delta * road_delta, axis=-1) * road_valid_mask
+            selected = np.argsort(np.max(road_dist_sq, axis=1))[:max_roads]
+            selected_road_points = road_points_src[selected]
+            selected_road_types = road_types_src[selected]
+
+        normalized_road_points = selected_road_points.copy()
         normalized_road_points[:, :, :2] = _apply_se2_transform_np(
             coordinates=normalized_road_points[:, :, :2],
             translation=translation,
             yaw=angle_of_rotation,
         )
-        if num_roads > max_roads:
-            max_road_dist_to_orig = (
-                np.linalg.norm(normalized_road_points[:, :, :2], axis=-1)
-                * normalized_road_points[:, :, -1]
-            ).max(axis=1)
-            selected = np.argsort(max_road_dist_to_orig)[:max_roads]
-            final_road_points[:] = normalized_road_points[selected]
-            final_road_types[:] = road_types_src[selected]
+        selected_count = int(normalized_road_points.shape[0])
+        if selected_count > max_roads:
+            final_road_points[:] = normalized_road_points[:max_roads]
+            final_road_types[:] = selected_road_types[:max_roads]
         else:
-            final_road_points[:num_roads] = normalized_road_points
-            final_road_types[:num_roads] = road_types_src
+            final_road_points[:selected_count] = normalized_road_points
+            final_road_types[:selected_count] = selected_road_types
 
     return rel_ag_states, final_road_points, final_road_types, rel_goals
 
@@ -403,7 +413,9 @@ def _build_focal_batch(
         ag_states=ag_states,
         ag_types=ag_types,
         actions_values=actions_values,
+        pad_action_values=adapter._pad_action_values_step,
         rtgs_values=rtgs_values,
+        pad_rtg_values=adapter._pad_rtg_values_step,
         goals_step=goals_step,
         origin_agent_idx=origin_agent_idx,
         moving_agent_mask=moving_agent_mask,
@@ -430,7 +442,6 @@ def _build_focal_batch(
     new_origin_agent_idx = new_agent_idx_dict.get(origin_agent_idx)
     if new_origin_agent_idx is None:
         return None, [], True
-    rel_actions = dset.discretize_actions(rel_actions)
     rel_ag_states, rel_road_points, rel_road_types, rel_goals = _normalize_scene_fast(
         rl=rl,
         rel_ag_states=rel_ag_states,
@@ -538,6 +549,17 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
         adapter._moving_agent_mask_cache = moving_agent_mask
 
     ag_states, ag_types, actions_src, rtgs_src, goals, timesteps_src = _slice_policy_window(policy, t)
+    actions_buffer = _get_or_create_prepare_buffer(
+        adapter=adapter,
+        name="actions_buffer",
+        shape=(actions_src.shape[0] + 1, *actions_src.shape[1:]),
+        dtype=actions_src.dtype,
+    )
+    actions_buffer.fill(0)
+    actions_buffer[: actions_src.shape[0]] = actions_src
+    actions_discrete = adapter.dataset.discretize_actions(actions_buffer)
+    actions_values = actions_discrete[: actions_src.shape[0]]
+    adapter._pad_action_values_step = np.asarray(actions_discrete[actions_src.shape[0]]).copy()
     rtgs = _get_or_create_prepare_buffer(
         adapter=adapter,
         name="rtgs_norm_buffer",
@@ -550,13 +572,17 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
         rtgs_discrete = _get_or_create_prepare_buffer(
             adapter=adapter,
             name="rtgs_discrete_buffer",
-            shape=rtgs.shape,
+            shape=(rtgs.shape[0] + 1, *rtgs.shape[1:]),
             dtype=rtgs.dtype,
         )
-        np.copyto(rtgs_discrete, rtgs)
-        rtgs_values = adapter.dataset.discretize_rtgs(rtgs_discrete)
+        rtgs_discrete.fill(0)
+        rtgs_discrete[: rtgs.shape[0]] = rtgs
+        rtgs_discrete_values = adapter.dataset.discretize_rtgs(rtgs_discrete)
+        rtgs_values = rtgs_discrete_values[: rtgs.shape[0]]
+        adapter._pad_rtg_values_step = np.asarray(rtgs_discrete_values[rtgs.shape[0]]).copy()
     else:
         rtgs_values = rtgs
+        adapter._pad_rtg_values_step = np.zeros(rtgs.shape[1:], dtype=rtgs.dtype)
 
     timesteps = _get_or_create_prepare_buffer(
         adapter=adapter,
@@ -601,7 +627,7 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
             remaining_veh_id_set=unaccounted_veh_id_set,
             ag_states=ag_states,
             ag_types=ag_types,
-            actions_values=actions_src,
+            actions_values=actions_values,
             rtgs_values=rtgs_values,
             goals_step=goals_step,
             rel_timesteps_template=rel_timesteps_template,

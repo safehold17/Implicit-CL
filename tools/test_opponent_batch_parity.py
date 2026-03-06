@@ -123,7 +123,9 @@ def _reset_wrapper_to_fixed_level(wrapper: CtrlSimEgoWrapper) -> None:
 
 
 def _clear_teacher_rng(teacher: ExternalTeacher) -> None:
-    teacher._generators.clear()
+    generators = getattr(teacher, "_generators", None)
+    if generators is not None:
+        generators.clear()
 
 
 def _step_nobatch_and_capture_opponent(wrapper: CtrlSimEgoWrapper) -> Dict[int, Tuple[float, float]]:

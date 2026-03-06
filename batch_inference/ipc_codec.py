@@ -8,13 +8,17 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TypedDict, cast
+from multiprocessing import shared_memory
 
 import numpy as np
 
 PREPARED_IPC_FORMAT = "prepared_v1"
 MODEL_OUTPUTS_IPC_FORMAT = "model_outputs_v1"
 VALID_STATUS_VALUES = {"ok", "skip"}
+INLINE_MOTION_STORAGE = "inline"
+SHM_MOTION_STORAGE = "shm"
 MOTION_FIELD_NAMES = (
     "agent_states",
     "agent_types",
@@ -145,7 +149,7 @@ def _pack_motion_array(name: str, array: Any) -> np.ndarray:
     np_arr = np.asarray(array)
     if name in ("actions", "rtgs", "timesteps"):
         return np_arr.astype(np.int32, copy=False)
-    if name in ("moving_agent_mask",):
+    if name == "moving_agent_mask":
         return np_arr.astype(np.bool_, copy=False)
     if np.issubdtype(np_arr.dtype, np.floating):
         return np_arr.astype(np.float32, copy=False)
@@ -154,10 +158,77 @@ def _pack_motion_array(name: str, array: Any) -> np.ndarray:
     return np_arr.astype(np.float32, copy=False)
 
 
+def _packed_motion_dtype_for_array(name: str, np_arr: np.ndarray) -> np.dtype:
+    if name in ("actions", "rtgs", "timesteps"):
+        return np.dtype(np.int32)
+    if name == "moving_agent_mask":
+        return np.dtype(np.bool_)
+    if np.issubdtype(np_arr.dtype, np.integer):
+        return np.dtype(np.int32)
+    return np.dtype(np.float32)
+
+
+def _packed_motion_dtype(name: str, array: Any) -> np.dtype:
+    return _packed_motion_dtype_for_array(name, np.asarray(array))
+
+
+def _packed_motion_nbytes(name: str, array: Any) -> int:
+    np_arr = np.asarray(array)
+    return int(np_arr.size) * _packed_motion_dtype_for_array(name, np_arr).itemsize
+
+
 def _unpack_motion_array(name: str, array: np.ndarray) -> np.ndarray:
     if name in ("actions", "rtgs", "timesteps"):
         return np.asarray(array, dtype=np.int64)
     return array
+
+
+def _shared_memory_enabled() -> bool:
+    value = str(os.getenv("CTRLSIM_IPC_USE_SHM", "0")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _shared_memory_threshold_bytes() -> int:
+    return max(0, int(os.getenv("CTRLSIM_IPC_SHM_THRESHOLD_BYTES", "1048576")))
+
+
+def _should_use_shared_memory(total_bytes: int) -> bool:
+    return _shared_memory_enabled() and total_bytes >= _shared_memory_threshold_bytes()
+
+
+def _pack_motion_array_to_shared_memory(array: np.ndarray) -> Dict[str, Any]:
+    shm = shared_memory.SharedMemory(create=True, size=int(array.nbytes))
+    try:
+        shm_view = np.ndarray(array.shape, dtype=array.dtype, buffer=shm.buf)
+        np.copyto(shm_view, array)
+    finally:
+        shm.close()
+    return {
+        "storage": SHM_MOTION_STORAGE,
+        "name": shm.name,
+        "shape": tuple(int(dim) for dim in array.shape),
+        "dtype": array.dtype.str,
+    }
+
+
+def _unpack_motion_array_from_shared_memory(payload: Dict[str, Any]) -> Tuple[np.ndarray, shared_memory.SharedMemory]:
+    shm = shared_memory.SharedMemory(name=str(payload["name"]))
+    array = np.ndarray(
+        tuple(int(dim) for dim in payload["shape"]),
+        dtype=np.dtype(str(payload["dtype"])),
+        buffer=shm.buf,
+    )
+    return array, shm
+
+
+def _close_and_unlink_shared_memory(shm_handle: shared_memory.SharedMemory) -> None:
+    try:
+        shm_handle.close()
+    finally:
+        try:
+            shm_handle.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _require_keys(payload: Dict[str, Any], required_keys: Sequence[str], payload_name: str) -> None:
@@ -310,7 +381,7 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     map_vals_rows: List[List[int]] = []
     data_veh_rows: List[List[int]] = []
     context_rows: List[List[int]] = []
-    motion_fields = {name: [] for name in MOTION_FIELD_NAMES}
+    total_motion_bytes = 0
 
     for fb in focal_batches:
         map_items = list(fb["new_agent_idx_dict"].items())
@@ -321,9 +392,13 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
 
         motion_data_np = fb["motion_data_np"]
         for field_name in MOTION_FIELD_NAMES:
-            motion_fields[field_name].append(
-                _pack_motion_array(field_name, motion_data_np[field_name])
+            total_motion_bytes += _packed_motion_nbytes(
+                field_name,
+                motion_data_np[field_name],
             )
+
+    motion_storage = SHM_MOTION_STORAGE if _should_use_shared_memory(total_motion_bytes) else INLINE_MOTION_STORAGE
+    packed["motion_storage"] = motion_storage
 
     map_keys_flat, map_offsets = _pack_ragged_int_lists(map_keys_rows)
     map_vals_flat, _ = _pack_ragged_int_lists(map_vals_rows)
@@ -339,8 +414,18 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     packed["veh_ids_in_context_flat"] = context_flat
     packed["veh_ids_in_context_offsets"] = context_offsets
 
-    for field_name, values in motion_fields.items():
-        packed[f"motion_{field_name}"] = values
+    for field_name in MOTION_FIELD_NAMES:
+        packed_values = [
+            _pack_motion_array(field_name, fb["motion_data_np"][field_name])
+            for fb in focal_batches
+        ]
+        if motion_storage == SHM_MOTION_STORAGE:
+            packed[f"motion_{field_name}"] = [
+                _pack_motion_array_to_shared_memory(value)
+                for value in packed_values
+            ]
+            continue
+        packed[f"motion_{field_name}"] = packed_values
     return packed
 
 
@@ -438,7 +523,7 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         np.asarray(packed["veh_ids_in_context_offsets"], dtype=np.int32),
     )
 
-    row_count = len(focal_ids.tolist())
+    row_count = int(focal_ids.shape[0])
     if not (
         row_count
         == predict_rtgs_arr.shape[0]
@@ -449,7 +534,8 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     ):
         raise ValueError("packed prepared payload ragged row counts mismatch.")
 
-    motion_arrays: Dict[str, List[np.ndarray]] = {}
+    motion_storage = str(packed.get("motion_storage", INLINE_MOTION_STORAGE))
+    motion_arrays: Dict[str, List[Any]] = {}
     for field_name in MOTION_FIELD_NAMES:
         key = f"motion_{field_name}"
         if key not in packed:
@@ -459,33 +545,50 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
             raise ValueError(f"packed prepared payload '{key}' row count mismatch.")
         motion_arrays[field_name] = values
 
-    focal_batches: List[Dict[str, Any]] = []
-    for i, focal_id in enumerate(focal_ids.tolist()):
-        keys_row = new_agent_keys_rows[i]
-        vals_row = new_agent_vals_rows[i]
-        new_agent_idx_dict = {int(k): int(v) for k, v in zip(keys_row, vals_row)}
+    shm_handles: List[shared_memory.SharedMemory] = []
+    try:
+        focal_batches: List[Dict[str, Any]] = []
+        for i, focal_id in enumerate(focal_ids.tolist()):
+            keys_row = new_agent_keys_rows[i]
+            vals_row = new_agent_vals_rows[i]
+            new_agent_idx_dict = {int(k): int(v) for k, v in zip(keys_row, vals_row)}
 
-        motion_data_np = {
-            field_name: _unpack_motion_array(
-                field_name,
-                np.asarray(motion_arrays[field_name][i]),
+            motion_data_np: Dict[str, np.ndarray] = {}
+            for field_name in MOTION_FIELD_NAMES:
+                raw_value = motion_arrays[field_name][i]
+                if motion_storage == SHM_MOTION_STORAGE:
+                    unpacked_array, shm_handle = _unpack_motion_array_from_shared_memory(raw_value)
+                    shm_handles.append(shm_handle)
+                else:
+                    unpacked_array = np.asarray(raw_value)
+                motion_data_np[field_name] = _unpack_motion_array(field_name, unpacked_array)
+
+            focal_batches.append(
+                {
+                    "focal_id": int(focal_id),
+                    "motion_data_np": motion_data_np,
+                    "new_agent_idx_dict": new_agent_idx_dict,
+                    "data_veh_ids": data_veh_rows[i],
+                    "veh_ids_in_context": context_rows[i],
+                    "predict_rtgs": bool(predict_rtgs_arr[i]),
+                }
             )
-            for field_name in MOTION_FIELD_NAMES
-        }
-
-        focal_batches.append(
-            {
-                "focal_id": int(focal_id),
-                "motion_data_np": motion_data_np,
-                "new_agent_idx_dict": new_agent_idx_dict,
-                "data_veh_ids": data_veh_rows[i],
-                "veh_ids_in_context": context_rows[i],
-                "predict_rtgs": bool(predict_rtgs_arr[i]),
-            }
-        )
+    except Exception:
+        for shm_handle in shm_handles:
+            _close_and_unlink_shared_memory(shm_handle)
+        raise
 
     prepared["focal_batches"] = focal_batches
+    prepared["_ipc_shm_handles"] = shm_handles
     return prepared
+
+
+def release_prepared_payload(prepared: Optional[Dict[str, Any]]) -> None:
+    if prepared is None:
+        return
+    shm_handles = prepared.pop("_ipc_shm_handles", [])
+    for shm_handle in shm_handles:
+        _close_and_unlink_shared_memory(shm_handle)
 
 
 def pack_model_outputs(model_outputs: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

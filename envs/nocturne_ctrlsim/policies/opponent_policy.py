@@ -11,6 +11,29 @@ from tools.safe_bicycle import safe_backward_action_from_states
 from ..scenario_helpers import get_vehicle_by_id
 
 
+def _build_gt_action_target_cache(gt_traj_cache: dict[int, np.ndarray]) -> dict[int, dict[str, np.ndarray]]:
+    cache: dict[int, dict[str, np.ndarray]] = {}
+    for veh_id, gt_traj in gt_traj_cache.items():
+        traj = np.asarray(gt_traj)
+        if traj.ndim != 2 or traj.shape[0] < 2:
+            continue
+        cache[int(veh_id)] = {
+            "curr_exists": traj[:-1, 4].astype(bool, copy=False),
+            "next_exists": traj[1:, 4].astype(bool, copy=False),
+            "next_pos": traj[1:, :2].astype(np.float32, copy=False),
+            "next_heading": traj[1:, 2].astype(np.float32, copy=False),
+            "next_speed": traj[1:, 3].astype(np.float32, copy=False),
+            "wheel_base": traj[1:, -1].astype(np.float32, copy=False),
+        }
+    return cache
+
+
+def build_episode_gt_action_cache(env) -> None:
+    gt_traj_cache = getattr(env, "_gt_traj_cache", {})
+    env._gt_action_target_cache = _build_gt_action_target_cache(gt_traj_cache)
+    env._gt_action_runtime_cache = {}
+
+
 def _get_gt_traj_array(env, veh_id: int) -> Optional[np.ndarray]:
     if veh_id not in env._gt_data_dict:
         return None
@@ -125,6 +148,12 @@ def get_gt_action(env, veh_id: int, t: int, veh=None) -> Optional[Tuple[float, f
     if gt_traj is None:
         return None
 
+    gt_action_target_cache = getattr(env, "_gt_action_target_cache", None)
+    if gt_action_target_cache is None:
+        build_episode_gt_action_cache(env)
+        gt_action_target_cache = env._gt_action_target_cache
+    target = gt_action_target_cache.get(veh_id)
+
     # Check if time step is valid
     if t < 0 or t >= len(gt_traj) - 1:
         return (0.0, 0.0)
@@ -133,7 +162,10 @@ def get_gt_action(env, veh_id: int, t: int, veh=None) -> Optional[Tuple[float, f
     # In replay mode, opponent may not control this vehicle and adapter can return None;
     # fall back to GT existence in that case.
     # gt trajectory: [pos_x, pos_y, heading, speed, existence, goal_x, goal_y, length]
-    gt_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
+    if target is None:
+        gt_exists = bool(gt_traj[t, 4] and gt_traj[t + 1, 4])
+    else:
+        gt_exists = bool(target["curr_exists"][t] and target["next_exists"][t])
     if veh_id in env.opponent_vehicle_ids and env.opponent is not None:
         exists = env.opponent.get_opponent_vehicle_exists(veh_id)
         veh_exists = int(gt_exists if exists is None else bool(exists))
@@ -149,18 +181,51 @@ def get_gt_action(env, veh_id: int, t: int, veh=None) -> Optional[Tuple[float, f
     if not veh_exists or veh is None:
         return (0.0, 0.0)
 
+    pos = veh.getPosition()
+    heading = float(veh.getHeading())
+    speed = float(veh.getSpeed())
+    runtime_cache = getattr(env, "_gt_action_runtime_cache", None)
+    if runtime_cache is None:
+        runtime_cache = {}
+        env._gt_action_runtime_cache = runtime_cache
+    cache_key = (
+        int(veh_id),
+        int(t),
+        float(pos.x),
+        float(pos.y),
+        heading,
+        speed,
+    )
+    cached_action = runtime_cache.get(cache_key)
+    if cached_action is not None:
+        return cached_action
+
+    if target is None:
+        next_pos = gt_traj[t + 1, :2]
+        next_heading = float(gt_traj[t + 1, 2])
+        next_speed = float(gt_traj[t + 1, 3])
+        wheel_base = float(gt_traj[t + 1, -1])
+    else:
+        next_pos = target["next_pos"][t]
+        next_heading = float(target["next_heading"][t])
+        next_speed = float(target["next_speed"][t])
+        wheel_base = float(target["wheel_base"][t])
+
     accel, steer = safe_backward_action_from_states(
-        prev_pos=(veh.getPosition().x, veh.getPosition().y),
-        prev_theta=veh.getHeading(),
-        prev_vel=veh.getSpeed(),
-        curr_pos=(gt_traj[t + 1, 0], gt_traj[t + 1, 1]),
-        curr_theta=gt_traj[t + 1, 2],
-        curr_vel=gt_traj[t + 1, 3],
-        wheel_base=gt_traj[t + 1, -1],
+        prev_pos=(float(pos.x), float(pos.y)),
+        prev_theta=heading,
+        prev_vel=speed,
+        curr_pos=(float(next_pos[0]), float(next_pos[1])),
+        curr_theta=next_heading,
+        curr_vel=next_speed,
+        wheel_base=wheel_base,
         dt=env.dt,
     )
 
-    return (float(accel), float(steer))
+    action = (float(accel), float(steer))
+    runtime_cache[cache_key] = action
+    return action
+
 
 def is_ego_position_reached(env) -> bool:
     if env.ego_vehicle is None or env._ego_goal_dict is None:

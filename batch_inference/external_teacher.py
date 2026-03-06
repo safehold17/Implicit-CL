@@ -33,7 +33,7 @@ from .external_teacher_job_scheduler import (
     estimate_job_tokens,
     fill_empty_ok_env_results,
 )
-from .ipc_codec import pack_model_outputs, unpack_prepared
+from .ipc_codec import pack_model_outputs, release_prepared_payload, unpack_prepared
 
 def _assert_required_keys(payload: Dict[str, Any], required: Tuple[str, ...], payload_name: str) -> None:
     missing = [key for key in required if key not in payload]
@@ -97,7 +97,6 @@ class ExternalTeacher:
         self.max_rtg_road = ds.max_rtg_road
         self.num_reward_components = mdl.num_reward_components
 
-        self._generators: Dict[int, torch.Generator] = {}
         self._collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]] = {}
 
     def batched_forward(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
@@ -108,66 +107,69 @@ class ExternalTeacher:
         unpack_start = time.perf_counter() if profile_enabled else 0.0
         decoded_prepared = self._decode_prepared_batch(per_env_prepared)
         unpack_ms = (time.perf_counter() - unpack_start) * 1000.0 if profile_enabled else 0.0
+        try:
+            num_envs = len(decoded_prepared)
+            results: List[Optional[Dict[str, Any]]] = [None] * num_envs
 
-        num_envs = len(decoded_prepared)
-        results: List[Optional[Dict[str, Any]]] = [None] * num_envs
+            collect_start = time.perf_counter() if profile_enabled else 0.0
+            flat_jobs = self._collect_flat_jobs(decoded_prepared, results)
+            collect_ms = (time.perf_counter() - collect_start) * 1000.0 if profile_enabled else 0.0
 
-        collect_start = time.perf_counter() if profile_enabled else 0.0
-        flat_jobs = self._collect_flat_jobs(decoded_prepared, results)
-        collect_ms = (time.perf_counter() - collect_start) * 1000.0 if profile_enabled else 0.0
+            if not flat_jobs:
+                self._fill_empty_ok_env_results(decoded_prepared, results)
+                pack_start = time.perf_counter() if profile_enabled else 0.0
+                packed_outputs = self._pack_outputs(results)
+                pack_ms = (time.perf_counter() - pack_start) * 1000.0 if profile_enabled else 0.0
+                self._maybe_log_profile(
+                    num_envs=num_envs,
+                    flat_jobs=flat_jobs,
+                    chunks=[],
+                    stage_ms={
+                        "unpack": unpack_ms,
+                        "collect": collect_ms,
+                        "build_chunks": 0.0,
+                        "forward": 0.0,
+                        "scatter": 0.0,
+                        "pack": pack_ms,
+                        "total": (time.perf_counter() - total_start) * 1000.0 if profile_enabled else 0.0,
+                    },
+                )
+                return packed_outputs
 
-        if not flat_jobs:
-            self._fill_empty_ok_env_results(decoded_prepared, results)
+            build_chunks_start = time.perf_counter() if profile_enabled else 0.0
+            chunks = self._build_chunks(flat_jobs)
+            build_chunks_ms = (time.perf_counter() - build_chunks_start) * 1000.0 if profile_enabled else 0.0
+
+            forward_start = time.perf_counter() if profile_enabled else 0.0
+            all_per_focal = self._run_forward_chunks(chunks)
+            forward_ms = (time.perf_counter() - forward_start) * 1000.0 if profile_enabled else 0.0
+
+            scatter_start = time.perf_counter() if profile_enabled else 0.0
+            per_env_outputs = self._scatter_chunk_results(all_per_focal, decoded_prepared, results)
+            scatter_ms = (time.perf_counter() - scatter_start) * 1000.0 if profile_enabled else 0.0
+
             pack_start = time.perf_counter() if profile_enabled else 0.0
-            packed_outputs = self._pack_outputs(results)
+            packed_outputs = self._pack_outputs(per_env_outputs)
             pack_ms = (time.perf_counter() - pack_start) * 1000.0 if profile_enabled else 0.0
+
             self._maybe_log_profile(
                 num_envs=num_envs,
                 flat_jobs=flat_jobs,
-                chunks=[],
+                chunks=chunks,
                 stage_ms={
                     "unpack": unpack_ms,
                     "collect": collect_ms,
-                    "build_chunks": 0.0,
-                    "forward": 0.0,
-                    "scatter": 0.0,
+                    "build_chunks": build_chunks_ms,
+                    "forward": forward_ms,
+                    "scatter": scatter_ms,
                     "pack": pack_ms,
                     "total": (time.perf_counter() - total_start) * 1000.0 if profile_enabled else 0.0,
                 },
             )
             return packed_outputs
-
-        build_chunks_start = time.perf_counter() if profile_enabled else 0.0
-        chunks = self._build_chunks(flat_jobs)
-        build_chunks_ms = (time.perf_counter() - build_chunks_start) * 1000.0 if profile_enabled else 0.0
-
-        forward_start = time.perf_counter() if profile_enabled else 0.0
-        all_per_focal = self._run_forward_chunks(chunks)
-        forward_ms = (time.perf_counter() - forward_start) * 1000.0 if profile_enabled else 0.0
-
-        scatter_start = time.perf_counter() if profile_enabled else 0.0
-        per_env_outputs = self._scatter_chunk_results(all_per_focal, decoded_prepared, results)
-        scatter_ms = (time.perf_counter() - scatter_start) * 1000.0 if profile_enabled else 0.0
-
-        pack_start = time.perf_counter() if profile_enabled else 0.0
-        packed_outputs = self._pack_outputs(per_env_outputs)
-        pack_ms = (time.perf_counter() - pack_start) * 1000.0 if profile_enabled else 0.0
-
-        self._maybe_log_profile(
-            num_envs=num_envs,
-            flat_jobs=flat_jobs,
-            chunks=chunks,
-            stage_ms={
-                "unpack": unpack_ms,
-                "collect": collect_ms,
-                "build_chunks": build_chunks_ms,
-                "forward": forward_ms,
-                "scatter": scatter_ms,
-                "pack": pack_ms,
-                "total": (time.perf_counter() - total_start) * 1000.0 if profile_enabled else 0.0,
-            },
-        )
-        return packed_outputs
+        finally:
+            for prepared in decoded_prepared:
+                release_prepared_payload(prepared)
 
     @staticmethod
     def _read_env_flag(name: str, default: str = "0") -> bool:
@@ -359,19 +361,20 @@ class ExternalTeacher:
         )
 
     @torch.no_grad()
-    def _decode_action_stage_batched(self, batched_data, batch_meta):
+    def _decode_action_stage_batched(
+        self,
+        batched_data,
+        batch_meta,
+        reserved_rng_states_by_job=None,
+        final_rng_state=None,
+    ):
         return decode_action_stage_batched(
             teacher=self,
             batched_data=batched_data,
             batch_meta=batch_meta,
+            reserved_rng_states_by_job=reserved_rng_states_by_job,
+            final_rng_state=final_rng_state,
         )
 
     def _forward_chunk_batched(self, chunk: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return forward_chunk_batched(self, chunk)
-
-    def _get_generator(self, env_idx: int) -> torch.Generator:
-        if env_idx not in self._generators:
-            generator = torch.Generator(device=self.device)
-            generator.manual_seed(self.base_seed + env_idx)
-            self._generators[env_idx] = generator
-        return self._generators[env_idx]

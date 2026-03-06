@@ -24,6 +24,23 @@ from .opponent_state_helpers import (
 )
 
 
+def _build_gt_action_target_cache(gt_traj_by_id: Dict[int, np.ndarray]) -> Dict[int, Dict[str, np.ndarray]]:
+    cache: Dict[int, Dict[str, np.ndarray]] = {}
+    for veh_id, gt_traj in gt_traj_by_id.items():
+        traj = np.asarray(gt_traj)
+        if traj.ndim != 2 or traj.shape[0] < 2:
+            continue
+        cache[int(veh_id)] = {
+            "curr_exists": traj[:-1, 4].astype(bool, copy=False),
+            "next_exists": traj[1:, 4].astype(bool, copy=False),
+            "next_pos": traj[1:, :2].astype(np.float32, copy=False),
+            "next_heading": traj[1:, 2].astype(np.float32, copy=False),
+            "next_speed": traj[1:, 3].astype(np.float32, copy=False),
+            "wheel_base": traj[1:, -1].astype(np.float32, copy=False),
+        }
+    return cache
+
+
 class OpponentStateService:
     def __init__(self, adapter):
         self.adapter = adapter
@@ -66,6 +83,10 @@ class OpponentStateService:
             for veh_id, data in gt_data_dict.items()
             if isinstance(data, dict) and "traj" in data
         }
+        self.adapter._gt_action_target_cache = _build_gt_action_target_cache(
+            self.adapter._gt_traj_by_id
+        )
+        self.adapter._gt_action_runtime_cache = {}
         self.adapter._preproc_data = preproc_data
         self.adapter._vehicles_to_control = list(vehicles_to_control)
         self.adapter._vehicles_to_control_set = set(self.adapter._vehicles_to_control)
@@ -519,6 +540,13 @@ class OpponentStateService:
             return (0.0, 0.0)
         if t + 1 >= len(gt_traj):
             return (0.0, 0.0)
+        gt_action_target_cache = getattr(self.adapter, "_gt_action_target_cache", None)
+        if gt_action_target_cache is None:
+            gt_action_target_cache = _build_gt_action_target_cache(
+                getattr(self.adapter, "_gt_traj_by_id", {})
+            )
+            self.adapter._gt_action_target_cache = gt_action_target_cache
+        target = gt_action_target_cache.get(veh_id)
 
         is_controlled = veh_id in self.adapter._vehicles_to_control_set
         is_protected = (veh_id == self.adapter._ego_id) or is_controlled
@@ -548,18 +576,50 @@ class OpponentStateService:
         if veh is None:
             return (0.0, 0.0)
 
+        pos = veh.getPosition()
+        heading = float(veh.getHeading())
+        speed = float(veh.getSpeed())
+        runtime_cache = getattr(self.adapter, "_gt_action_runtime_cache", None)
+        if runtime_cache is None:
+            runtime_cache = {}
+            self.adapter._gt_action_runtime_cache = runtime_cache
+        cache_key = (
+            int(veh_id),
+            int(t),
+            float(pos.x),
+            float(pos.y),
+            heading,
+            speed,
+        )
+        cached_action = runtime_cache.get(cache_key)
+        if cached_action is not None:
+            return cached_action
+
+        if target is None:
+            next_pos = gt_traj[t + 1, :2]
+            next_heading = float(gt_traj[t + 1, 2])
+            next_speed = float(gt_traj[t + 1, 3])
+            wheel_base = float(gt_traj[t + 1, -1])
+        else:
+            next_pos = target["next_pos"][t]
+            next_heading = float(target["next_heading"][t])
+            next_speed = float(target["next_speed"][t])
+            wheel_base = float(target["wheel_base"][t])
+
         accel, steer = safe_backward_action_from_states(
-            prev_pos=(veh.getPosition().x, veh.getPosition().y),
-            prev_theta=veh.getHeading(),
-            prev_vel=veh.getSpeed(),
-            curr_pos=(gt_traj[t + 1, 0], gt_traj[t + 1, 1]),
-            curr_theta=gt_traj[t + 1, 2],
-            curr_vel=gt_traj[t + 1, 3],
-            wheel_base=gt_traj[t + 1, -1],
+            prev_pos=(float(pos.x), float(pos.y)),
+            prev_theta=heading,
+            prev_vel=speed,
+            curr_pos=(float(next_pos[0]), float(next_pos[1])),
+            curr_theta=next_heading,
+            curr_vel=next_speed,
+            wheel_base=wheel_base,
             dt=self.adapter.dt,
         )
 
-        return (float(accel), float(steer))
+        action = (float(accel), float(steer))
+        runtime_cache[cache_key] = action
+        return action
 
     def _get_gt_traj_data(self, veh_id: int) -> Optional[np.ndarray]:
         """返回缓存的 GT 轨迹数组；首次访问时按需从 _gt_data_dict 建立缓存。"""
