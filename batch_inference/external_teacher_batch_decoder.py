@@ -25,6 +25,18 @@ def _elapsed_ms(start_time: float, profile_enabled: bool) -> float:
     return (time.perf_counter() - start_time) * 1000.0
 
 
+def _chunk_predict_rtgs_mode(chunk: List[Dict[str, Any]]) -> bool:
+    predict_rtgs_flags = {
+        bool(job["focal_batch"].get("predict_rtgs", True))
+        for job in chunk
+    }
+    if not predict_rtgs_flags:
+        return True
+    if len(predict_rtgs_flags) != 1:
+        raise ValueError("Mixed predict_rtgs modes in the same chunk are not supported.")
+    return predict_rtgs_flags.pop()
+
+
 def _get_device_rng_state(device: Any) -> torch.Tensor:
     torch_device = torch.device(device)
     if torch_device.type == "cuda":
@@ -456,6 +468,40 @@ def forward_chunk_batched(teacher: Any, chunk: List[Dict[str, Any]]) -> List[Dic
     collate_start = time.perf_counter() if profile_enabled else 0.0
     batched_data, batch_meta = teacher._collate_chunk_with_padding(chunk)
     collate_ms = _elapsed_ms(collate_start, profile_enabled)
+
+    if not _chunk_predict_rtgs_mode(chunk):
+        action_results_by_job = teacher._decode_action_stage_batched(
+            batched_data=batched_data,
+            batch_meta=batch_meta,
+            reserved_rng_states_by_job=None,
+        )
+        action_stage_profile = getattr(teacher, "_last_action_stage_profile", {})
+        teacher._last_forward_chunk_profile = {
+            "chunk_jobs": len(chunk),
+            "stage_ms": {
+                "collate": collate_ms,
+                "model_rtg": 0.0,
+                "rtg_decode": 0.0,
+                "rng_reserve": 0.0,
+                "model_action": float(action_stage_profile.get("stage_ms", {}).get("model_action", 0.0)),
+                "action_decode": float(action_stage_profile.get("stage_ms", {}).get("action_decode", 0.0)),
+                "total": _elapsed_ms(total_start, profile_enabled),
+            },
+            "detail_ms": {
+                "collate": dict(batch_meta.get("collate_profile", {})),
+                "action": dict(action_stage_profile.get("detail_ms", {})),
+            },
+        }
+        return [
+            {
+                "env_idx": job["env_idx"],
+                "prepared": job["prepared"],
+                "action_results": action_results_by_job[idx],
+                "rtg_results": {},
+                "processed_rtg_veh_ids": [],
+            }
+            for idx, job in enumerate(chunk)
+        ]
 
     model_rtg_start = time.perf_counter() if profile_enabled else 0.0
     with teacher.model_forward_context():

@@ -60,6 +60,12 @@ def job_shape_key(job: Dict[str, Any]) -> Tuple[int, int]:
     return int(agent_states.shape[1]), int(agent_states.shape[0])
 
 
+def job_chunk_key(job: Dict[str, Any]) -> Tuple[int, int, int]:
+    seq_len, max_num_agents = job_shape_key(job)
+    predict_rtgs = 1 if bool(job["focal_batch"].get("predict_rtgs", True)) else 0
+    return seq_len, max_num_agents, predict_rtgs
+
+
 def estimate_job_tokens(job: Dict[str, Any]) -> int:
     agent_states = job["focal_batch"]["motion_data_np"]["agent_states"]
     seq_len = int(agent_states.shape[1])
@@ -74,10 +80,10 @@ def build_chunks(
     if not flat_jobs:
         return []
 
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
+    buckets: Dict[Tuple[int, int, int], List[Dict[str, Any]]] = {}
     for job in flat_jobs:
-        shape_key = job_shape_key(job)
-        buckets.setdefault(shape_key, []).append(job)
+        chunk_key = job_chunk_key(job)
+        buckets.setdefault(chunk_key, []).append(job)
 
     max_chunk_jobs = micro_batch if micro_batch and micro_batch > 0 else None
     chunks: List[List[Dict[str, Any]]] = []
