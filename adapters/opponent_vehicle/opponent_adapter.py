@@ -11,7 +11,7 @@ CtRL-Sim 对手策略适配器
 import sys as _sys
 from pathlib import Path as _Path
 
-_CTRLSIM_PATH = _Path(__file__).resolve().parents[2] / "third_party" / "ctrl-sim"
+_CTRLSIM_PATH = _Path(__file__).resolve().parents[2] / "ctrlsim"
 _CTRLSIM_PATH_STR = str(_CTRLSIM_PATH)
 if _CTRLSIM_PATH_STR not in _sys.path:
     _sys.path.insert(0, _CTRLSIM_PATH_STR)

@@ -27,10 +27,10 @@ import numpy as np
 from tqdm import tqdm
 from omegaconf import OmegaConf
 
-# Add project root to path
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# Add project root and ctrlsim root to path
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
-sys.path.insert(0, os.path.join(PROJECT_ROOT, 'third_party', 'ctrl-sim'))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "ctrlsim"))
 
 from adapters.data_bridge import DataBridge
 

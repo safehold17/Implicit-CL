@@ -16,7 +16,7 @@ def load_scenario(env, scenario_id: str) -> None:
     """
     Load Nocturne scenario.
 
-    See: third_party/ctrl-sim/utils/sim.py get_sim() function
+    See: ctrlsim/utils/sim.py get_sim() function
     """
     from nocturne import Simulation
     from omegaconf import OmegaConf

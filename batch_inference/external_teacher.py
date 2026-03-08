@@ -13,8 +13,7 @@ import torch
 
 _CTRLSIM_PATH = _os.path.join(
     _os.path.dirname(_os.path.dirname(__file__)),
-    "third_party",
-    "ctrl-sim",
+    "ctrlsim",
 )
 if _CTRLSIM_PATH not in _sys.path:
     _sys.path.insert(0, _CTRLSIM_PATH)

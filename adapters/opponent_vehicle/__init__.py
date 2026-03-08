@@ -6,11 +6,10 @@ import sys
 from pathlib import Path
 
 # Ensure ctrl-sim is in python path before importing submodules
-CTRL_SIM_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "ctrl-sim"
+CTRL_SIM_ROOT = Path(__file__).resolve().parents[2] / "ctrlsim"
 if not CTRL_SIM_ROOT.exists():
     raise FileNotFoundError(
-        f"ctrl-sim submodule not found at {CTRL_SIM_ROOT}. "
-        "Please run `git submodule update --init --recursive`."
+        f"ctrl-sim source tree not found at {CTRL_SIM_ROOT}."
     )
 
 ctrl_sim_root_str = str(CTRL_SIM_ROOT)

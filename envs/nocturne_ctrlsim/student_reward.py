@@ -11,8 +11,7 @@ from .utils.common import is_valid_world_position
 
 _CTRLSIM_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "third_party",
-    "ctrl-sim",
+    "ctrlsim",
 )
 if _CTRLSIM_PATH not in sys.path:
     sys.path.insert(0, _CTRLSIM_PATH)

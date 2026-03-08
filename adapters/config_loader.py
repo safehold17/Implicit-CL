@@ -8,8 +8,8 @@ Design reference:
 - configs are combined through Hydra's defaults mechanism
 
 References:
-- third_party/ctrl-sim/eval_sim.py: config loading example
-- third_party/ctrl-sim/cfgs/config.py: CONFIG_PATH
+- ctrlsim/eval_sim.py: config loading example
+- ctrlsim/cfgs/config.py: CONFIG_PATH
 - cfgs/dcd_config.py: DCD project's CONFIG_PATH
 - cfgs/data/ctrl_sim.yaml: local path overrides
 """
@@ -26,7 +26,7 @@ from omegaconf import OmegaConf, DictConfig
 from cfgs.dcd_config import CONFIG_PATH as DCD_CONFIG_PATH
 
 # ctrl-sim config path
-CTRL_SIM_ROOT = os.path.join(os.path.dirname(__file__), '../third_party/ctrl-sim')
+CTRL_SIM_ROOT = os.path.join(os.path.dirname(__file__), "../ctrlsim")
 CTRL_SIM_CONFIG_PATH = os.path.join(CTRL_SIM_ROOT, 'cfgs')
 
 

@@ -132,7 +132,21 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 "student_steer_discretization must be >= 2, "
                 f"got {student_steer_discretization}"
             )
-        tilt_range = kwargs.get('tilt_range', None)
+        tilt_range = kwargs.get("tilt_range")
+        if tilt_range is None:
+            tilt_range = (-25.0, 25.0)
+        try:
+            tilt_low, tilt_high = tilt_range
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "tilt_range must be a length-2 iterable of (low, high)"
+            ) from exc
+        tilt_range = (float(tilt_low), float(tilt_high))
+        if tilt_range[0] > tilt_range[1]:
+            raise ValueError(
+                "tilt_range must satisfy low <= high, "
+                f"got {tilt_range}"
+            )
         batch_inference = kwargs.get('batch_inference', False)
         opponent_sparse_inference_enabled = kwargs.get(
             "opponent_sparse_inference_enabled",
