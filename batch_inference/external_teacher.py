@@ -4,19 +4,15 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 import os as _os
-import sys as _sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
-_CTRLSIM_PATH = _os.path.join(
-    _os.path.dirname(_os.path.dirname(__file__)),
-    "ctrlsim",
-)
-if _CTRLSIM_PATH not in _sys.path:
-    _sys.path.insert(0, _CTRLSIM_PATH)
+from adapters.ctrlsim_path import ctrlsim_path
+
+ctrlsim_path()
 
 from models.ctrl_sim import CtRLSim
 

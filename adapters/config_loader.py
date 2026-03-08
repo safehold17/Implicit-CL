@@ -22,11 +22,13 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf, DictConfig
 
+from adapters.ctrlsim_path import get_ctrlsim_root
+
 # import CONFIG_PATH from DCD config module (same as ctrl-sim's mode)
 from cfgs.dcd_config import CONFIG_PATH as DCD_CONFIG_PATH
 
 # ctrl-sim config path
-CTRL_SIM_ROOT = os.path.join(os.path.dirname(__file__), "../ctrlsim")
+CTRL_SIM_ROOT = str(get_ctrlsim_root())
 CTRL_SIM_CONFIG_PATH = os.path.join(CTRL_SIM_ROOT, 'cfgs')
 
 

@@ -27,12 +27,14 @@ import numpy as np
 from tqdm import tqdm
 from omegaconf import OmegaConf
 
-# Add project root and ctrlsim root to path
+# Add project root to path so this script can import local packages.
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "ctrlsim"))
 
+from adapters.ctrlsim_path import ctrlsim_path
 from adapters.data_bridge import DataBridge
+
+ctrlsim_path()
 
 
 class InterestingPairFinder:

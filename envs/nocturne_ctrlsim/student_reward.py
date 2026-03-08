@@ -2,19 +2,13 @@
 Student reward computation for Nocturne CtrlSim adversarial env.
 """
 
-import os
-import sys
 import numpy as np
 
+from adapters.ctrlsim_path import ctrlsim_path
 from .utils.common import is_valid_world_position
 
+ctrlsim_path()
 
-_CTRLSIM_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "ctrlsim",
-)
-if _CTRLSIM_PATH not in sys.path:
-    sys.path.insert(0, _CTRLSIM_PATH)
 from utils.sim import compute_reward
 from utils.data import compute_distance_to_road_edge
 

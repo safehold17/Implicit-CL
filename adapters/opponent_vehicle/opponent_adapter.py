@@ -7,14 +7,9 @@ CtRL-Sim 对手策略适配器
 - policies/autoregressive_policy.py 核心推理逻辑
 - policies/policy.py Policy 基类
 """
-# 必须首先设置路径，在任何其他导入之前
-import sys as _sys
-from pathlib import Path as _Path
+from adapters.ctrlsim_path import ctrlsim_path
 
-_CTRLSIM_PATH = _Path(__file__).resolve().parents[2] / "ctrlsim"
-_CTRLSIM_PATH_STR = str(_CTRLSIM_PATH)
-if _CTRLSIM_PATH_STR not in _sys.path:
-    _sys.path.insert(0, _CTRLSIM_PATH_STR)
+ctrlsim_path()
 
 from typing import Any, Dict, List, Optional, Tuple
 
