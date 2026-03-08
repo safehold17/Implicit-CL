@@ -14,7 +14,6 @@ References:
 - cfgs/data/ctrl_sim.yaml: local path overrides
 """
 import os
-import sys
 from functools import lru_cache
 from typing import Any, Dict, Optional
 
@@ -32,6 +31,44 @@ CTRL_SIM_ROOT = str(get_ctrlsim_root())
 CTRL_SIM_CONFIG_PATH = os.path.join(CTRL_SIM_ROOT, 'cfgs')
 
 
+def _compose_config_from_dir(
+    config_dir: str,
+    config_name: str = "config",
+) -> DictConfig:
+    GlobalHydra.instance().clear()
+    initialize_config_dir(config_dir=config_dir, version_base=None)
+    return compose(config_name=config_name)
+
+
+def _apply_overrides(
+    cfg: DictConfig,
+    overrides: Optional[Dict[str, Any]],
+) -> DictConfig:
+    if not overrides:
+        return cfg
+    for key, value in overrides.items():
+        OmegaConf.update(cfg, key, value)
+    return cfg
+
+
+def _resolve_local_ctrl_sim_yaml_path() -> Optional[str]:
+    try:
+        dcd_cfg = _load_dcd_config()
+    except Exception:
+        return None
+    local_cfg_path = os.path.join(dcd_cfg.dcd_config_path, "ctrl_sim.yaml")
+    if os.path.exists(local_cfg_path):
+        return local_cfg_path
+    return None
+
+
+def _default_model_checkpoint_path() -> str:
+    return os.path.join(
+        os.path.dirname(__file__),
+        "../checkpoints/model.ckpt",
+    )
+
+
 @lru_cache(maxsize=1)
 def _load_dcd_config() -> DictConfig:
     """
@@ -42,9 +79,7 @@ def _load_dcd_config() -> DictConfig:
     Returns:
         DCD 项目配置对象（包含 dcd_config_path 等）
     """
-    GlobalHydra.instance().clear()
-    initialize_config_dir(config_dir=DCD_CONFIG_PATH, version_base=None)
-    return compose(config_name="config")
+    return _compose_config_from_dir(DCD_CONFIG_PATH)
 
 
 def _apply_local_path_overrides(cfg: DictConfig, local_cfg: DictConfig) -> DictConfig:
@@ -98,19 +133,13 @@ def load_ctrl_sim_config(
     use_local_paths: bool = True,
 ) -> DictConfig:
 
-    # 加载 ctrl-sim 基础配置
-    GlobalHydra.instance().clear()
-    initialize_config_dir(config_dir=CTRL_SIM_CONFIG_PATH, version_base=None)
-    cfg = compose(config_name="config")
+    cfg = _compose_config_from_dir(CTRL_SIM_CONFIG_PATH)
     
     # 应用本地路径覆盖
     if use_local_paths:
         try:
-            # 从 DCD 配置获取 dcd_config_path（参考 ctrl-sim 的模式）
-            dcd_cfg = _load_dcd_config()
-            local_cfg_path = os.path.join(dcd_cfg.dcd_config_path, "ctrl_sim.yaml")
-            
-            if os.path.exists(local_cfg_path):
+            local_cfg_path = _resolve_local_ctrl_sim_yaml_path()
+            if local_cfg_path is not None:
                 local_cfg = OmegaConf.load(local_cfg_path)
                 cfg = _apply_local_path_overrides(cfg, local_cfg)
         except Exception as e:
@@ -119,13 +148,7 @@ def load_ctrl_sim_config(
     # 设置 checkpoint 路径
     if checkpoint_path:
         OmegaConf.update(cfg, "eval.policy.model_path", checkpoint_path)
-    
-    # 应用用户自定义覆盖项
-    if overrides:
-        for key, value in overrides.items():
-            OmegaConf.update(cfg, key, value)
-    
-    return cfg
+    return _apply_overrides(cfg, overrides)
 
 
 def load_ctrl_sim_config_from_yaml(
@@ -146,12 +169,7 @@ def load_ctrl_sim_config_from_yaml(
         raise FileNotFoundError(f"Config file not found: {config_path}")
     
     cfg = OmegaConf.load(config_path)
-    
-    if overrides:
-        for key, value in overrides.items():
-            OmegaConf.update(cfg, key, value)
-    
-    return cfg
+    return _apply_overrides(cfg, overrides)
 
 
 @lru_cache(maxsize=1)
@@ -164,9 +182,7 @@ def _load_ctrl_sim_base_config() -> DictConfig:
     Returns:
         ctrl-sim 基础配置对象
     """
-    GlobalHydra.instance().clear()
-    initialize_config_dir(config_dir=CTRL_SIM_CONFIG_PATH, version_base=None)
-    return compose(config_name="config")
+    return _compose_config_from_dir(CTRL_SIM_CONFIG_PATH)
 
 
 def get_default_opponent_config() -> Dict[str, Any]:
@@ -194,9 +210,7 @@ def get_default_opponent_config() -> Dict[str, Any]:
             config['model_path'] = dcd_cfg.model_path
         except Exception:
             # 回退到默认路径
-            config['model_path'] = os.path.join(
-                os.path.dirname(__file__), '../checkpoints/model.ckpt'
-            )
+            config['model_path'] = _default_model_checkpoint_path()
         
         # 确保 tilting 参数存在（默认为 0）
         config.setdefault('goal_tilt', 0)
@@ -217,9 +231,7 @@ def get_default_opponent_config() -> Dict[str, Any]:
         'goal_tilt': 0,
         'veh_veh_tilt': 0,
         'veh_edge_tilt': 0,
-        'model_path': os.path.join(
-            os.path.dirname(__file__), '../checkpoints/model.ckpt'
-        ),
+        'model_path': _default_model_checkpoint_path(),
     }
 
 

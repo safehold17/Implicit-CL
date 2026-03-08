@@ -1,0 +1,305 @@
+from __future__ import annotations
+
+from multiprocessing import shared_memory
+from typing import Any, Dict, List, Optional, Tuple, cast
+
+import numpy as np
+
+from .arrays import (
+    as_float32_array,
+    as_int32_array,
+    as_int_list,
+    pack_dict_int32,
+    pack_motion_array,
+    pack_ragged_int_lists,
+    packed_motion_nbytes,
+    unpack_dict_int32,
+    unpack_motion_array,
+    unpack_ragged_int_lists,
+)
+from .schema import (
+    INLINE_MOTION_STORAGE,
+    MOTION_FIELD_NAMES,
+    PREPARED_IPC_FORMAT,
+    SHM_MOTION_STORAGE,
+    PreparedPayload,
+)
+from .shared_memory import (
+    close_and_unlink_shared_memory,
+    pack_motion_array_to_shared_memory,
+    should_use_shared_memory,
+    unpack_motion_array_from_shared_memory,
+)
+from .validate import require_keys, require_valid_status, validate_prepared_payload
+
+
+def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if prepared is None:
+        return None
+
+    validate_prepared_payload(prepared)
+    prepared_typed = cast(PreparedPayload, prepared)
+    status = require_valid_status(prepared_typed["status"], "prepared")
+
+    packed: Dict[str, Any] = {
+        "ipc_format": PREPARED_IPC_FORMAT,
+        "status": status,
+        "step_t": np.int32(int(prepared_typed["step_t"])),
+        "token_index": np.int32(int(prepared_typed["token_index"])),
+        "dead_ids": as_int32_array(prepared_typed["dead_ids"]),
+    }
+    worker_rng_state = prepared_typed.get("worker_rng_state")
+    if worker_rng_state is not None:
+        packed["worker_rng_state"] = np.asarray(worker_rng_state, dtype=np.uint8)
+    if status == "skip":
+        return packed
+
+    sampling = prepared_typed["sampling"]
+    packed["sampling_values"] = as_float32_array(
+        [
+            float(sampling["action_temperature"]),
+            float(sampling["nucleus_threshold"]),
+        ]
+    )
+    packed["sampling_flags"] = as_int32_array(
+        [1 if bool(sampling["nucleus_sampling"]) else 0]
+    )
+    packed["default_tilt"] = as_int32_array(prepared_typed["default_tilt"])
+
+    tilt_by_veh_id = prepared_typed["tilt_by_veh_id"]
+    tilt_ids: List[int] = []
+    tilt_vals: List[Tuple[int, int, int]] = []
+    for veh_id, tilt in tilt_by_veh_id.items():
+        tilt_ids.append(int(veh_id))
+        tilt_vals.append((int(tilt[0]), int(tilt[1]), int(tilt[2])))
+    packed["tilt_veh_ids"] = as_int32_array(tilt_ids)
+    packed["tilt_values"] = (
+        as_int32_array(tilt_vals).reshape((-1, 3))
+        if tilt_vals
+        else np.zeros((0, 3), dtype=np.int32)
+    )
+
+    veh_keys, veh_vals = pack_dict_int32(prepared_typed["veh_id_to_idx"])
+    packed["veh_id_to_idx_keys"] = veh_keys
+    packed["veh_id_to_idx_vals"] = veh_vals
+
+    focal_batches = prepared_typed["focal_batches"]
+    packed["focal_ids"] = as_int32_array([int(fb["focal_id"]) for fb in focal_batches])
+    packed["predict_rtgs"] = np.asarray(
+        [bool(fb["predict_rtgs"]) for fb in focal_batches],
+        dtype=np.bool_,
+    )
+
+    map_keys_rows: List[List[int]] = []
+    map_vals_rows: List[List[int]] = []
+    data_veh_rows: List[List[int]] = []
+    context_rows: List[List[int]] = []
+    total_motion_bytes = 0
+    for fb in focal_batches:
+        map_items = list(fb["new_agent_idx_dict"].items())
+        map_keys_rows.append([int(k) for k, _ in map_items])
+        map_vals_rows.append([int(v) for _, v in map_items])
+        data_veh_rows.append([int(v) for v in fb["data_veh_ids"]])
+        context_rows.append([int(v) for v in fb["veh_ids_in_context"]])
+        motion_data_np = fb["motion_data_np"]
+        for field_name in MOTION_FIELD_NAMES:
+            total_motion_bytes += packed_motion_nbytes(field_name, motion_data_np[field_name])
+
+    motion_storage = SHM_MOTION_STORAGE if should_use_shared_memory(total_motion_bytes) else INLINE_MOTION_STORAGE
+    packed["motion_storage"] = motion_storage
+
+    map_keys_flat, map_offsets = pack_ragged_int_lists(map_keys_rows)
+    map_vals_flat, _ = pack_ragged_int_lists(map_vals_rows)
+    packed["new_agent_idx_keys"] = map_keys_flat
+    packed["new_agent_idx_vals"] = map_vals_flat
+    packed["new_agent_idx_offsets"] = map_offsets
+
+    data_flat, data_offsets = pack_ragged_int_lists(data_veh_rows)
+    packed["data_veh_ids_flat"] = data_flat
+    packed["data_veh_ids_offsets"] = data_offsets
+
+    context_flat, context_offsets = pack_ragged_int_lists(context_rows)
+    packed["veh_ids_in_context_flat"] = context_flat
+    packed["veh_ids_in_context_offsets"] = context_offsets
+
+    for field_name in MOTION_FIELD_NAMES:
+        packed_values = [
+            pack_motion_array(field_name, fb["motion_data_np"][field_name])
+            for fb in focal_batches
+        ]
+        if motion_storage == SHM_MOTION_STORAGE:
+            packed[f"motion_{field_name}"] = [
+                pack_motion_array_to_shared_memory(value)
+                for value in packed_values
+            ]
+            continue
+        packed[f"motion_{field_name}"] = packed_values
+    return packed
+
+
+def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if packed is None:
+        return None
+    if packed.get("ipc_format") != PREPARED_IPC_FORMAT:
+        raise ValueError("Unexpected prepared IPC payload format.")
+
+    require_keys(packed, ("status", "step_t", "token_index", "dead_ids"), "packed prepared payload")
+    status = require_valid_status(packed["status"], "packed prepared payload")
+    prepared: Dict[str, Any] = {
+        "status": status,
+        "step_t": int(packed["step_t"]),
+        "token_index": int(packed["token_index"]),
+        "dead_ids": as_int_list(packed["dead_ids"]),
+    }
+    if "worker_rng_state" in packed:
+        prepared["worker_rng_state"] = np.asarray(
+            packed["worker_rng_state"],
+            dtype=np.uint8,
+        )
+    if status == "skip":
+        return prepared
+
+    require_keys(
+        packed,
+        (
+            "sampling_values",
+            "sampling_flags",
+            "default_tilt",
+            "tilt_veh_ids",
+            "tilt_values",
+            "veh_id_to_idx_keys",
+            "veh_id_to_idx_vals",
+            "focal_ids",
+            "predict_rtgs",
+            "new_agent_idx_keys",
+            "new_agent_idx_vals",
+            "new_agent_idx_offsets",
+            "data_veh_ids_flat",
+            "data_veh_ids_offsets",
+            "veh_ids_in_context_flat",
+            "veh_ids_in_context_offsets",
+        ),
+        "packed prepared payload",
+    )
+
+    sampling_values = np.asarray(packed["sampling_values"], dtype=np.float32)
+    sampling_flags = np.asarray(packed["sampling_flags"], dtype=np.int32)
+    if sampling_values.shape[0] != 2 or sampling_flags.shape[0] != 1:
+        raise ValueError("packed prepared payload has invalid sampling array shapes.")
+    prepared["sampling"] = {
+        "action_temperature": float(sampling_values[0]),
+        "nucleus_sampling": bool(int(sampling_flags[0])),
+        "nucleus_threshold": float(sampling_values[1]),
+    }
+
+    default_tilt = np.asarray(packed["default_tilt"], dtype=np.int32).reshape((-1,))
+    if default_tilt.shape[0] != 3:
+        raise ValueError("packed prepared payload has invalid default_tilt shape.")
+    prepared["default_tilt"] = (
+        int(default_tilt[0]),
+        int(default_tilt[1]),
+        int(default_tilt[2]),
+    )
+
+    tilt_ids = np.asarray(packed["tilt_veh_ids"], dtype=np.int32)
+    tilt_values = np.asarray(packed["tilt_values"], dtype=np.int32).reshape((-1, 3))
+    if tilt_ids.shape[0] != tilt_values.shape[0]:
+        raise ValueError("packed prepared payload tilt arrays length mismatch.")
+    prepared["tilt_by_veh_id"] = {
+        int(veh_id): (int(tilt[0]), int(tilt[1]), int(tilt[2]))
+        for veh_id, tilt in zip(tilt_ids.tolist(), tilt_values.tolist())
+    }
+
+    prepared["veh_id_to_idx"] = unpack_dict_int32(
+        np.asarray(packed["veh_id_to_idx_keys"], dtype=np.int32),
+        np.asarray(packed["veh_id_to_idx_vals"], dtype=np.int32),
+    )
+
+    focal_ids = np.asarray(packed["focal_ids"], dtype=np.int32)
+    predict_rtgs_arr = np.asarray(packed["predict_rtgs"], dtype=np.bool_)
+
+    new_agent_offsets = np.asarray(packed["new_agent_idx_offsets"], dtype=np.int32)
+    new_agent_keys_rows = unpack_ragged_int_lists(
+        np.asarray(packed["new_agent_idx_keys"], dtype=np.int32),
+        new_agent_offsets,
+    )
+    new_agent_vals_rows = unpack_ragged_int_lists(
+        np.asarray(packed["new_agent_idx_vals"], dtype=np.int32),
+        new_agent_offsets,
+    )
+    data_veh_rows = unpack_ragged_int_lists(
+        np.asarray(packed["data_veh_ids_flat"], dtype=np.int32),
+        np.asarray(packed["data_veh_ids_offsets"], dtype=np.int32),
+    )
+    context_rows = unpack_ragged_int_lists(
+        np.asarray(packed["veh_ids_in_context_flat"], dtype=np.int32),
+        np.asarray(packed["veh_ids_in_context_offsets"], dtype=np.int32),
+    )
+
+    row_count = int(focal_ids.shape[0])
+    if not (
+        row_count
+        == predict_rtgs_arr.shape[0]
+        == len(new_agent_keys_rows)
+        == len(new_agent_vals_rows)
+        == len(data_veh_rows)
+        == len(context_rows)
+    ):
+        raise ValueError("packed prepared payload ragged row counts mismatch.")
+
+    motion_storage = str(packed.get("motion_storage", INLINE_MOTION_STORAGE))
+    motion_arrays: Dict[str, List[Any]] = {}
+    for field_name in MOTION_FIELD_NAMES:
+        key = f"motion_{field_name}"
+        if key not in packed:
+            raise ValueError(f"packed prepared payload missing required key '{key}'.")
+        values = list(packed[key])
+        if len(values) != row_count:
+            raise ValueError(f"packed prepared payload '{key}' row count mismatch.")
+        motion_arrays[field_name] = values
+
+    shm_handles: List[shared_memory.SharedMemory] = []
+    try:
+        focal_batches: List[Dict[str, Any]] = []
+        for i, focal_id in enumerate(focal_ids.tolist()):
+            keys_row = new_agent_keys_rows[i]
+            vals_row = new_agent_vals_rows[i]
+            new_agent_idx_dict = {int(k): int(v) for k, v in zip(keys_row, vals_row)}
+
+            motion_data_np: Dict[str, np.ndarray] = {}
+            for field_name in MOTION_FIELD_NAMES:
+                raw_value = motion_arrays[field_name][i]
+                if motion_storage == SHM_MOTION_STORAGE:
+                    unpacked_array, shm_handle = unpack_motion_array_from_shared_memory(raw_value)
+                    shm_handles.append(shm_handle)
+                else:
+                    unpacked_array = np.asarray(raw_value)
+                motion_data_np[field_name] = unpack_motion_array(field_name, unpacked_array)
+
+            focal_batches.append(
+                {
+                    "focal_id": int(focal_id),
+                    "motion_data_np": motion_data_np,
+                    "new_agent_idx_dict": new_agent_idx_dict,
+                    "data_veh_ids": data_veh_rows[i],
+                    "veh_ids_in_context": context_rows[i],
+                    "predict_rtgs": bool(predict_rtgs_arr[i]),
+                }
+            )
+    except Exception:
+        for shm_handle in shm_handles:
+            close_and_unlink_shared_memory(shm_handle)
+        raise
+
+    prepared["focal_batches"] = focal_batches
+    prepared["_ipc_shm_handles"] = shm_handles
+    return prepared
+
+
+def release_prepared_payload(prepared: Optional[Dict[str, Any]]) -> None:
+    if prepared is None:
+        return
+    shm_handles = prepared.pop("_ipc_shm_handles", [])
+    for shm_handle in shm_handles:
+        close_and_unlink_shared_memory(shm_handle)
+

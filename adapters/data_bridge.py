@@ -1,22 +1,16 @@
-"""
-Data bridge tool
+"""Bridge the DCD environment with the ctrl-sim data format."""
 
-Bridge the DCD environment with the ctrl-sim data format
-
-- utils/sim.py: get_ground_truth_states(), get_road_data(), get_moving_vehicles()
-- evaluators/evaluator.py: load_preprocessed_data()
-- evaluators/policy_evaluator.py  lines 427-460
-"""
 import os
-import sys
-import glob
-import pickle
 from collections import OrderedDict
-import numpy as np
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
-from utils.sim import get_ground_truth_states, get_road_data, get_moving_vehicles, get_sim
+import numpy as np
+
 from datasets.rl_waymo.dataset_ctrl_sim import RLWaymoDatasetCtRLSim
+
+from ._data_bridge import ground_truth as _ground_truth
+from ._data_bridge import preprocessed as _preprocessed
+from ._data_bridge import scenario as _scenario
 
 
 class DataBridge:
@@ -68,18 +62,7 @@ class DataBridge:
         self._preproc_data_cache: OrderedDict[str, Dict] = OrderedDict()
     
     def _ensure_preprocessed_files_cache(self):
-        """Lazy initialize preprocessed files cache and dataset index cache."""
-        if self._preprocessed_files_cache is None:
-            self._preprocessed_files_cache = {}
-            self._preprocessed_indices_cache = {}
-            if self.preprocessed_dset is None:
-                return
-            for idx, filepath in enumerate(self.preprocessed_dset.files):
-                basename = os.path.basename(filepath)
-                if basename.endswith('_physics.pkl'):
-                    scenario_id = basename.replace('_physics.pkl', '')
-                    self._preprocessed_files_cache[scenario_id] = filepath
-                    self._preprocessed_indices_cache[scenario_id] = idx
+        _preprocessed.ensure_preprocessed_files_cache(self)
     
     def get_ground_truth(
         self, 
@@ -99,18 +82,7 @@ class DataBridge:
                     [pos_x, pos_y, heading, speed, existence, goal_x, goal_y, length]
                 - type: one-hot
         """
-        # Construct file list (compatible with ctrl-sim interface)
-        files = [scenario_filename]
-        file_id = 0
-        
-        return get_ground_truth_states(
-            self.cfg,
-            scenario_path,
-            files,
-            file_id,
-            self.dt,
-            self.steps
-        )
+        return _ground_truth.get_ground_truth(self, scenario_path, scenario_filename)
     
     def get_ground_truth_from_sim(
         self,
@@ -129,46 +101,7 @@ class DataBridge:
         Returns:
             gt_data_dict: Same as get_ground_truth
         """
-        from utils.data import get_agent_type_onehot
-        
-        def get_state(veh):
-            pos = veh.getPosition()
-            heading = veh.getHeading()
-            target = veh.getGoalPosition()
-            speed = veh.getSpeed()
-            agent_type = get_agent_type_onehot(veh.getType().value)
-            existence = 1 if pos.x != -10000 else 0
-            length = veh.getLength()
-            
-            veh_state = [pos.x, pos.y, heading, speed, existence, target.x, target.y, length]
-            return veh_state, agent_type
-        
-        scenario = sim.getScenario()
-        vehicles = scenario.vehicles()
-        state_dict = {veh.getID(): {"traj": [], "type": None} for veh in vehicles}
-        
-        # Save the current state
-        for veh in vehicles:
-            veh.expert_control = True
-        
-        # Collect the state of all time steps
-        for s in range(self.steps):
-            for veh in vehicles:
-                veh_state, veh_type = get_state(veh)
-                state_dict[veh.getID()]["traj"].append(veh_state)
-                state_dict[veh.getID()]["type"] = veh_type
-            sim.step(self.dt)
-        
-        # The last state
-        for veh in vehicles:
-            veh_state, veh_type = get_state(veh)
-            state_dict[veh.getID()]["traj"].append(veh_state)
-            state_dict[veh.getID()]["type"] = veh_type
-        
-        # Reset the simulator
-        sim.reset()
-        
-        return state_dict
+        return _ground_truth.get_ground_truth_from_sim(self, sim, scenario_filename)
     
     def load_preprocessed_data(
         self, 
@@ -190,43 +123,7 @@ class DataBridge:
                 - 'road_types': Road types information
             file_exists: Whether the file exists
         """
-        if self.preprocessed_dset is None:
-            return None, False
-        
-        scenario_id = os.path.splitext(scenario_filename)[0]
-        self._ensure_preprocessed_files_cache()
-        
-        # Check LRU cache
-        if self.preproc_cache_size > 0 and scenario_id in self._preproc_data_cache:
-            preproc_data = self._preproc_data_cache.pop(scenario_id)
-            self._preproc_data_cache[scenario_id] = preproc_data
-            return preproc_data, True
-        
-        # Look for preprocessed file
-        if scenario_id not in self._preprocessed_files_cache:
-            return None, False
-        
-        idx = self._preprocessed_indices_cache.get(scenario_id)
-        if idx is None:
-            return None, False
-        
-        try:
-            # align with ctrl-sim evaluator: use dataset indexing to load preprocessed data
-            preproc_data = self.preprocessed_dset[idx]
-            
-            # cache results with LRU eviction
-            if self.preproc_cache_size > 0:
-                if scenario_id in self._preproc_data_cache:
-                    self._preproc_data_cache.pop(scenario_id)
-                self._preproc_data_cache[scenario_id] = preproc_data
-                if len(self._preproc_data_cache) > self.preproc_cache_size:
-                    self._preproc_data_cache.popitem(last=False)
-            
-            return preproc_data, True
-            
-        except Exception as e:
-            print(f"Warning: Failed to load preprocessed data for {scenario_id}: {e}")
-            return None, False
+        return _preprocessed.load_preprocessed_data(self, scenario_filename)
     
     def _process_preprocessed_data(self, raw_data: Dict) -> Dict:
         """
@@ -234,32 +131,7 @@ class DataBridge:
         
         Refer to dataset_ctrl_sim.py get_data() method (mode='eval' branch)
         """
-        ag_data = raw_data['ag_data']
-        ag_rewards = raw_data['ag_rewards']
-        veh_edge_dist_rewards = raw_data['veh_edge_dist_rewards']
-        veh_veh_dist_rewards = raw_data['veh_veh_dist_rewards']
-        road_points = raw_data['road_points']
-        road_types = raw_data['road_types']
-        
-        # compute comprehensive rewards (refer to dataset.py compute_rewards)
-        all_rewards = self._compute_rewards(
-            ag_data, ag_rewards, 
-            veh_edge_dist_rewards, veh_veh_dist_rewards
-        )
-        
-        # calculate RTG (Return-To-Go): accumulated future rewards
-        # shape: (num_agents, steps+1, num_reward_components)
-        rtgs = np.cumsum(all_rewards[:, ::-1], axis=1)[:, ::-1]
-        
-        return {
-            'rtgs': rtgs,
-            'road_points': road_points,
-            'road_types': road_types,
-            # keep original data for later use
-            'ag_data': ag_data,
-            'ag_rewards': ag_rewards,
-            'filtered_ag_ids': raw_data.get('filtered_ag_ids', []),
-        }
+        return _preprocessed.process_preprocessed_data(self, raw_data)
     
     def _compute_rewards(
         self, 
@@ -281,29 +153,17 @@ class DataBridge:
         - 4: veh_veh_dist
         - 5: veh_edge_dist
         """
-        cfg = self.cfg_dataset
-        
-        # ag_rewards shape: (num_agents, steps+1, 6)
-        # contains: pos_target, heading_target, speed_target, pos_shaped, speed_shaped, heading_shaped
-        
-        # build complete reward array
-        num_agents, num_steps, _ = ag_rewards.shape
-        all_rewards = np.zeros((num_agents, num_steps, 6), dtype=np.float32)
-        
-        # copy base rewards
-        all_rewards[:, :, :3] = ag_rewards[:, :, :3]  # target achieved
-        all_rewards[:, :, 3] = ag_rewards[:, :, 3]    # pos_goal_shaped
-        
-        # add distance rewards (refer to dataset.py lines 267-280)
-        all_rewards[:, :, 4] = veh_veh_dist_rewards * cfg.veh_veh_collision_rew_multiplier
-        all_rewards[:, :, 5] = veh_edge_dist_rewards * cfg.veh_edge_collision_rew_multiplier
-        
-        return all_rewards
+        return _preprocessed.compute_rewards(
+            self,
+            ag_data,
+            ag_rewards,
+            veh_edge_dist_rewards,
+            veh_veh_dist_rewards,
+        )
     
     def get_available_scenario_ids(self) -> List[str]:
         """Get the list of scenario IDs with preprocessed data"""
-        self._ensure_preprocessed_files_cache()
-        return list(self._preprocessed_files_cache.keys())
+        return _preprocessed.get_available_scenario_ids(self)
     
     def load_preprocessed_data_direct(
         self,
@@ -319,8 +179,7 @@ class DataBridge:
             preproc_data: Preprocessed data
             file_exists: Whether the file exists
         """
-        # use new load_preprocessed_data method
-        return self.load_preprocessed_data(scenario_filename)
+        return _preprocessed.load_preprocessed_data_direct(self, scenario_filename)
     
     def get_moving_vehicle_ids(self, scenario) -> List[int]:
         """
@@ -334,7 +193,7 @@ class DataBridge:
         Returns:
             moving_ids: List of IDs of the moving vehicles
         """
-        return get_moving_vehicles(scenario)
+        return _scenario.get_moving_vehicle_ids(self, scenario)
     
     def get_road_data(self, scenario) -> List[Dict]:
         """
@@ -348,7 +207,7 @@ class DataBridge:
                 - 'geometry': List of geometry points [{'x': float, 'y': float}, ...]
                 - 'type': Road type ('road_line', 'road_edge', 'lane', etc.)
         """
-        return get_road_data(scenario)
+        return _scenario.get_road_data_for_scenario(self, scenario)
     
     def extract_road_edge_polylines(self, road_data: List[Dict]) -> List[np.ndarray]:
         """
@@ -360,14 +219,7 @@ class DataBridge:
         Returns:
             polylines: List of polylines, each element shape (N, 2)
         """
-        road_edge_polylines = []
-        for road in road_data:
-            if road['type'] == 'road_edge':
-                geometry = road['geometry']
-                if isinstance(geometry, list):
-                    polyline = np.array([[pt['x'], pt['y']] for pt in geometry])
-                    road_edge_polylines.append(polyline)
-        return road_edge_polylines
+        return _scenario.extract_road_edge_polylines(self, road_data)
     
     def create_simulation(
         self,
@@ -386,9 +238,7 @@ class DataBridge:
         Returns:
             sim: Nocturne Simulation object
         """
-        files = [scenario_filename]
-        file_id = 0
-        return get_sim(self.cfg, scenario_path, files, file_id)
+        return _scenario.create_simulation(self, scenario_path, scenario_filename)
 
 
 class ScenarioDataLoader:
@@ -431,28 +281,7 @@ class ScenarioDataLoader:
             preproc_data: Preprocessed data (may be None)
             moving_ids: List of IDs of the moving vehicles
         """
-        scenario_filename = f"{scenario_id}.json"
-        
-        # Create a simulation
-        sim = self.bridge.create_simulation(
-            self.scenario_dir, 
-            scenario_filename
-        )
-        scenario = sim.getScenario()
-        
-        # Get the ground truth
-        gt_data_dict = self.bridge.get_ground_truth(
-            self.scenario_dir,
-            scenario_filename
-        )
-        
-        # Load the preprocessed data
-        preproc_data, _ = self.bridge.load_preprocessed_data(scenario_id)
-        
-        # Get the moving vehicle IDs
-        moving_ids = self.bridge.get_moving_vehicle_ids(scenario)
-        
-        return sim, gt_data_dict, preproc_data, moving_ids
+        return _scenario.load_scenario(self, scenario_id)
     
     def get_scenario_list(self) -> List[str]:
         """
@@ -461,6 +290,4 @@ class ScenarioDataLoader:
         Returns:
             scenario_ids: List of scenario IDs
         """
-        import glob
-        files = glob.glob(os.path.join(self.scenario_dir, "*.json"))
-        return [os.path.splitext(os.path.basename(f))[0] for f in files]
+        return _scenario.get_scenario_list(self)
