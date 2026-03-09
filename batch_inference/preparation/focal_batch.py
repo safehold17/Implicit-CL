@@ -63,7 +63,9 @@ def build_focal_batch(
     accounted_veh_ids = [policy.idx_to_veh_id[idx] for idx in new_agent_idx_dict.keys()]
     cur_data_veh_ids = [focal_id]
     additionally_accounted: List[int] = []
-    for veh_id in remaining_veh_ids.copy():
+    # Match ctrlsim.get_data() exactly: consume the remaining queue in place so
+    # downstream focal grouping stays byte-for-byte aligned with no-batch mode.
+    for veh_id in remaining_veh_ids:
         if veh_id in remaining_veh_id_set and veh_id in accounted_veh_ids:
             cur_data_veh_ids.append(veh_id)
             additionally_accounted.append(veh_id)
@@ -222,4 +224,3 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
         focal_batches.append(focal_batch)
 
     return focal_batches, dead_ids
-

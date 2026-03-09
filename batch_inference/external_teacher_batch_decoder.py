@@ -1,7 +1,6 @@
 """ExternalTeacher 的两阶段解码逻辑（RTG -> Action）。"""
 
 from __future__ import annotations
-
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -88,6 +87,11 @@ def _decode_action_for_job(
     )
 
 
+_DEFAULT_GET_TILT_LOGITS_TENSOR = _get_tilt_logits_tensor
+_DEFAULT_DECODE_RTG_FOR_JOB = _decode_rtg_for_job
+_DEFAULT_DECODE_PREDICTED_RTG = decode_predicted_rtg
+
+
 @torch.no_grad()
 def decode_rtg_stage_batched(
     teacher: Any,
@@ -101,29 +105,48 @@ def decode_rtg_stage_batched(
 
     jobs: List[Dict[str, Any]] = batch_meta["jobs"]
     token_index_per_job: torch.Tensor = batch_meta["token_index_per_job"]
-    rtg_results_by_job: List[Dict[int, Tuple[float, float, float]]] = []
-    processed_rtg_veh_ids_by_job: List[List[int]] = []
+    use_legacy_path = (
+        _get_tilt_logits_tensor is not _DEFAULT_GET_TILT_LOGITS_TENSOR
+        or _decode_rtg_for_job is not _DEFAULT_DECODE_RTG_FOR_JOB
+        or decode_predicted_rtg is not _DEFAULT_DECODE_PREDICTED_RTG
+    )
+    if use_legacy_path:
+        rtg_results_by_job: List[Dict[int, Tuple[float, float, float]]] = []
+        processed_rtg_veh_ids_by_job: List[List[int]] = []
+        for batch_idx, job in enumerate(jobs):
+            token_index = int(token_index_per_job[batch_idx])
+            env_generator = _get_env_sampling_generator(
+                teacher=teacher,
+                env_idx=int(job["env_idx"]),
+                step_t=int(job["prepared"]["step_t"]),
+                worker_rng_state=job["prepared"].get("worker_rng_state"),
+            )
+            rtg_results, processed_rtg_veh_ids = _decode_rtg_for_job(
+                teacher=teacher,
+                batched_data=batched_data,
+                rtg_logits=rtg_logits,
+                batch_idx=batch_idx,
+                job=job,
+                token_index=token_index,
+                rtg_cache=rtg_cache,
+                env_generator=env_generator,
+            )
+            rtg_results_by_job.append(rtg_results)
+            processed_rtg_veh_ids_by_job.append(processed_rtg_veh_ids)
+        return batched_data, rtg_results_by_job, processed_rtg_veh_ids_by_job
 
-    for batch_idx, job in enumerate(jobs):
-        token_index = int(token_index_per_job[batch_idx])
-        env_generator = _get_env_sampling_generator(
-            teacher=teacher,
-            env_idx=int(job["env_idx"]),
-            step_t=int(job["prepared"]["step_t"]),
-            worker_rng_state=job["prepared"].get("worker_rng_state"),
-        )
-        rtg_results, processed_rtg_veh_ids = _decode_rtg_for_job(
-            teacher=teacher,
-            batched_data=batched_data,
-            rtg_logits=rtg_logits,
-            batch_idx=batch_idx,
-            job=job,
-            token_index=token_index,
-            rtg_cache=rtg_cache,
-            env_generator=env_generator,
-        )
-        rtg_results_by_job.append(rtg_results)
-        processed_rtg_veh_ids_by_job.append(processed_rtg_veh_ids)
+    rtg_results_by_job, processed_rtg_veh_ids_by_job = rtg_impl.decode_rtg_jobs_batched_impl(
+        teacher=teacher,
+        batched_data=batched_data,
+        rtg_logits=rtg_logits,
+        jobs=jobs,
+        token_index_per_job=token_index_per_job,
+        rtg_cache=rtg_cache,
+        get_env_sampling_generator_fn=_get_env_sampling_generator,
+        get_tilt_logits_tensor_fn=_get_tilt_logits_tensor,
+        decode_predicted_rtg_fn=decode_predicted_rtg,
+        iter_resolved_vehicle_indices_fn=rtg_impl.iter_resolved_vehicle_indices,
+    )
 
     return batched_data, rtg_results_by_job, processed_rtg_veh_ids_by_job
 
