@@ -15,13 +15,19 @@ from ctrlsim_adapter.ctrlsim_discretization import (
 class TiltConfig:
     """
     Domain tilting 配置
+    Domain tilting config.
 
     tilting 通过修改 RTG 预测的 logits 来实现
+    Tilting is implemented by modifying the logits of RTG predictions.
     参考: datasets/rl_waymo/dataset.py 第 347-352 行 get_tilt_logits()
+    See datasets/rl_waymo/dataset.py lines 347-352 in get_tilt_logits().
 
     参数范围: [-25, 25]
+    Parameter range: [-25, 25].
     - 正值: 更激进的行为
+    - Positive values: more aggressive behavior.
     - 负值: 更保守的行为
+    - Negative values: more conservative behavior.
     """
 
     goal_tilt: int = 0
@@ -29,7 +35,10 @@ class TiltConfig:
     veh_edge_tilt: int = 0
 
     def __post_init__(self):
-        """验证参数范围"""
+        """
+        验证参数范围
+        Validate parameter ranges.
+        """
         for name, val in [
             ("goal_tilt", self.goal_tilt),
             ("veh_veh_tilt", self.veh_veh_tilt),
@@ -39,7 +48,10 @@ class TiltConfig:
                 raise ValueError(f"{name} must be in [-25, 25], got {val}")
 
     def to_dict(self) -> Dict:
-        """转换为 ctrl-sim 期望的 tilt_dict 格式"""
+        """
+        转换为 ctrl-sim 期望的 tilt_dict 格式
+        Convert to the tilt_dict format expected by ctrl-sim.
+        """
         return {
             "tilt": True,
             "goal_tilt": self.goal_tilt,
@@ -49,7 +61,10 @@ class TiltConfig:
 
     @classmethod
     def from_tuple(cls, tilt_tuple: Tuple[int, int, int]) -> "TiltConfig":
-        """从元组创建"""
+        """
+        从元组创建
+        Create from a tuple.
+        """
         goal_tilt, veh_veh_tilt, veh_edge_tilt = tilt_tuple
         return cls(
             goal_tilt=goal_tilt,
@@ -63,6 +78,7 @@ class PerVehicleAutoregressivePolicy(AutoregressivePolicy):
     Per-vehicle tilting policy subclass
 
     覆写 process_predicted_rtg 方法以支持每个车辆使用独立的 tilt
+    Override process_predicted_rtg so each vehicle can use an independent tilt.
     """
 
     def process_predicted_rtg(
@@ -79,9 +95,12 @@ class PerVehicleAutoregressivePolicy(AutoregressivePolicy):
     ):
         """
         处理预测的 RTG，应用 per-vehicle tilting
+        Process predicted RTG values and apply per-vehicle tilting.
 
         使用 ctrlsim_discretization 中的纯函数，
+        Use pure functions from ctrlsim_discretization.
         替代直接调用 dset.get_tilt_logits() / dset.undiscretize_rtgs()。
+        Replace direct calls to dset.get_tilt_logits() / dset.undiscretize_rtgs().
         """
         cfg_rl_waymo = self.cfg_rl_waymo
         idx = agent_idx_dict[self.veh_id_to_idx[veh_id]]

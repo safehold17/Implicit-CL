@@ -1,4 +1,7 @@
-"""ExternalTeacher: 主进程跨 env 批量推理引擎。"""
+"""
+ExternalTeacher: 主进程跨 env 批量推理引擎。
+ExternalTeacher: main-process cross-env batched inference engine.
+"""
 
 from __future__ import annotations
 
@@ -144,7 +147,10 @@ def _build_chunks(
 
 
 class ExternalTeacher:
-    """主进程 GPU 批量推理引擎。"""
+    """
+    主进程 GPU 批量推理引擎。
+    Main-process GPU batched inference engine.
+    """
 
     def __init__(
         self,
@@ -205,7 +211,10 @@ class ExternalTeacher:
         self._last_batched_forward_profile: Optional[Dict[str, Any]] = None
 
     def batched_forward(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
-        """跨 env 批量推理。"""
+        """
+        跨 env 批量推理。
+        Run batched inference across environments.
+        """
         profile_enabled = self._profile_enabled
         total_start = time.perf_counter() if profile_enabled else 0.0
 

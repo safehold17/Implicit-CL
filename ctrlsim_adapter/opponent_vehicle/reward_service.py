@@ -156,6 +156,7 @@ class OpponentRewardService:
     def _compute_nearest_dist_all(self, t: int, vehicle_data_dict: Dict) -> Dict:
         """
         计算车-车最近距离（对齐 ctrl-sim evaluator.py compute_nearest_dist_all）
+        Compute the nearest vehicle-to-vehicle distance and align with ctrl-sim evaluator.py compute_nearest_dist_all.
         """
         step_vehicle_ids = self._get_step_vehicle_ids(t, vehicle_data_dict)
         if not step_vehicle_ids:
@@ -217,8 +218,10 @@ class OpponentRewardService:
     ) -> Dict:
         """
         计算 dense reward
+        Compute dense reward.
 
         参考: evaluator.py 第 127-170 行 compute_dense_reward()
+        See evaluator.py lines 127-170 in compute_dense_reward().
         """
         step_vehicle_ids = self._get_step_vehicle_ids(t, vehicle_data_dict)
         if not step_vehicle_ids:
@@ -396,7 +399,10 @@ class OpponentRewardService:
         target_existence: np.ndarray,
         target_all_indices: np.ndarray,
     ) -> np.ndarray:
-        """计算目标车辆到全体车辆的最近距离（不含自身）。"""
+        """
+        计算目标车辆到全体车辆的最近距离（不含自身）。
+        Compute the nearest distance from the target vehicle to all vehicles, excluding itself.
+        """
         return _nearest_distance.compute_nearest_dist_to_all(
             target_positions=target_positions,
             all_positions=all_positions,

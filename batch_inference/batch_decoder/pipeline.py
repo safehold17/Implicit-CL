@@ -1,4 +1,7 @@
-"""ExternalTeacher 的两阶段解码入口（RTG -> Action）。"""
+"""
+ExternalTeacher 的两阶段解码入口（RTG -> Action）。
+Two-stage decode entry point for ExternalTeacher (RTG -> Action).
+"""
 
 from __future__ import annotations
 

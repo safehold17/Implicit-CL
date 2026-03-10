@@ -8,7 +8,10 @@ from .tilting import PerVehicleAutoregressivePolicy, TiltConfig
 
 
 class _DummyModel:
-    """替代 GPU 模型，仅提供 Policy.__init__ 需要的 cfg 属性和 eval() 方法。"""
+    """
+    替代 GPU 模型，仅提供 Policy.__init__ 需要的 cfg 属性和 eval() 方法。
+    Replacement for the GPU model that only provides the cfg attribute and eval() method required by Policy.__init__.
+    """
 
     def __init__(self, checkpoint_cfg):
         self.cfg = checkpoint_cfg
@@ -73,7 +76,10 @@ class OpponentPolicyService:
         self.adapter._policy.veh_edge_tilt = veh_edge_tilt
 
     def _load_checkpoint_cfg(self):
-        """从 checkpoint 中只读取 cfg，不加载模型权重到 GPU。"""
+        """
+        从 checkpoint 中只读取 cfg，不加载模型权重到 GPU。
+        Read only cfg from the checkpoint without loading model weights onto the GPU.
+        """
         if self.adapter._checkpoint_cfg is not None:
             return
         tmp = CtRLSim.load_from_checkpoint(self.adapter.checkpoint_path, map_location="cpu")
@@ -81,7 +87,10 @@ class OpponentPolicyService:
         del tmp
 
     def _validate_external_cfg_compatibility(self):
-        """校验 checkpoint cfg 与 adapter cfg 的关键字段一致性。"""
+        """
+        校验 checkpoint cfg 与 adapter cfg 的关键字段一致性。
+        Validate that key fields stay consistent between checkpoint cfg and adapter cfg.
+        """
         if self.adapter._checkpoint_cfg is None:
             return
         ckpt_ds = self.adapter._checkpoint_cfg.dataset.waymo
@@ -131,7 +140,10 @@ class OpponentPolicyService:
                 )
 
     def _load_dataset_only(self):
-        """仅加载 dataset，不加载模型。"""
+        """
+        仅加载 dataset，不加载模型。
+        Load only the dataset without loading the model.
+        """
         self.adapter.dataset = RLWaymoDatasetCtRLSim(
             self.adapter.cfg,
             split_name="test",
@@ -146,8 +158,10 @@ class OpponentPolicyService:
     def _create_policy(self) -> AutoregressivePolicy:
         """
         创建 AutoregressivePolicy 实例
+        Create an AutoregressivePolicy instance.
 
         参考: eval_sim.py 第 42-66 行
+        See eval_sim.py lines 42-66.
         """
         if self.adapter._checkpoint_cfg is None:
             self._load_checkpoint_cfg()
@@ -175,14 +189,20 @@ class OpponentPolicyService:
     ):
         """
         设置 domain tilting 参数
+        Set domain-level tilting parameters.
 
         注：tilting 通过修改 RTG 预测的 logits 来实现
+        Note: tilting is implemented by modifying the logits of RTG predictions.
         参考: datasets/rl_waymo/dataset.py 第 347-352 行 get_tilt_logits()
+        See datasets/rl_waymo/dataset.py lines 347-352 in get_tilt_logits().
 
         Args:
-            goal_tilt: 目标导向程度 [-25, 25]
-            veh_veh_tilt: 车-车交互激进度 [-25, 25]
-            veh_edge_tilt: 车-边界交互激进度 [-25, 25]
+        goal_tilt: 目标导向程度 [-25, 25]
+        goal_tilt: goal-seeking strength in [-25, 25].
+        veh_veh_tilt: 车-车交互激进度 [-25, 25]
+        veh_veh_tilt: aggressiveness of vehicle-to-vehicle interaction in [-25, 25].
+        veh_edge_tilt: 车-边界交互激进度 [-25, 25]
+        veh_edge_tilt: aggressiveness of vehicle-to-edge interaction in [-25, 25].
         """
         self.adapter.current_tilt = TiltConfig(
             goal_tilt=goal_tilt,
@@ -197,15 +217,20 @@ class OpponentPolicyService:
         )
 
     def set_tilting_from_tuple(self, tilt: Tuple[int, int, int]):
-        """从元组设置 tilting（便捷接口）"""
+        """
+        从元组设置 tilting（便捷接口）
+        Set tilting from a tuple as a convenience helper.
+        """
         self.set_tilting(tilt[0], tilt[1], tilt[2])
 
     def set_per_vehicle_tilting(self, mapping: Dict[int, Tuple[int, int, int]]):
         """
         设置 per-vehicle tilting
+        Set per-vehicle tilting.
 
         Args:
-            mapping: {veh_id: (goal_tilt, veh_veh_tilt, veh_edge_tilt)} 映射字典
+        mapping: {veh_id: (goal_tilt, veh_veh_tilt, veh_edge_tilt)} 映射字典
+        mapping: mapping dict of {veh_id: (goal_tilt, veh_veh_tilt, veh_edge_tilt)}.
         """
         self.adapter.per_vehicle_tilting = mapping
         self._sync_policy_tilt(

@@ -1,4 +1,7 @@
-"""IPC payload 编解码（batch_inference 专用）。"""
+"""
+IPC payload 编解码（batch_inference 专用）。
+IPC payload encoding and decoding for batch_inference.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,7 @@
-"""ExternalTeacher 的 chunk collate/padding 逻辑。"""
+"""
+ExternalTeacher 的 chunk collate/padding 逻辑。
+Chunk collate and padding logic for ExternalTeacher.
+"""
 
 from __future__ import annotations
 

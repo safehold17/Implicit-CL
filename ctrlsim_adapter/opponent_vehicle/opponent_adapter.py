@@ -1,11 +1,16 @@
 """
 CtRL-Sim 对手策略适配器
+CtRL-Sim opponent-policy adapter.
 
 复用 ctrl-sim 的 AutoregressivePolicy，适配 DCD 环境的调用模式。
+Reuse ctrl-sim's AutoregressivePolicy and adapt its call pattern to the DCD environment.
 
 - evaluators/policy_evaluator.py 第 427-560 行的评估循环
+- Evaluation loop in evaluators/policy_evaluator.py lines 427-560.
 - policies/autoregressive_policy.py 核心推理逻辑
+- Core inference logic in policies/autoregressive_policy.py.
 - policies/policy.py Policy 基类
+- Policy base class in policies/policy.py.
 """
 from ctrlsim_adapter.ctrlsim_path import ctrlsim_path
 
@@ -32,24 +37,30 @@ from .tilting import TiltConfig
 class CtrlSimOpponentAdapter:
     """
     适配器：将 ctrl-sim AutoregressivePolicy 封装为 DCD 可调用的对手策略
+    Adapter that wraps ctrl-sim AutoregressivePolicy as a DCD-callable opponent policy.
 
     关键设计：
+    Key design points:
     1. 保持与 PolicyEvaluator.evaluate_policy() 相同的数据流
+    1. Keep the same data flow as PolicyEvaluator.evaluate_policy().
     2. 支持动态设置 tilting 参数
+    2. Support dynamically updating tilting parameters.
     3. 复用 AutoregressivePolicy 的完整推理逻辑
+    3. Reuse the complete inference logic of AutoregressivePolicy.
 
     使用示例:
+    Example usage:
     ```python
     adapter = CtrlSimOpponentAdapter(cfg, checkpoint_path)
     adapter.set_tilting(goal_tilt=10, veh_veh_tilt=-5, veh_edge_tilt=0)
     adapter.reset(scenario, vehicles, gt_data_dict, preproc_data, opponent_ids)
 
     for t in range(max_steps):
-        prepared = adapter.prepare_step(t, vehicles)
-        actions = adapter.apply_predictions(model_outputs)
-        for veh_id, (accel, steer) in actions.items():
-            adapter.apply_action(vehicle_map[veh_id], (accel, steer))
-        sim.step(dt)
+    prepared = adapter.prepare_step(t, vehicles)
+    actions = adapter.apply_predictions(model_outputs)
+    for veh_id, (accel, steer) in actions.items():
+    adapter.apply_action(vehicle_map[veh_id], (accel, steer))
+    sim.step(dt)
     ```
     """
 
@@ -67,15 +78,24 @@ class CtrlSimOpponentAdapter:
     ):
         """
         Args:
-            cfg: Hydra 配置对象（需包含 nocturne, dataset.waymo, model 等配置）
-            checkpoint_path: ctrl-sim 模型 checkpoint 路径
-            device: 推理设备
-            action_temperature: 动作采样温度（参考: cfgs/policy/ctrl_sim.yaml）
-            nucleus_sampling: 是否使用 nucleus sampling
-            nucleus_threshold: nucleus sampling 阈值
-            action_repeat_interval: 动作复用周期 N（每 N 步中最后一步复用上一仿真步动作）
-            sparse_inference_action_repeat: 是否启用动作复用节奏
-            load_on_init: 是否在初始化时立即加载模型/数据集
+        cfg: Hydra 配置对象（需包含 nocturne, dataset.waymo, model 等配置）
+        cfg: Hydra config object that must include nocturne, dataset.waymo, model, and related settings.
+        checkpoint_path: ctrl-sim 模型 checkpoint 路径
+        checkpoint_path: path to the ctrl-sim model checkpoint.
+        device: 推理设备
+        device: inference device.
+        action_temperature: 动作采样温度（参考: cfgs/policy/ctrl_sim.yaml）
+        action_temperature: action sampling temperature; see cfgs/policy/ctrl_sim.yaml.
+        nucleus_sampling: 是否使用 nucleus sampling
+        nucleus_sampling: whether to use nucleus sampling.
+        nucleus_threshold: nucleus sampling 阈值
+        nucleus_threshold: threshold for nucleus sampling.
+        action_repeat_interval: 动作复用周期 N（每 N 步中最后一步复用上一仿真步动作）
+        action_repeat_interval: action reuse interval N, where the last simulation step in every N steps reuses the previous action.
+        sparse_inference_action_repeat: 是否启用动作复用节奏
+        sparse_inference_action_repeat: whether to enable the action-reuse cadence.
+        load_on_init: 是否在初始化时立即加载模型/数据集
+        load_on_init: whether to load the model and dataset during initialization.
         """
         self.cfg = cfg
         self.device = device
@@ -88,6 +108,7 @@ class CtrlSimOpponentAdapter:
         self._state_service = OpponentStateService(self)
 
         # 策略配置
+        # Policy config.
         self.action_temperature = action_temperature
         self.nucleus_sampling = nucleus_sampling
         self.nucleus_threshold = nucleus_threshold
@@ -99,15 +120,18 @@ class CtrlSimOpponentAdapter:
         self.sparse_inference = SparseInferenceController(self.sparse_inference_cfg)
 
         # 当前 tilting 配置
+        # Current tilting config.
         self.current_tilt = TiltConfig()
 
         # Per-vehicle tilting mapping: {veh_id: (goal_tilt, veh_veh_tilt, veh_edge_tilt)}
         self.per_vehicle_tilting: Optional[Dict[int, Tuple[int, int, int]]] = None
 
         # 内部策略实例（在 reset 时创建）
+        # Internal policy instance, created during reset.
         self._policy: Optional[AutoregressivePolicy] = None
 
         # 运行时状态
+        # Runtime state.
         self._vehicle_data_dict: Dict = {}
         self._gt_data_dict: Dict = {}
         self._gt_traj_by_id: Dict[int, np.ndarray] = {}
@@ -143,10 +167,12 @@ class CtrlSimOpponentAdapter:
         # Whether to move non-controlled vehicles out of the scene when GT is missing.
         self.allow_set_position_for_noncontrolled: bool = False
         # 缓存 vehicles 列表，供 apply_predictions warm-up 使用
+        # Cache the vehicles list for apply_predictions warm-up.
         self._last_vehicles: Optional[List] = None
         self._last_vehicle_by_id: Dict[int, Any] = {}
 
         # 从配置中获取时间相关参数
+        # Read time-related parameters from the config.
         self.dt = cfg.nocturne.dt
         self.steps = cfg.nocturne.steps
         self.history_steps = getattr(cfg.nocturne, "history_steps", 10)

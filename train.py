@@ -32,7 +32,9 @@ from envs.multigrid import *
 from envs.multigrid.adversarial import *
 from envs.box2d import *
 from envs.bipedalwalker import *
-from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim 环境（触发注册）
+# Nocturne + CtRL-Sim 环境（触发注册）
+# Nocturne + CtRL-Sim environment (triggers registration).
+from envs.nocturne_ctrlsim import *
 from envs.runners.adversarial_runner import AdversarialRunner 
 from util import make_agent, FileWriter, safe_checkpoint, create_parallel_env, make_plr_args, save_images
 from eval import Evaluator
@@ -187,6 +189,7 @@ if __name__ == '__main__':
         filewriter.log(stats, tick=tick)
         if args.verbose:
             # 构造 key_excluded 字典（所有 key 都不排除）
+            # Build the key_excluded dictionary so that no key is excluded.
             key_excluded = {k: () for k in stats.keys()}
             HumanOutputFormat(sys.stdout).write(stats, key_excluded=key_excluded, step=0)
 

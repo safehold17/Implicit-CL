@@ -84,6 +84,7 @@ def get_info(env) -> Dict[str, Any]:
         'step': env.current_step,
         'episode_reward': env.episode_reward,
         # Diagnostic information (参考 ctrl-sim metrics)
+        # Diagnostic information (see ctrl-sim metrics).
         'collision': env._collision_occurred,
         'goal_reached': env._goal_reached,
         'position_reached': env._position_reached,

@@ -73,11 +73,14 @@ def _default_model_checkpoint_path() -> str:
 def _load_dcd_config() -> DictConfig:
     """
     加载 DCD 项目配置（带缓存）
-    
+    Load the cached DCD project config.
+
     使用 DCD_CONFIG_PATH（从 cfgs/dcd_config.py 导入）加载配置，
-    
+    Load the config using DCD_CONFIG_PATH imported from cfgs/dcd_config.py.
+
     Returns:
-        DCD 项目配置对象（包含 dcd_config_path 等）
+    DCD 项目配置对象（包含 dcd_config_path 等）
+    DCD project config object, including dcd_config_path and related fields.
     """
     return _compose_config_from_dir(DCD_CONFIG_PATH)
 
@@ -85,15 +88,20 @@ def _load_dcd_config() -> DictConfig:
 def _apply_local_path_overrides(cfg: DictConfig, local_cfg: DictConfig) -> DictConfig:
     """
     应用本地路径覆盖配置
-    
+    Apply local path override config.
+
     将 cfgs/data/ctrl_sim.yaml 中的路径映射到 ctrl-sim 配置结构
-    
+    Map the paths in cfgs/data/ctrl_sim.yaml into the ctrl-sim config structure.
+
     Args:
-        cfg: ctrl-sim 基础配置
-        local_cfg: 本地路径配置（从 cfgs/data/ctrl_sim.yaml 加载）
-    
+    cfg: ctrl-sim 基础配置
+    cfg: base ctrl-sim config.
+    local_cfg: 本地路径配置（从 cfgs/data/ctrl_sim.yaml 加载）
+    local_cfg: local path config loaded from cfgs/data/ctrl_sim.yaml.
+
     Returns:
-        更新后的配置对象
+    更新后的配置对象
+    Updated config object.
     """
     if 'ctrl_sim' not in local_cfg:
         return cfg
@@ -101,8 +109,10 @@ def _apply_local_path_overrides(cfg: DictConfig, local_cfg: DictConfig) -> DictC
     local = local_cfg.ctrl_sim
     
     # 路径映射：(源路径, 目标路径)
+    # Path mappings: (source path, destination path).
     mappings = [
         # 顶层路径
+        # Top-level paths.
         ('dataset_root', 'dataset_root'),
         ('project_root', 'project_root'),
         ('nocturne_waymo_data_folder', 'nocturne_waymo_data_folder'),
@@ -113,6 +123,7 @@ def _apply_local_path_overrides(cfg: DictConfig, local_cfg: DictConfig) -> DictC
         ('simulated_dataset', 'dataset.waymo.simulated_dataset'),
         ('simulated_dataset_preprocessed_dir', 'dataset.waymo.simulated_dataset_preprocessed_dir'),
         # offline_rl 路径
+        # offline_rl paths.
         ('offline_rl.dataset_path', 'dataset.waymo.dataset_path'),
         ('offline_rl.output_data_folder_train', 'offline_rl.output_data_folder_train'),
         ('offline_rl.output_data_folder_val', 'offline_rl.output_data_folder_val'),
@@ -136,6 +147,7 @@ def load_ctrl_sim_config(
     cfg = _compose_config_from_dir(CTRL_SIM_CONFIG_PATH)
     
     # 应用本地路径覆盖
+    # Apply local path overrides.
     if use_local_paths:
         try:
             local_cfg_path = _resolve_local_ctrl_sim_yaml_path()
@@ -146,6 +158,7 @@ def load_ctrl_sim_config(
             print(f"Warning: Failed to load local path config: {e}")
     
     # 设置 checkpoint 路径
+    # Set the checkpoint path.
     if checkpoint_path:
         OmegaConf.update(cfg, "eval.policy.model_path", checkpoint_path)
     return _apply_overrides(cfg, overrides)
@@ -157,13 +170,17 @@ def load_ctrl_sim_config_from_yaml(
 ) -> DictConfig:
     """
     从 YAML 文件直接加载配置
-    
+    Load config directly from a YAML file.
+
     Args:
-        config_path: YAML 配置文件路径
-        overrides: 配置覆盖项
-    
+    config_path: YAML 配置文件路径
+    config_path: path to the YAML config file.
+    overrides: 配置覆盖项
+    overrides: config overrides.
+
     Returns:
-        cfg: OmegaConf 配置对象
+    cfg: OmegaConf 配置对象
+    cfg: OmegaConf config object.
     """
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -176,11 +193,14 @@ def load_ctrl_sim_config_from_yaml(
 def _load_ctrl_sim_base_config() -> DictConfig:
     """
     加载 ctrl-sim 基础配置（带缓存）
-    
+    Load the cached base ctrl-sim config.
+
     使用 CTRL_SIM_CONFIG_PATH 加载配置，与 ctrl-sim 的模式一致。
-    
+    Load the config from CTRL_SIM_CONFIG_PATH using the same pattern as ctrl-sim.
+
     Returns:
-        ctrl-sim 基础配置对象
+    ctrl-sim 基础配置对象
+    Base ctrl-sim config object.
     """
     return _compose_config_from_dir(CTRL_SIM_CONFIG_PATH)
 
@@ -188,31 +208,39 @@ def _load_ctrl_sim_base_config() -> DictConfig:
 def get_default_opponent_config() -> Dict[str, Any]:
     """
     获取对手策略的默认配置
-    
+    Get the default opponent-policy config.
+
     从 ctrl-sim 的 YAML 配置文件加载，model_path 从 DCD 配置获取
-    
+    Load the config from ctrl-sim YAML and source model_path from the DCD config.
+
     Returns:
-        config: 默认配置字典
+    config: 默认配置字典
+    config: default config dictionary.
     """
     policy_cfg_path = os.path.join(CTRL_SIM_CONFIG_PATH, 'policy/ctrl_sim.yaml')
     if os.path.exists(policy_cfg_path):
         policy_cfg = OmegaConf.load(policy_cfg_path)
         # 使用 resolve=False 避免解析插值（如 model_path 中的 ${eval.policy.run_name}）
+        # Use resolve=False to avoid resolving interpolations such as ${eval.policy.run_name} in model_path.
         config = OmegaConf.to_container(policy_cfg, resolve=False)
         
         # 移除 Hydra 元数据和 ctrl-sim 的 model_path（包含无法解析的插值）
+        # Remove Hydra metadata and ctrl-sim's model_path, which contains unresolved interpolations.
         config.pop('defaults', None)
         config.pop('model_path', None)
         
         # 从 DCD 配置获取 model_path（在 cfgs/config.yaml 中定义）
+        # Read model_path from the DCD config defined in cfgs/config.yaml.
         try:
             dcd_cfg = _load_dcd_config()
             config['model_path'] = dcd_cfg.model_path
         except Exception:
             # 回退到默认路径
+            # Fall back to the default path.
             config['model_path'] = _default_model_checkpoint_path()
         
         # 确保 tilting 参数存在（默认为 0）
+        # Ensure tilting parameters exist with a default value of 0.
         config.setdefault('goal_tilt', 0)
         config.setdefault('veh_veh_tilt', 0)
         config.setdefault('veh_edge_tilt', 0)
@@ -220,6 +248,7 @@ def get_default_opponent_config() -> Dict[str, Any]:
         return config
     
     # 回退到默认值
+    # Fall back to built-in defaults.
     return {
         'use_rtg': True,
         'predict_rtgs': True,
@@ -238,11 +267,14 @@ def get_default_opponent_config() -> Dict[str, Any]:
 def get_default_nocturne_config() -> Dict[str, Any]:
     """
     获取 Nocturne 仿真的默认配置
-    
+    Get the default Nocturne simulation config.
+
     从 ctrl-sim 配置文件加载
-    
+    Load it from the ctrl-sim config files.
+
     Returns:
-        config: 默认配置字典
+    config: 默认配置字典
+    config: default config dictionary.
     """
     cfg = _load_ctrl_sim_base_config()
     if 'nocturne' in cfg:
@@ -254,11 +286,14 @@ def get_default_nocturne_config() -> Dict[str, Any]:
 def get_default_dataset_config() -> Dict[str, Any]:
     """
     获取数据集的默认配置
-    
+    Get the default dataset config.
+
     从 ctrl-sim 配置文件加载
-    
+    Load it from the ctrl-sim config files.
+
     Returns:
-        config: 默认配置字典
+    config: 默认配置字典
+    config: default config dictionary.
     """
     cfg = _load_ctrl_sim_base_config()
     if 'dataset' in cfg:
@@ -270,17 +305,21 @@ def get_default_dataset_config() -> Dict[str, Any]:
 def get_default_model_config() -> Dict[str, Any]:
     """
     获取模型的默认配置
-    
+    Get the default model config.
+
     从 ctrl-sim 配置文件加载
-    
+    Load it from the ctrl-sim config files.
+
     Returns:
-        config: 默认配置字典
+    config: 默认配置字典
+    config: default config dictionary.
     """
     cfg = _load_ctrl_sim_base_config()
     if 'model' in cfg:
         return OmegaConf.to_container(cfg.model, resolve=True)
     
     # 回退到基础模型配置
+    # Fall back to the base model config.
     return {
         'hidden_dim': 256,
         'map_attr': 3,
@@ -317,29 +356,40 @@ def create_minimal_config(
 ) -> DictConfig:
     """
     创建最小化配置（用于快速测试）
-    
+    Create a minimal config for quick testing.
+
     Args:
-        checkpoint_path: 模型 checkpoint 路径
-        scenario_dir: 场景文件目录
-        preprocess_dir: 预处理数据目录
-    
+    checkpoint_path: 模型 checkpoint 路径
+    checkpoint_path: model checkpoint path.
+    scenario_dir: 场景文件目录
+    scenario_dir: scenario file directory.
+    preprocess_dir: 预处理数据目录
+    preprocess_dir: preprocessed data directory.
+
     Returns:
-        cfg: 最小化配置对象
+    cfg: 最小化配置对象
+    cfg: minimal config object.
     """
     # 获取默认对手配置，并用传入的 checkpoint_path 覆盖
+    # Get the default opponent config and override it with the provided checkpoint_path.
     opponent_config = get_default_opponent_config()
-    opponent_config['model_path'] = checkpoint_path  # 确保使用传入的路径
+    # 确保使用传入的路径
+    # Ensure the provided path is used.
+    opponent_config['model_path'] = checkpoint_path
     
     # 获取数据集配置
+    # Get the dataset config.
     dataset_config = get_default_dataset_config()
     
     # 如果没有提供 preprocess_dir，使用临时目录
+    # Use a temporary directory when preprocess_dir is not provided.
     if preprocess_dir is None:
         import tempfile
         preprocess_dir = os.path.join(tempfile.gettempdir(), 'dcd_ctrlsim_preprocess')
         os.makedirs(preprocess_dir, exist_ok=True)
     
     # 确保 waymo 子配置存在并设置 preprocess_dir
+    # Ensure the waymo sub-config exists and set preprocess_dir.
     if 'waymo' not in dataset_config:
         dataset_config['waymo'] = {}
     dataset_config['waymo']['preprocess_dir'] = preprocess_dir
@@ -361,14 +411,17 @@ def create_minimal_config(
 class ConfigManager:
     """
     配置管理器：管理 ctrl-sim 配置的生命周期
-    
+    Config manager for the ctrl-sim config lifecycle.
+
     支持配置的加载、修改和验证
+    Support loading, updating, and validating configs.
     """
     
     def __init__(self, base_config: Optional[DictConfig] = None):
         """
         Args:
-            base_config: 基础配置（如果为 None，使用默认配置）
+        base_config: 基础配置（如果为 None，使用默认配置）
+        base_config: base config; if None, use the default config.
         """
         if base_config is not None:
             self.cfg = base_config
@@ -381,7 +434,10 @@ class ConfigManager:
         overrides: Optional[Dict[str, Any]] = None,
         use_local_paths: bool = True,
     ) -> DictConfig:
-        """加载配置"""
+        """
+        加载配置
+        Load config.
+        """
         self.cfg = load_ctrl_sim_config(
             checkpoint_path=checkpoint_path,
             overrides=overrides,
@@ -390,13 +446,19 @@ class ConfigManager:
         return self.cfg
     
     def update(self, key: str, value: Any):
-        """更新配置项"""
+        """
+        更新配置项
+        Update a config entry.
+        """
         if self.cfg is None:
             raise RuntimeError("Config not loaded. Call load() first.")
         OmegaConf.update(self.cfg, key, value)
     
     def get(self, key: str, default: Any = None) -> Any:
-        """获取配置项"""
+        """
+        获取配置项
+        Get a config entry.
+        """
         if self.cfg is None:
             return default
         try:
@@ -405,7 +467,10 @@ class ConfigManager:
             return default
     
     def validate(self) -> bool:
-        """验证配置完整性"""
+        """
+        验证配置完整性
+        Validate config completeness.
+        """
         if self.cfg is None:
             return False
         
@@ -424,7 +489,10 @@ class ConfigManager:
         return True
     
     def to_dict(self) -> Dict[str, Any]:
-        """转换为普通字典"""
+        """
+        转换为普通字典
+        Convert to a plain dictionary.
+        """
         if self.cfg is None:
             return {}
         return OmegaConf.to_container(self.cfg, resolve=True)
