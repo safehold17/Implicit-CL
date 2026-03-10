@@ -12,9 +12,7 @@ from .shared import (
     build_sparse_repeat_actions,
     build_warmup_gt_actions,
     clear_pending_sparse_actions,
-    clear_predict_rtgs_override,
     set_pending_sparse_actions,
-    set_predict_rtgs_override,
 )
 
 
@@ -26,10 +24,8 @@ def prepare_step(
 ) -> Optional[Dict[str, Any]]:
     if adapter._policy is None or len(vehicles) == 0:
         clear_pending_sparse_actions(adapter)
-        clear_predict_rtgs_override(adapter)
         return None
 
-    clear_predict_rtgs_override(adapter)
     adapter._last_vehicles = vehicles
     adapter._last_vehicle_by_id = {veh.getID(): veh for veh in vehicles}
 
@@ -54,9 +50,6 @@ def prepare_step(
         return None
 
     clear_pending_sparse_actions(adapter)
-    if is_sparse_step:
-        set_predict_rtgs_override(adapter, step_t=t, predict_rtgs=False)
-
     focal_batches, dead_ids = build_focal_batches(adapter, t)
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1
     sampling_rng_state = resolve_sampling_rng_state(adapter, worker_rng_state)
@@ -95,4 +88,3 @@ def prepare_step(
         "focal_batches": focal_batches,
     }
     return pack_prepared(prepared_dict)
-

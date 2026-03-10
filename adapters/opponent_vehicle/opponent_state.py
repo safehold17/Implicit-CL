@@ -137,12 +137,10 @@ class OpponentStateService:
     def _predict_actions_with_policy(
         self,
         t: int,
-        action_only_with_recursive_rtg: bool,
     ) -> Dict[int, Tuple[float, float]]:
         return _actions_module.predict_actions_with_policy(
             self,
             t=t,
-            action_only_with_recursive_rtg=action_only_with_recursive_rtg,
         )
 
     def step(self, t: int, vehicles: List) -> Dict[int, Tuple[float, float]]:

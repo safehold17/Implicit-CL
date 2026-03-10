@@ -32,7 +32,10 @@ def update_vehicle_data_dict(
     reward_fn = _opponent_adapter_module.compute_reward
     step_vehicle_by_id: Dict[int, Any] = {}
     controlled_vehicle_ids_step: List[int] = []
-    vehicles_by_id = adapter._vehicles_by_id_step
+    vehicles_by_id = getattr(adapter, "_vehicles_by_id_step", None)
+    if vehicles_by_id is None:
+        vehicles_by_id = {}
+        adapter._vehicles_by_id_step = vehicles_by_id
     vehicles_by_id.clear()
     for veh in vehicles:
         vehicles_by_id[veh.getID()] = veh
@@ -116,4 +119,3 @@ def update_vehicle_data_dict(
     if adapter._policy.real_time_rewards:
         return adapter._compute_dense_reward(t, vehicle_data_dict)
     return adapter._compute_nearest_dist_all(t, vehicle_data_dict)
-

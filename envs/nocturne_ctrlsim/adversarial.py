@@ -148,12 +148,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 f"got {tilt_range}"
             )
         batch_inference = kwargs.get('batch_inference', False)
-        opponent_sparse_inference_enabled = kwargs.get(
-            "opponent_sparse_inference_enabled",
-            False,
-        )
-        opponent_sparse_inference_interval = int(
-            kwargs.get("opponent_sparse_inference_interval", 2)
+        action_repeat_interval = int(
+            kwargs.get("action_repeat_interval", 2)
         )
         sparse_inference_action_repeat = bool(
             kwargs.get("sparse_inference_action_repeat", False)
@@ -215,8 +211,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             cfg=cfg,
             checkpoint_path=opponent_checkpoint,
             device=device,
-            opponent_sparse_inference_enabled=opponent_sparse_inference_enabled,
-            opponent_sparse_inference_interval=opponent_sparse_inference_interval,
+            action_repeat_interval=action_repeat_interval,
             sparse_inference_action_repeat=sparse_inference_action_repeat,
             load_on_init=(opponent_runtime_mode == 'normal'),
         )

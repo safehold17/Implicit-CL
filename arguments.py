@@ -808,18 +808,14 @@ parser.add_argument(
     default='fp32',
     help='Inference precision for ExternalTeacher when batch_inference is enabled.')
 parser.add_argument(
-    '--opponent_sparse_inference_enabled',
-    type=str2bool, nargs='?', const=True, default=False,
-    help='Enable sparse opponent inference: reuse cached opponent actions between inference steps.')
-parser.add_argument(
-    '--opponent_sparse_inference_interval',
-    type=int,
-    default=2,
-    help='Sparse opponent inference cycle length N (within each N model steps, the last step is sparse).')
-parser.add_argument(
     '--sparse_inference_action_repeat',
     type=str2bool, nargs='?', const=True, default=False,
-    help='Sparse-step action mode: True=repeat previous action, False=use recursively updated RTG to infer action.')
+    help='Enable action repeat on the last step in each action-repeat cycle.')
+parser.add_argument(
+    '--action_repeat_interval',
+    type=int,
+    default=2,
+    help='Action repeat cycle length N (within each N model steps, the last step repeats the previous action).')
 
 # ============== ClearML ==============
 parser.add_argument(

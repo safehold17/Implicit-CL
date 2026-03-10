@@ -108,8 +108,7 @@ def _wrapper_kwargs(resources: Dict[str, str], batch_inference: bool) -> Dict[st
         "device": "cuda",
         "seed": BASE_SEED,
         "batch_inference": batch_inference,
-        "opponent_sparse_inference_enabled": False,
-        "opponent_sparse_inference_interval": 2,
+        "action_repeat_interval": 2,
         "sparse_inference_action_repeat": False,
     }
 

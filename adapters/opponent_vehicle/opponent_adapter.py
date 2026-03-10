@@ -60,8 +60,7 @@ class CtrlSimOpponentAdapter:
         action_temperature: float = 1.0,
         nucleus_sampling: bool = False,
         nucleus_threshold: float = 0.8,
-        opponent_sparse_inference_enabled: bool = False,
-        opponent_sparse_inference_interval: int = 2,
+        action_repeat_interval: int = 2,
         sparse_inference_action_repeat: bool = False,
         load_on_init: bool = True,
     ):
@@ -73,9 +72,8 @@ class CtrlSimOpponentAdapter:
             action_temperature: 动作采样温度（参考: cfgs/policy/ctrl_sim.yaml）
             nucleus_sampling: 是否使用 nucleus sampling
             nucleus_threshold: nucleus sampling 阈值
-            opponent_sparse_inference_enabled: 是否启用稀疏推理节奏
-            opponent_sparse_inference_interval: 稀疏推理周期 N（每 N 步中最后一步为稀疏步）
-            sparse_inference_action_repeat: 稀疏步是否直接复用上一仿真步动作
+            action_repeat_interval: 动作复用周期 N（每 N 步中最后一步复用上一仿真步动作）
+            sparse_inference_action_repeat: 是否启用动作复用节奏
             load_on_init: 是否在初始化时立即加载模型/数据集
         """
         self.cfg = cfg
@@ -93,12 +91,12 @@ class CtrlSimOpponentAdapter:
         self.action_temperature = action_temperature
         self.nucleus_sampling = nucleus_sampling
         self.nucleus_threshold = nucleus_threshold
+        self.sparse_inference_action_repeat = bool(sparse_inference_action_repeat)
         self.sparse_inference_cfg = SparseInferenceConfig(
-            enabled=bool(opponent_sparse_inference_enabled),
-            interval=int(opponent_sparse_inference_interval),
+            enabled=self.sparse_inference_action_repeat,
+            interval=int(action_repeat_interval),
         )
         self.sparse_inference = SparseInferenceController(self.sparse_inference_cfg)
-        self.sparse_inference_action_repeat = bool(sparse_inference_action_repeat)
 
         # 当前 tilting 配置
         self.current_tilt = TiltConfig()

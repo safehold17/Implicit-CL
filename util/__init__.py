@@ -229,11 +229,8 @@ def _make_env(args):
             'student_steer_discretization': getattr(
                 args, 'student_steer_discretization', 13
             ),
-            'opponent_sparse_inference_enabled': getattr(
-                args, 'opponent_sparse_inference_enabled', False
-            ),
-            'opponent_sparse_inference_interval': getattr(
-                args, 'opponent_sparse_inference_interval', 2
+            'action_repeat_interval': getattr(
+                args, 'action_repeat_interval', 2
             ),
             'sparse_inference_action_repeat': getattr(
                 args, 'sparse_inference_action_repeat', False

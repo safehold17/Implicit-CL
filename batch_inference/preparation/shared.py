@@ -125,28 +125,3 @@ def consume_pending_sparse_actions(
         return None
     clear_pending_sparse_actions(adapter)
     return pending_actions
-
-
-def set_predict_rtgs_override(adapter: Any, step_t: int, predict_rtgs: bool) -> None:
-    policy = adapter._policy
-    if policy is None:
-        return
-    adapter._predict_rtgs_override_prev = bool(policy.predict_rtgs)
-    adapter._predict_rtgs_override_step_t = int(step_t)
-    policy.predict_rtgs = bool(predict_rtgs)
-
-
-def clear_predict_rtgs_override(adapter: Any, step_t: Optional[int] = None) -> None:
-    override_step = getattr(adapter, "_predict_rtgs_override_step_t", None)
-    if override_step is None:
-        return
-    if step_t is not None and int(step_t) != int(override_step):
-        return
-
-    policy = adapter._policy
-    prev_predict_rtgs = getattr(adapter, "_predict_rtgs_override_prev", None)
-    if policy is not None and prev_predict_rtgs is not None:
-        policy.predict_rtgs = bool(prev_predict_rtgs)
-    adapter._predict_rtgs_override_step_t = None
-    adapter._predict_rtgs_override_prev = None
-

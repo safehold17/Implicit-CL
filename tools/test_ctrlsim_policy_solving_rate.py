@@ -48,8 +48,7 @@ class CtrlSimEgoWrapper:
         device: str = "cuda",
         seed: int = 0,
         batch_inference: bool = False,
-        opponent_sparse_inference_enabled: bool = False,
-        opponent_sparse_inference_interval: int = 2,
+        action_repeat_interval: int = 2,
         sparse_inference_action_repeat: bool = False,
         **_kwargs,
     ):
@@ -67,8 +66,7 @@ class CtrlSimEgoWrapper:
             tilting_mode=tilting_mode,
             tilt_range=tilt_range,
             batch_inference=batch_inference,
-            opponent_sparse_inference_enabled=opponent_sparse_inference_enabled,
-            opponent_sparse_inference_interval=opponent_sparse_inference_interval,
+            action_repeat_interval=action_repeat_interval,
             sparse_inference_action_repeat=sparse_inference_action_repeat,
         )
         self.tilting_mode = tilting_mode
@@ -466,20 +464,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_inference", action="store_true",
                         help="Use batched GPU inference in main process instead of per-subprocess models.")
     parser.add_argument(
-        "--opponent_sparse_inference_enabled",
-        action="store_true",
-        help="Enable sparse inference cadence for ctrl-sim opponent vehicles.",
-    )
-    parser.add_argument(
-        "--opponent_sparse_inference_interval",
+        "--action_repeat_interval",
         type=int,
         default=2,
-        help="Sparse inference cycle length N (the last step in each cycle is sparse).",
+        help="Action repeat cycle length N (the last step in each cycle repeats the previous action).",
     )
     parser.add_argument(
         "--sparse_inference_action_repeat",
         action="store_true",
-        help="In sparse step, reuse previous action instead of inferring action with recursive RTG.",
+        help="Repeat the previous action on the last step in each action-repeat cycle.",
     )
     parser.add_argument(
         "--inference_precision",
@@ -779,8 +772,7 @@ def main() -> None:
         xpid=args.xpid,
         video_dir=video_dir,
         batch_inference=args.batch_inference,
-        opponent_sparse_inference_enabled=args.opponent_sparse_inference_enabled,
-        opponent_sparse_inference_interval=args.opponent_sparse_inference_interval,
+        action_repeat_interval=args.action_repeat_interval,
         sparse_inference_action_repeat=args.sparse_inference_action_repeat,
     )
 

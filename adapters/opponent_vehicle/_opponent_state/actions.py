@@ -62,30 +62,22 @@ def collect_predicted_actions(service: Any) -> Dict[int, Tuple[float, float]]:
 def predict_actions_with_policy(
     service: Any,
     t: int,
-    action_only_with_recursive_rtg: bool,
 ) -> Dict[int, Tuple[float, float]]:
     adapter = service.adapter
     policy = adapter._policy
     if policy is None:
         return {}
 
-    original_predict_rtgs = bool(policy.predict_rtgs)
-    if action_only_with_recursive_rtg:
-        policy.predict_rtgs = False
-
     for veh_id in adapter._controlled_vehicle_ids_present:
         policy.relevant_agent_idxs.setdefault(veh_id, [])
-    try:
-        adapter._vehicle_data_dict = policy.predict(
-            adapter._vehicle_data_dict,
-            adapter._gt_data_dict,
-            adapter._preproc_data,
-            adapter.dataset,
-            adapter._vehicles_to_control,
-            t,
-        )
-    finally:
-        policy.predict_rtgs = original_predict_rtgs
+    adapter._vehicle_data_dict = policy.predict(
+        adapter._vehicle_data_dict,
+        adapter._gt_data_dict,
+        adapter._preproc_data,
+        adapter.dataset,
+        adapter._vehicles_to_control,
+        t,
+    )
     return collect_predicted_actions(service)
 
 
@@ -105,7 +97,6 @@ def step(service: Any, t: int, vehicles: List[Any]) -> Dict[int, Tuple[float, fl
         predict_actions_with_policy(
             service,
             t=t,
-            action_only_with_recursive_rtg=False,
         )
         return build_warmup_gt_actions(service, t)
 
@@ -117,15 +108,10 @@ def step(service: Any, t: int, vehicles: List[Any]) -> Dict[int, Tuple[float, fl
         return predict_actions_with_policy(
             service,
             t=t,
-            action_only_with_recursive_rtg=False,
         )
     if adapter.sparse_inference_action_repeat:
         return build_sparse_repeat_actions(service)
-    return predict_actions_with_policy(
-        service,
-        t=t,
-        action_only_with_recursive_rtg=True,
-    )
+    return predict_actions_with_policy(service, t=t)
 
 
 def apply_action(service: Any, veh: Any, action: Tuple[float, float]) -> None:
@@ -175,4 +161,3 @@ def is_initialized(service: Any) -> bool:
 
 def get_vehicle_data(service: Any, veh_id: int) -> Optional[Dict]:
     return service.adapter._vehicle_data_dict.get(veh_id)
-
