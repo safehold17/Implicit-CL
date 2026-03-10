@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from batch_inference import ExternalTeacher
-from batch_inference.ipc_codec import unpack_prepared
+from batch_inference.batch_protocol import unpack_prepared
 from envs.nocturne_ctrlsim import ScenarioLevel
 from tools.test_ctrlsim_policy_solving_rate import CtrlSimEgoWrapper
 

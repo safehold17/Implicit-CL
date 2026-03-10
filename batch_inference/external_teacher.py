@@ -26,7 +26,7 @@ from .batch_decoder.pipeline import (
     forward_chunk_batched,
     get_next_worker_rng_state,
 )
-from .ipc_codec import pack_model_outputs, release_prepared_payload, unpack_prepared
+from .batch_protocol import pack_model_outputs, release_prepared_payload, unpack_prepared
 
 def _assert_required_keys(payload: Dict[str, Any], required: Tuple[str, ...], payload_name: str) -> None:
     missing = [key for key in required if key not in payload]

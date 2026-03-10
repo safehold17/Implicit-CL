@@ -4,15 +4,15 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-from batch_inference.ipc_codec import unpack_model_outputs, validate_model_outputs_payload
+from batch_inference.batch_protocol import unpack_model_outputs, validate_model_outputs_payload
 
-from .rng import restore_sampling_rng_state
-from .shared import (
+from .prepare import (
     NEXT_RTG_KEYS,
     consume_pending_sparse_actions,
     get_step_controlled_ids,
     require_vehicle_data,
 )
+from .rng import restore_sampling_rng_state
 
 
 def apply_predictions(

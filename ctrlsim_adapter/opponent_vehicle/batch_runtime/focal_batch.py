@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .shared import get_control_vehicle_queue, get_or_create_prepare_buffer
+from .prepare import get_control_vehicle_queue, get_or_create_prepare_buffer
 
 
 def slice_policy_window(
