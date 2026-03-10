@@ -26,24 +26,18 @@ from .scenario_helpers import (
 
 from .gt_helpers import (
     get_goal_point_for_vehicle,
-    get_gt_action,
-    build_episode_gt_action_cache,
     initialize_ego_goal_state,
-    is_ego_position_reached,
 )
-from .student_reward import compute_student_reward
 from .student_env_policy import (
-    apply_student_action,
+    build_student_observation_config,
+    get_student_obs_dim,
     get_student_observation,
 )
+from .runtime import NocturneCtrlSimRuntime
 
 from .simulation_info import (
-    check_done,
-    compute_current_progress,
     get_complexity_info,
-    get_info,
     reset_metrics as sim_reset_metrics,
-    update_episode_progress,
 )
 
 from .utils.vehicle_map_helpers import load_vehicle_ids_for_scenario
@@ -57,7 +51,6 @@ from tools.build_scenario_index import ScenarioIndex
 from ctrlsim_adapter.config_loader import create_minimal_config
 from ctrlsim_adapter.data_bridge import DataBridge
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
-from ctrlsim_adapter.opponent_vehicle.batch_runtime import capture_sampling_rng_state
 class NocturneCtrlSimAdversarial(gym.Env):
     """
     DCD adversarial environment: Nocturne scenario + CtRL-Sim opponent
@@ -115,7 +108,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         show_vehicle_ids = kwargs.get('show_vehicle_ids', True)
         show_ego_vehicle_selection = kwargs.get('show_ego_vehicle_selection', True)
         remove_background_vehicles = kwargs.get('remove_background_vehicles', True)
-        obs_dim = kwargs.get('obs_dim', 128)
+        requested_obs_dim = kwargs.get('obs_dim')
         student_accel_discretization = int(
             kwargs.get('student_accel_discretization', 7)
         )
@@ -342,13 +335,24 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # Cache road data (filled after _initialize_simulation)
         self._road_graph_cache: Optional[List[Dict]] = None
+        self._load_scenario_impl = load_scenario
+        self._get_vehicle_by_id_impl = get_vehicle_by_id
+        self._load_vehicle_ids_for_scenario_impl = load_vehicle_ids_for_scenario
+        self._initialize_ego_goal_state_impl = initialize_ego_goal_state
+        self._get_goal_point_for_vehicle_impl = get_goal_point_for_vehicle
+        self._get_student_observation_impl = get_student_observation
         
         # ========== Observation and action space (Student) ==========
-        # Calculate Late Fusion observation dimension: ego(6) + partners(K×6) + road_graph(R×13)
-        late_fusion_obs_dim = 6 + self._max_observable_agents * 6 + self._top_k_road_points * 13
-        
-        # Use config obs_dim or calculated dimension (take larger one for compatibility)
-        self._obs_dim = max(obs_dim, late_fusion_obs_dim)
+        self.student_observation_config = build_student_observation_config(
+            max_neighbors=self._max_observable_agents,
+            top_k_road_points=self._top_k_road_points,
+        )
+        self._obs_dim = get_student_obs_dim(self.student_observation_config)
+        if requested_obs_dim is not None and int(requested_obs_dim) != self._obs_dim:
+            warnings.warn(
+                f"obs_dim ({requested_obs_dim}) is ignored for Nocturne student observations; "
+                f"using centralized observation dim {self._obs_dim}."
+            )
         self.student_accel_discretization = student_accel_discretization
         self.student_steer_discretization = student_steer_discretization
         self.student_num_actions = (
@@ -426,6 +430,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         # ========== Video recording ==========
         self.video_recorder: Optional[NocturneVideoRecorder] = None
         self.recording_video = False
+        self.runtime = NocturneCtrlSimRuntime(self)
 
     def _set_process_seed(self, seed: int, reseed_numpy: bool = True) -> None:
         """Set process-level RNG streams used by this environment instance."""
@@ -698,175 +703,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._initialize_simulation()
     
     def _initialize_simulation(self):
-        """Initialize Nocturne simulation (internal method)"""
-        if self.current_level is None:
-            return
-            
-        level = self.current_level
-        self.current_step = 0
-        self.reset_metrics()
-        
-        # Reset termination condition states
-        self._collision_occurred = False
-        self._goal_reached = False
-        self._offroad_occurred = False
-        self._position_reached = False
-        
-        # Reset episode statistics
-        self._episode_collision_occurred = False
-        self._episode_goal_reached = False
-        self._episode_offroad_occurred = False
-        self._episode_position_reached = False
-        self._episode_steps = 0
-        self._episode_progress = 0.0
-        
-        # Set random seed
-        np.random.seed(level.seed)
-        
-        # Important: must get GT data first, then load main scenario
-        # Reason: get_ground_truth() internally creates a temporary Simulation and steps,
-        # this will destroy the global state of Nocturne, causing the vehicle objects in the subsequent Simulation
-        # to become invalid (segmentation fault when setting attributes).
-        # Solution: get GT data first (let the temporary Simulation complete and destroy),
-        # then load main scenario.
-        
-        # Get ground truth data (need to add .json suffix)
-        self._gt_data_dict = self.data_bridge.get_ground_truth(
-            self.scenario_data_dir, 
-            f"{level.scenario_id}.json"
-        )
-        self._gt_traj_cache = {
-            veh_id: np.asarray(data["traj"])
-            for veh_id, data in self._gt_data_dict.items()
-            if isinstance(data, dict) and "traj" in data
-        }
-        build_episode_gt_action_cache(self)
-        
-        # Load Nocturne scenario (must after getting GT data)
-        load_scenario(self, level.scenario_id)
-
-        # Freeze preprocessed-row alignment before any vehicle filtering/reordering.
-        self._veh_id_to_preproc_idx = {
-            veh.getID(): idx for idx, veh in enumerate(self.vehicles)
-        }
-        
-        # Load vehicle IDs from map (strict mode: no dynamic fallback)
-        (
-            ego_id,
-            opponent_ids,
-            ego_selection_mode,
-            opponent_vehicle_num,
-        ) = load_vehicle_ids_for_scenario(self, level.scenario_id)
-        self.ego_vehicle = get_vehicle_by_id(self, ego_id)
-        if self.ego_vehicle is None:
-            raise ValueError(
-                f"ego_vehicle_id {ego_id} from vehicle map does not exist in scenario '{level.scenario_id}'."
-            )
-        self.ego_selection_mode = ego_selection_mode
-        self.current_opponent_vehicle_num = int(opponent_vehicle_num)
-        
-        # Load preprocessed data (with check)
-        self._preproc_data, file_exists = self.data_bridge.load_preprocessed_data(
-            level.scenario_id
-        )
-        if not file_exists:
-            raise FileNotFoundError(
-                f"Preprocessed data not found for scenario '{level.scenario_id}'. "
-                f"Check preprocess_dir: {self.data_bridge.preprocess_dir}"
-            )
-        
-        runtime_mode = getattr(self, 'opponent_runtime_mode', 'normal')
-
-        # Select opponent vehicles from map only (strict mode), unless runtime mode disables opponents.
-        if runtime_mode == 'disable':
-            self.opponent_vehicle_ids = []
-            self.opponent_vehicles = []
-        else:
-            self.opponent_vehicle_ids = opponent_ids
-            self.opponent_vehicles = []
-            missing_opponent_ids = []
-            for vid in opponent_ids:
-                veh = get_vehicle_by_id(self, vid)
-                if veh is None:
-                    missing_opponent_ids.append(vid)
-                else:
-                    self.opponent_vehicles.append(veh)
-            if missing_opponent_ids:
-                raise ValueError(
-                    f"opponent_vehicle_ids {missing_opponent_ids} from vehicle map do not exist in scenario "
-                    f"'{level.scenario_id}'."
-                )
-        
-        # Initialize ego vehicle's goal and reward related states
-        initialize_ego_goal_state(self)
-        self._goal_points_by_id = {}
-        if self.ego_vehicle is not None and self._ego_goal_dict is not None:
-            self._goal_points_by_id[self.ego_vehicle.getID()] = self._ego_goal_dict['pos']
-        for veh_id in self.opponent_vehicle_ids:
-            goal_pos = get_goal_point_for_vehicle(self, veh_id)
-            if goal_pos is not None:
-                self._goal_points_by_id[veh_id] = goal_pos
-
-        # If in per-vehicle tilting mode, zero out tilts for non-existent opponents
-        if self.tilting_mode == 'per_vehicle' and self.current_level is not None:
-            actual_n = len(self.opponent_vehicle_ids)
-            per = list(self._normalize_per_vehicle_tilting(self.current_level.per_vehicle_tilting))
-            cutoff = actual_n * 3
-            if cutoff < len(per):
-                for i in range(cutoff, len(per)):
-                    per[i] = 0
-                self.current_level.per_vehicle_tilting = tuple(per)
-                # Keep level_params_vec in sync if present
-                if len(self.level_params_vec) >= 4 + self.per_vehicle_tilting_length:
-                    for i in range(self.per_vehicle_tilting_length):
-                        self.level_params_vec[4 + i] = per[i]
-        
-        # Set opponent behavior for current runtime mode.
-        if runtime_mode == 'normal':
-            if self.tilting_mode == 'global':
-                # Global mode: all opponents share the same tilts
-                self.opponent.set_tilting(
-                    level.goal_tilt,
-                    level.veh_veh_tilt,
-                    level.veh_edge_tilt
-                )
-            elif self.tilting_mode == 'per_vehicle':
-                # Per-vehicle mode: each opponent has independent tilts
-                sorted_opponent_ids = sorted(self.opponent_vehicle_ids)
-                per_vehicle_mapping = {}
-                per = level.per_vehicle_tilting
-                for i, veh_id in enumerate(sorted_opponent_ids):
-                    if i * 3 + 2 < len(per):
-                        base = 3 * i
-                        per_vehicle_mapping[veh_id] = (per[base], per[base+1], per[base+2])
-                    else:
-                        per_vehicle_mapping[veh_id] = (0, 0, 0)
-                self.opponent.set_per_vehicle_tilting(per_vehicle_mapping)
-            else:
-                # Ego/none mode: opponents always use zero tilts
-                self.opponent.set_tilting(0, 0, 0)
-        else:
-            # disable/replay mode: no policy tilting behavior.
-            self.opponent.set_tilting(0, 0, 0)
-            self.opponent.per_vehicle_tilting = None
-
-        if self.remove_background_vehicles:
-            remove_background_moving_vehicles(self)
-        vehicles_to_control = self.opponent_vehicle_ids if runtime_mode == 'normal' else []
-        # Step 1: pass frozen mapping to opponent without changing adapter signature.
-        self.opponent._veh_id_to_preproc_idx = dict(self._veh_id_to_preproc_idx)
-
-        self.opponent.reset(
-            self.scenario,
-            self.vehicles,
-            self._gt_data_dict,
-            self._preproc_data,
-            vehicles_to_control,
-            ego_id=self.ego_vehicle.getID() if self.ego_vehicle else None,
-        )
-        
-        # Cache road data (for Student observation)
-        self._road_graph_cache = self.data_bridge.get_road_data(self.scenario)
+        """Initialize Nocturne simulation (delegated to runtime)."""
+        self.runtime.initialize_simulation()
     
     # ========== PLR/DR interface ==========
 
@@ -1182,147 +1020,32 @@ class NocturneCtrlSimAdversarial(gym.Env):
     # ========== Batch inference two-phase step ==========
 
     def step_prepare(self, action: np.ndarray) -> Optional[Dict]:
-        """Phase 1: Apply student action, build opponent data for external inference.
-
-        Returns:
-            prepared_dict sent to ExternalTeacher, or None when no opponent vehicles.
-        """
-        self.current_step += 1
-
-        # Apply student action first (order matters: adapter.prepare_step reads positions)
-        apply_student_action(self, action)
-
-        runtime_mode = getattr(self, "opponent_runtime_mode", "normal")
-        if runtime_mode == "normal" and len(self.opponent_vehicle_ids) > 0:
-            worker_rng_state = capture_sampling_rng_state(self.device)
-            return self.opponent.prepare_step(
-                self.current_step - 1,
-                self.vehicles,
-                worker_rng_state=worker_rng_state,
-            )
-        return None
+        """Phase 1 delegated to runtime."""
+        return self.runtime.step_prepare(action)
 
     def step_complete(
         self, model_outputs: Optional[Dict]
     ) -> Tuple[np.ndarray, float, bool, Dict]:
-        """Phase 2: Apply opponent predictions, GT actions, sim.step, reward/done.
-        """
-        # Decode model outputs → opponent actions
-        runtime_mode = getattr(self, "opponent_runtime_mode", "normal")
-        if runtime_mode == "normal" and len(self.opponent_vehicle_ids) > 0:
-            opponent_actions = self.opponent.apply_predictions(model_outputs)
-        else:
-            opponent_actions = {}
-
-        return self._step_post_actions(opponent_actions)
+        """Phase 2 delegated to runtime."""
+        return self.runtime.step_complete(model_outputs)
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
         prepared = self.step_prepare(action)
         if prepared is None:
             model_output = None
         else:
-            teacher = self._get_single_env_teacher()
+            teacher = self.runtime.get_single_env_teacher()
             model_output = teacher.batched_forward([prepared])[0]
         return self.step_complete(model_output)
 
     def _get_single_env_teacher(self):
-        teacher = self._single_env_teacher
-        if teacher is not None:
-            return teacher
-
-        from batch_inference import ExternalTeacher
-
-        teacher = ExternalTeacher(
-            checkpoint_path=self.opponent_checkpoint,
-            device=self.device,
-            inference_precision=self.inference_precision,
-        )
-        self._single_env_teacher = teacher
-        return teacher
+        return self.runtime.get_single_env_teacher()
 
     def _step_post_actions(
         self, opponent_actions: Dict[int, Tuple[float, float]]
     ) -> Tuple[np.ndarray, float, bool, Dict]:
-        """Shared tail: apply actions, sim.step, compute reward/done."""
-        # 3. Apply opponent action
-        for veh_id, (accel, steer) in opponent_actions.items():
-            veh = get_vehicle_by_id(self, veh_id)
-            if veh is not None:
-                self.opponent.apply_action(veh, (accel, steer))
-        
-        # 4. Apply GT action to uncontrolled vehicles (see policy_evaluator.py line 536-538)
-        ego_id = self.ego_vehicle.getID() if self.ego_vehicle else None
-        controlled_ids = set(opponent_actions.keys())
-        if ego_id is not None:
-            controlled_ids.add(ego_id)
-        
-        for veh in self.vehicles:
-            veh_id = veh.getID()
-            if veh_id not in controlled_ids:
-                gt_action = get_gt_action(self, veh_id, self.current_step - 1, veh)
-                if gt_action is not None:
-                    self.opponent.apply_action(veh, gt_action)
-        
-        # 5. Record all vehicle actions (for next update_state)
-        self.opponent.record_all_actions(
-            self.current_step - 1, 
-            self.vehicles, 
-            opponent_actions
-        )
-        
-        # 6. Step simulation
-        if hasattr(self.opponent, "cache_last_valid_positions"):
-            self.opponent.cache_last_valid_positions(self.vehicles)
-        self.sim.step(self.dt)
-        if hasattr(self.opponent, "post_step_fix_opponent_positions"):
-            self.opponent.post_step_fix_opponent_positions(
-                self.vehicles,
-                self._goal_points_by_id,
-                self.current_step,
-            )
-        
-        # 7. If recording is enabled, capture current frame
-        if self.recording_video and self.video_recorder is not None:
-            self.video_recorder.capture_frame(
-                self.scenario,
-                self.vehicles,
-                roads_data=self._road_graph_cache,
-                highlight_vehicle_ids=[self.ego_vehicle.getID()] if self.ego_vehicle else None,
-                opponent_vehicle_ids=self.opponent_vehicle_ids,
-                goal_points_by_id=self._goal_points_by_id,
-                scenario_id=getattr(self.current_level, "scenario_id", None) if self.current_level else None,
-                show_vehicle_ids=getattr(self, "recording_show_vehicle_ids", False),
-            )
-        
-        # 8. Calculate reward and termination conditions
-        obs = get_student_observation(self)
-        reward = compute_student_reward(self)
-        
-        # Update episode statistics
-        self._episode_steps += 1
-        if self._collision_occurred:
-            self._episode_collision_occurred = True
-        if self._goal_reached:
-            self._episode_goal_reached = True
-        if self._offroad_occurred:
-            self._episode_offroad_occurred = True
-        self._position_reached = is_ego_position_reached(self)
-        if self._position_reached:
-            self._episode_position_reached = True
-        
-        current_progress = compute_current_progress(self)
-        self._episode_progress = update_episode_progress(
-            previous_progress=self._episode_progress,
-            current_progress=current_progress,
-            position_reached=self._position_reached,
-        )
-        
-        done = check_done(self)
-        if done:
-            self.opponent.finalize(self.vehicles)
-        info = get_info(self)
-        
-        return obs, reward, done, info
+        """Shared tail delegated to runtime."""
+        return self.runtime.step_post_actions(opponent_actions)
     
     # ========== Level properties and encoding ==========
     

@@ -12,15 +12,11 @@ import torch.nn as nn
 
 from .common import DeviceAwareModule
 from .distributions import Categorical
-
-# ============== observation ==============
-# same as in  gpudrive/env/constants.py
-# Ego: [speed, length, width, rel_goal_x, rel_goal_y, collision_state]
-# Partner: [speed, rel_pos_x, rel_pos_y, rel_orientation, length, width]
-# Road graph: [pos_x, pos_y, length, scale_x, scale_y, orientation, type_onehot(7)]
-EGO_FEAT_DIM = 6
-PARTNER_FEAT_DIM = 6
-ROAD_GRAPH_FEAT_DIM = 13
+from envs.nocturne_ctrlsim.student_env_policy import (
+    StudentObservationConfig,
+    get_student_obs_dim,
+    split_student_observation,
+)
 
 
 class LateFusionBase(nn.Module):
@@ -56,6 +52,10 @@ class LateFusionBase(nn.Module):
         self.max_observable_agents = max_controlled_agents - 1
         self.top_k_road_points = top_k_road_points
         self.num_modes = 3  # Ego, Partner, Road Graph
+        self.observation_config = StudentObservationConfig(
+            max_neighbors=self.max_observable_agents,
+            top_k_road_points=self.top_k_road_points,
+        )
         
         # activation function
         if act_func == "tanh":
@@ -66,12 +66,11 @@ class LateFusionBase(nn.Module):
             self.act_func = nn.ReLU()
         
         # Indices for different observation vector parts
-        self.ego_state_idx = EGO_FEAT_DIM
-        self.partner_obs_idx = EGO_FEAT_DIM + PARTNER_FEAT_DIM * self.max_observable_agents
-        
         # Ego state embedding
         self.ego_embed = nn.Sequential(
-            self._layer_init(nn.Linear(EGO_FEAT_DIM, input_dim)),
+            self._layer_init(
+                nn.Linear(self.observation_config.ego_feat_dim, input_dim)
+            ),
             nn.LayerNorm(input_dim),
             self.act_func,
             nn.Dropout(dropout),
@@ -80,7 +79,9 @@ class LateFusionBase(nn.Module):
         
         # Partner observation embedding
         self.partner_embed = nn.Sequential(
-            self._layer_init(nn.Linear(PARTNER_FEAT_DIM, input_dim)),
+            self._layer_init(
+                nn.Linear(self.observation_config.partner_feat_dim, input_dim)
+            ),
             nn.LayerNorm(input_dim),
             self.act_func,
             nn.Dropout(dropout),
@@ -89,7 +90,9 @@ class LateFusionBase(nn.Module):
         
         # Road Graph embedding
         self.road_map_embed = nn.Sequential(
-            self._layer_init(nn.Linear(ROAD_GRAPH_FEAT_DIM, input_dim)),
+            self._layer_init(
+                nn.Linear(self.observation_config.road_graph_feat_dim, input_dim)
+            ),
             nn.LayerNorm(input_dim),
             self.act_func,
             nn.Dropout(dropout),
@@ -120,29 +123,10 @@ class LateFusionBase(nn.Module):
             road_objects: (batch_size, max_observable_agents, PARTNER_FEAT_DIM)
             road_graph: (batch_size, top_k_road_points, ROAD_GRAPH_FEAT_DIM)
         """
-        expected_obs_dim = self.expected_obs_dim
-        actual_obs_dim = obs_flat.shape[-1]
-        if actual_obs_dim != expected_obs_dim:
-            raise ValueError(
-                "LateFusion observation dimension mismatch: "
-                f"expected {expected_obs_dim} = 6 + {self.max_observable_agents}*6 + {self.top_k_road_points}*13, "
-                f"got {actual_obs_dim}. "
-                "Please keep student_num_neighbors/student_top_k_road consistent between env and model."
-            )
-
-        # Extract different observation parts
-        ego_state = obs_flat[:, :self.ego_state_idx]
-        partner_obs = obs_flat[:, self.ego_state_idx:self.partner_obs_idx]
-        road_graph_obs = obs_flat[:, self.partner_obs_idx:]
-        
-        # Reshape to multi-dimensional tensors
-        road_objects = partner_obs.view(
-            -1, self.max_observable_agents, PARTNER_FEAT_DIM
+        ego_state, road_objects, road_graph = split_student_observation(
+            obs_flat,
+            self.observation_config,
         )
-        road_graph = road_graph_obs.view(
-            -1, self.top_k_road_points, ROAD_GRAPH_FEAT_DIM
-        )
-        
         return ego_state, road_objects, road_graph
     
     def encode_observations(self, observation: torch.Tensor) -> torch.Tensor:
@@ -180,7 +164,7 @@ class LateFusionBase(nn.Module):
     @property
     def expected_obs_dim(self):
         """Expected flattened observation dimension."""
-        return self.partner_obs_idx + self.top_k_road_points * ROAD_GRAPH_FEAT_DIM
+        return get_student_obs_dim(self.observation_config)
 
 
 class StudentPolicy(DeviceAwareModule):
@@ -246,9 +230,12 @@ class StudentPolicy(DeviceAwareModule):
         if obs_dim != expected_obs_dim:
             raise ValueError(
                 "StudentPolicy obs_shape mismatch: "
-                f"expected {expected_obs_dim} = 6 + {self.base.max_observable_agents}*6 + {self.base.top_k_road_points}*13, "
+                f"expected {expected_obs_dim} = "
+                f"{self.base.observation_config.ego_feat_dim} + "
+                f"{self.base.observation_config.max_neighbors}*{self.base.observation_config.partner_feat_dim} + "
+                f"{self.base.observation_config.top_k_road_points}*{self.base.observation_config.road_graph_feat_dim}, "
                 f"got {obs_dim}. "
-                "Please align student_num_neighbors/student_top_k_road across env and model config."
+                "Please align the centralized student observation config across env and model."
             )
         
         if action_space.__class__.__name__ != "Discrete":
