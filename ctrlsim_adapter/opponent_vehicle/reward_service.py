@@ -2,11 +2,14 @@ from typing import Any, Dict, List
 
 import numpy as np
 
-from ._opponent_reward import geometry as _geometry
-from ._opponent_reward import nearest_distance as _nearest_distance
+from . import reward_helpers as _reward_helpers
 
-_compute_signed_distance_to_polyline_np = _geometry.compute_signed_distance_to_polyline_np
-_compute_signed_distance_to_polylines_np = _geometry.compute_signed_distance_to_polylines_np
+_compute_signed_distance_to_polyline_np = (
+    _reward_helpers.compute_signed_distance_to_polyline_np
+)
+_compute_signed_distance_to_polylines_np = (
+    _reward_helpers.compute_signed_distance_to_polylines_np
+)
 
 
 class OpponentRewardService:
@@ -403,7 +406,7 @@ class OpponentRewardService:
         计算目标车辆到全体车辆的最近距离（不含自身）。
         Compute the nearest distance from the target vehicle to all vehicles, excluding itself.
         """
-        return _nearest_distance.compute_nearest_dist_to_all(
+        return _reward_helpers.compute_nearest_dist_to_all(
             target_positions=target_positions,
             all_positions=all_positions,
             all_existence=all_existence,
