@@ -16,6 +16,7 @@ def forward_chunk_batched_impl(
     get_env_sampling_generator_fn: Any,
     decode_rtg_for_job_fn: Any,
     reserve_action_rng_states_for_job_fn: Any,
+    decode_rtg_jobs_batched_fn: Any = None,
 ) -> List[Dict[str, Any]]:
     if not chunk:
         return []
@@ -76,29 +77,46 @@ def forward_chunk_batched_impl(
     rtg_decode_ms = 0.0
     rng_reserve_ms = 0.0
 
-    for batch_idx, job in enumerate(jobs):
-        token_index = int(token_index_per_job[batch_idx])
+    rtg_decode_start = time.perf_counter() if profile_enabled else 0.0
+    if decode_rtg_jobs_batched_fn is not None:
+        rtg_results_by_job, processed_rtg_veh_ids_by_job = decode_rtg_jobs_batched_fn(
+            teacher=teacher,
+            batched_data=batched_data,
+            rtg_logits=rtg_logits,
+            jobs=jobs,
+            token_index_per_job=token_index_per_job,
+            rtg_cache=rtg_cache,
+        )
+    else:
+        for batch_idx, job in enumerate(jobs):
+            token_index = int(token_index_per_job[batch_idx])
+            env_generator = get_env_sampling_generator_fn(
+                teacher=teacher,
+                env_idx=int(job["env_idx"]),
+                step_t=int(job["prepared"]["step_t"]),
+                worker_rng_state=job["prepared"].get("worker_rng_state"),
+            )
+            rtg_results, processed_rtg_veh_ids = decode_rtg_for_job_fn(
+                teacher=teacher,
+                batched_data=batched_data,
+                rtg_logits=rtg_logits,
+                batch_idx=batch_idx,
+                job=job,
+                token_index=token_index,
+                rtg_cache=rtg_cache,
+                env_generator=env_generator,
+            )
+            rtg_results_by_job.append(rtg_results)
+            processed_rtg_veh_ids_by_job.append(processed_rtg_veh_ids)
+    rtg_decode_ms = elapsed_ms_fn(rtg_decode_start, profile_enabled)
+
+    for job in jobs:
         env_generator = get_env_sampling_generator_fn(
             teacher=teacher,
             env_idx=int(job["env_idx"]),
             step_t=int(job["prepared"]["step_t"]),
             worker_rng_state=job["prepared"].get("worker_rng_state"),
         )
-        rtg_decode_start = time.perf_counter() if profile_enabled else 0.0
-        rtg_results, processed_rtg_veh_ids = decode_rtg_for_job_fn(
-            teacher=teacher,
-            batched_data=batched_data,
-            rtg_logits=rtg_logits,
-            batch_idx=batch_idx,
-            job=job,
-            token_index=token_index,
-            rtg_cache=rtg_cache,
-            env_generator=env_generator,
-        )
-        rtg_decode_ms += elapsed_ms_fn(rtg_decode_start, profile_enabled)
-        rtg_results_by_job.append(rtg_results)
-        processed_rtg_veh_ids_by_job.append(processed_rtg_veh_ids)
-
         rng_reserve_start = time.perf_counter() if profile_enabled else 0.0
         reserved_action_rng_states_by_job.append(
             reserve_action_rng_states_for_job_fn(
@@ -142,4 +160,3 @@ def forward_chunk_batched_impl(
         }
         for idx, job in enumerate(chunk)
     ]
-

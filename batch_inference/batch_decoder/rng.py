@@ -5,8 +5,6 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 
-from adapters.ctrlsim_discretization import decode_predicted_action
-
 
 def get_device_rng_state(device: Any) -> torch.Tensor:
     torch_device = torch.device(device)
@@ -15,13 +13,38 @@ def get_device_rng_state(device: Any) -> torch.Tensor:
     return torch.get_rng_state().clone()
 
 
-def get_action_reservation_logits(teacher: Any) -> torch.Tensor:
+def get_action_reservation_weights(
+    teacher: Any,
+    nucleus_sampling: bool,
+    nucleus_threshold: float,
+) -> torch.Tensor:
     action_dim = int(teacher.accel_discretization) * int(teacher.steer_discretization)
-    cached = getattr(teacher, "_action_reservation_logits", None)
-    if cached is None or cached.shape != (action_dim,) or cached.device.type != torch.device(teacher.device).type:
-        cached = torch.zeros(action_dim, dtype=torch.float32, device=teacher.device)
-        teacher._action_reservation_logits = cached
-    return cached
+    cache = getattr(teacher, "_action_reservation_weights_cache", None)
+    if cache is None:
+        cache = {}
+        teacher._action_reservation_weights_cache = cache
+
+    cache_key = (action_dim, bool(nucleus_sampling), float(nucleus_threshold), str(teacher.device))
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    weights = torch.ones(action_dim, dtype=torch.float32, device=teacher.device)
+    if nucleus_sampling:
+        sorted_probs, sorted_indices = torch.sort(weights / float(action_dim), descending=True)
+        cum_probs = torch.cumsum(sorted_probs, dim=-1)
+        selected = cum_probs < nucleus_threshold
+        selected = torch.cat(
+            [selected.new_ones(selected.shape[:-1] + (1,)), selected[..., :-1]],
+            dim=-1,
+        )
+        selected_probs = sorted_probs[selected]
+        selected_probs = selected_probs / selected_probs.sum()
+        weights = torch.zeros(action_dim, dtype=torch.float32, device=teacher.device)
+        weights[sorted_indices[selected]] = selected_probs
+
+    cache[cache_key] = weights
+    return weights
 
 
 def get_decode_generator(teacher: Any) -> torch.Generator:
@@ -112,21 +135,17 @@ def reserve_action_rng_states_for_job(
     if env_generator is None:
         env_generator = get_decode_generator(teacher)
         env_generator.set_state(get_device_rng_state(teacher.device))
-    dummy_logits = get_action_reservation_logits(teacher)
+    reservation_weights = get_action_reservation_weights(
+        teacher=teacher,
+        nucleus_sampling=bool(sampling["nucleus_sampling"]),
+        nucleus_threshold=float(sampling["nucleus_threshold"]),
+    )
     reserved_states: Dict[int, torch.Tensor] = {}
     for veh_id in data_veh_ids:
         reserved_states[int(veh_id)] = env_generator.get_state().clone()
-        decode_predicted_action(
-            dummy_logits,
-            sampling["action_temperature"],
-            sampling["nucleus_sampling"],
-            sampling["nucleus_threshold"],
-            teacher.accel_discretization,
-            teacher.steer_discretization,
-            teacher.min_accel,
-            teacher.max_accel,
-            teacher.min_steer,
-            teacher.max_steer,
+        torch.multinomial(
+            reservation_weights,
+            1,
             generator=env_generator,
         )
     return reserved_states

@@ -65,6 +65,28 @@ def _decode_rtg_for_job(
     )
 
 
+def _decode_rtg_jobs_batched(
+    teacher: Any,
+    batched_data: MotionData,
+    rtg_logits: torch.Tensor,
+    jobs: List[Dict[str, Any]],
+    token_index_per_job: torch.Tensor,
+    rtg_cache: RTGCache,
+) -> Tuple[List[Dict[int, Tuple[float, float, float]]], List[List[int]]]:
+    return rtg_impl.decode_rtg_jobs_batched_impl(
+        teacher=teacher,
+        batched_data=batched_data,
+        rtg_logits=rtg_logits,
+        jobs=jobs,
+        token_index_per_job=token_index_per_job,
+        rtg_cache=rtg_cache,
+        get_env_sampling_generator_fn=_get_env_sampling_generator,
+        get_tilt_logits_tensor_fn=_get_tilt_logits_tensor,
+        decode_predicted_rtg_fn=decode_predicted_rtg,
+        iter_resolved_vehicle_indices_fn=rtg_impl.iter_resolved_vehicle_indices,
+    )
+
+
 def _decode_action_for_job(
     teacher: Any,
     action_logits: torch.Tensor,
@@ -86,8 +108,28 @@ def _decode_action_for_job(
     )
 
 
+def _decode_action_jobs_batched(
+    teacher: Any,
+    action_logits: torch.Tensor,
+    jobs: List[Dict[str, Any]],
+    token_index_per_job: torch.Tensor,
+    reserved_rng_states_by_job: Optional[List[Dict[int, torch.Tensor]]] = None,
+) -> List[Dict[int, Tuple[float, float]]]:
+    return action_impl.decode_action_jobs_batched_impl(
+        teacher=teacher,
+        action_logits=action_logits,
+        jobs=jobs,
+        token_index_per_job=token_index_per_job,
+        decode_predicted_action_fn=decode_predicted_action,
+        get_decode_generator_fn=action_impl.get_decode_generator,
+        iter_resolved_vehicle_indices_fn=action_impl.iter_resolved_vehicle_indices,
+        reserved_rng_states_by_job=reserved_rng_states_by_job,
+    )
+
+
 _DEFAULT_GET_TILT_LOGITS_TENSOR = _get_tilt_logits_tensor
 _DEFAULT_DECODE_RTG_FOR_JOB = _decode_rtg_for_job
+_DEFAULT_DECODE_ACTION_FOR_JOB = _decode_action_for_job
 _DEFAULT_DECODE_PREDICTED_RTG = decode_predicted_rtg
 
 
@@ -162,6 +204,11 @@ def decode_action_stage_batched(
         batched_data=batched_data,
         batch_meta=batch_meta,
         decode_action_for_job_fn=_decode_action_for_job,
+        decode_action_jobs_batched_fn=(
+            _decode_action_jobs_batched
+            if _decode_action_for_job is _DEFAULT_DECODE_ACTION_FOR_JOB
+            else None
+        ),
         reserved_rng_states_by_job=reserved_rng_states_by_job,
     )
 
@@ -175,6 +222,11 @@ def forward_chunk_batched(teacher: Any, chunk: List[Dict[str, Any]]) -> List[Dic
         get_env_sampling_generator_fn=_get_env_sampling_generator,
         decode_rtg_for_job_fn=_decode_rtg_for_job,
         reserve_action_rng_states_for_job_fn=_reserve_action_rng_states_for_job,
+        decode_rtg_jobs_batched_fn=(
+            _decode_rtg_jobs_batched
+            if _decode_rtg_for_job is _DEFAULT_DECODE_RTG_FOR_JOB
+            else None
+        ),
     )
 
 

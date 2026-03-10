@@ -166,6 +166,7 @@ def decode_action_stage_batched_impl(
     batched_data: Any,
     batch_meta: Dict[str, Any],
     decode_action_for_job_fn: Any,
+    decode_action_jobs_batched_fn: Optional[Any] = None,
     reserved_rng_states_by_job: Optional[List[Dict[int, torch.Tensor]]] = None,
 ) -> List[Dict[int, Tuple[float, float]]]:
     profile_enabled = bool(getattr(teacher, "_profile_enabled", False))
@@ -177,21 +178,30 @@ def decode_action_stage_batched_impl(
 
     jobs: List[Dict[str, Any]] = batch_meta["jobs"]
     token_index_per_job: torch.Tensor = batch_meta["token_index_per_job"]
-    action_results_by_job: List[Dict[int, Tuple[float, float]]] = []
     action_decode_start = time.perf_counter() if profile_enabled else 0.0
-    for batch_idx, job in enumerate(jobs):
-        token_index = int(token_index_per_job[batch_idx])
-        reserved_rng_states = None if reserved_rng_states_by_job is None else reserved_rng_states_by_job[batch_idx]
-        action_results_by_job.append(
-            decode_action_for_job_fn(
-                teacher=teacher,
-                action_logits=action_logits,
-                batch_idx=batch_idx,
-                job=job,
-                token_index=token_index,
-                reserved_rng_states=reserved_rng_states,
-            )
+    if decode_action_jobs_batched_fn is not None:
+        action_results_by_job = decode_action_jobs_batched_fn(
+            teacher=teacher,
+            action_logits=action_logits,
+            jobs=jobs,
+            token_index_per_job=token_index_per_job,
+            reserved_rng_states_by_job=reserved_rng_states_by_job,
         )
+    else:
+        action_results_by_job: List[Dict[int, Tuple[float, float]]] = []
+        for batch_idx, job in enumerate(jobs):
+            token_index = int(token_index_per_job[batch_idx])
+            reserved_rng_states = None if reserved_rng_states_by_job is None else reserved_rng_states_by_job[batch_idx]
+            action_results_by_job.append(
+                decode_action_for_job_fn(
+                    teacher=teacher,
+                    action_logits=action_logits,
+                    batch_idx=batch_idx,
+                    job=job,
+                    token_index=token_index,
+                    reserved_rng_states=reserved_rng_states,
+                )
+            )
 
     action_decode_ms = elapsed_ms(action_decode_start, profile_enabled)
     teacher._last_action_stage_profile = {
