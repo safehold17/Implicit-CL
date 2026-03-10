@@ -1,28 +1,27 @@
-"""ExternalTeacher 的两阶段解码逻辑（RTG -> Action）。"""
+"""ExternalTeacher 的两阶段解码入口（RTG -> Action）。"""
 
 from __future__ import annotations
+
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
+from adapters.ctrlsim_discretization import decode_predicted_action, decode_predicted_rtg, get_tilt_logits
 from utils.data import MotionData
 
-from .batch_decoder import action as action_impl
-from .batch_decoder.action import (
-    decode_action_stage_batched_impl,
-)
-from .batch_decoder.forward_chunk import forward_chunk_batched_impl
-from .batch_decoder.profile import chunk_predict_rtgs_mode as _chunk_predict_rtgs_mode
-from .batch_decoder.profile import elapsed_ms as _elapsed_ms
-from .batch_decoder.rng import (
+from . import action as action_impl
+from .action import decode_action_stage_batched_impl
+from .forward_chunk import forward_chunk_batched_impl
+from .profile import chunk_predict_rtgs_mode as _chunk_predict_rtgs_mode
+from .profile import elapsed_ms as _elapsed_ms
+from .rng import (
     get_device_rng_state as _get_device_rng_state,
     get_env_sampling_generator as _get_env_sampling_generator,
     get_next_worker_rng_state,
     reserve_action_rng_states_for_job as _reserve_action_rng_states_for_job,
 )
-from .batch_decoder import rtg as rtg_impl
-from .batch_decoder.rtg import RTGCache
-from .discretization_utils import decode_predicted_action, decode_predicted_rtg, get_tilt_logits
+from . import rtg as rtg_impl
+from .rtg import RTGCache
 
 
 def _get_tilt_logits_tensor(

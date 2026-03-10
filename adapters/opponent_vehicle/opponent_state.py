@@ -4,28 +4,18 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from adapters.existence import sim_position_exists
-from batch_inference import prepare_and_apply as _batch_io
 from tools.safe_bicycle import safe_backward_action_from_states
-from utils.data import get_object_type_onehot, get_object_type_str
-from utils.sim import get_road_data
+from utils.data import get_object_type_str
 
+from . import batch_runtime as _batch_io
 from .existence_logic import (
     _compute_goal_hold_until,
     _keep_exists_on_invalid,
     _should_drop_after_goal,
 )
-from ._opponent_state import actions as _actions_module
 from ._opponent_state import policy_sync as _policy_sync_module
 from ._opponent_state import reset as _reset_module
 from ._opponent_state import update as _update_module
-from .opponent_state_helpers import (
-    append_gt_state_for_step,
-    extract_road_edge_polylines,
-    get_sim_state_entries,
-    get_state_update_vehicle_ids,
-    resolve_vehicle_exists,
-    store_next_action,
-)
 
 
 def _build_gt_action_target_cache(gt_traj_by_id: Dict[int, np.ndarray]) -> Dict[int, Dict[str, np.ndarray]]:
@@ -111,52 +101,19 @@ class OpponentStateService:
         vehicles: List,
         worker_rng_state: Optional[np.ndarray] = None,
     ) -> Optional[Dict]:
-        """构建 prepared_dict，委托给 batch_inference.prepare_and_apply。"""
+        """构建 prepared_dict，供 ExternalTeacher 批量推理。"""
         return _batch_io.prepare_step(self.adapter, t, vehicles, worker_rng_state=worker_rng_state)
 
     def apply_predictions(
         self,
         model_outputs: Optional[Dict],
     ) -> Dict[int, Tuple[float, float]]:
-        """接收推理结果并返回动作，委托给 batch_inference.prepare_and_apply。"""
+        """接收 batched 推理结果并返回动作。"""
         return _batch_io.apply_predictions(self.adapter, model_outputs)
 
     def update_policy_state(self, t: int) -> None:
         """仅写入本 step 需要的车辆状态，避免全量 update_state 开销。"""
         _policy_sync_module.update_policy_state(self, t)
-
-    def _build_warmup_gt_actions(self, t: int) -> Dict[int, Tuple[float, float]]:
-        return _actions_module.build_warmup_gt_actions(self, t)
-
-    def _build_sparse_repeat_actions(self) -> Dict[int, Tuple[float, float]]:
-        return _actions_module.build_sparse_repeat_actions(self)
-
-    def _collect_predicted_actions(self) -> Dict[int, Tuple[float, float]]:
-        return _actions_module.collect_predicted_actions(self)
-
-    def _predict_actions_with_policy(
-        self,
-        t: int,
-    ) -> Dict[int, Tuple[float, float]]:
-        return _actions_module.predict_actions_with_policy(
-            self,
-            t=t,
-        )
-
-    def step(self, t: int, vehicles: List) -> Dict[int, Tuple[float, float]]:
-        """
-        执行一步推理，返回所有被控车辆的动作
-
-        参考: policy_evaluator.py 第 515-542 行的仿真循环
-
-        Args:
-            t: 当前时间步
-            vehicles: 场景中的所有车辆列表
-
-        Returns:
-            actions: {veh_id: (acceleration, steering)} 动作字典
-        """
-        return _actions_module.step(self, t, vehicles)
 
     def apply_action(self, veh, action: Tuple[float, float]):
         """
@@ -168,7 +125,12 @@ class OpponentStateService:
             veh: Nocturne vehicle 对象
             action: (acceleration, steering) 元组
         """
-        _actions_module.apply_action(self, veh, action)
+        acceleration, steering = action
+        if acceleration > 0.0:
+            veh.acceleration = acceleration
+        else:
+            veh.brake(np.abs(acceleration))
+        veh.steering = steering
 
     def record_action(self, veh_id: int, action: Tuple[float, float]):
         """
@@ -178,7 +140,9 @@ class OpponentStateService:
             veh_id: 车辆 ID
             action: (acceleration, steering) 元组
         """
-        _actions_module.record_action(self, veh_id, action)
+        if veh_id in self.adapter._vehicle_data_dict:
+            self.adapter._vehicle_data_dict[veh_id]["acceleration"].append(action[0])
+            self.adapter._vehicle_data_dict[veh_id]["steering"].append(action[1])
 
     def record_all_actions(
         self,
@@ -196,7 +160,13 @@ class OpponentStateService:
             vehicles: 所有车辆列表
             controlled_actions: 被控车辆的动作字典
         """
-        _actions_module.record_all_actions(self, t, vehicles, controlled_actions)
+        for veh in vehicles:
+            veh_id = veh.getID()
+            if veh_id in controlled_actions:
+                action = controlled_actions[veh_id]
+            else:
+                action = self._get_gt_action(veh_id, t, veh)
+            self.record_action(veh_id, action)
 
     def _get_gt_action(self, veh_id: int, t: int, veh=None) -> Tuple[float, float]:
         """
@@ -445,13 +415,19 @@ class OpponentStateService:
 
         注意：最后一次step时数据已经更新过，这里不需要再调用_update_vehicle_data_dict
         """
-        return _actions_module.finalize(self, vehicles)
+        adapter = self.adapter
+        for veh in vehicles:
+            veh_id = veh.getID()
+            if veh_id in adapter._vehicle_data_dict:
+                adapter._vehicle_data_dict[veh_id]["acceleration"].append(0)
+                adapter._vehicle_data_dict[veh_id]["steering"].append(0)
+        return adapter._vehicle_data_dict
 
     @property
     def is_initialized(self) -> bool:
         """检查适配器是否已初始化"""
-        return _actions_module.is_initialized(self)
+        return self.adapter._policy is not None
 
     def get_vehicle_data(self, veh_id: int) -> Optional[Dict]:
         """获取指定车辆的数据"""
-        return _actions_module.get_vehicle_data(self, veh_id)
+        return self.adapter._vehicle_data_dict.get(veh_id)

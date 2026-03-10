@@ -3,10 +3,10 @@ from typing import Dict, Tuple
 
 from policies.autoregressive_policy import AutoregressivePolicy
 
-from batch_inference.discretization_utils import (
+from adapters.ctrlsim_discretization import (
     decode_predicted_rtg as _decode_predicted_rtg,
 )
-from batch_inference.discretization_utils import (
+from adapters.ctrlsim_discretization import (
     get_tilt_logits as _get_tilt_logits,
 )
 
@@ -80,7 +80,7 @@ class PerVehicleAutoregressivePolicy(AutoregressivePolicy):
         """
         处理预测的 RTG，应用 per-vehicle tilting
 
-        使用 batch_inference.discretization_utils 中的纯函数，
+        使用 ctrlsim_discretization 中的纯函数，
         替代直接调用 dset.get_tilt_logits() / dset.undiscretize_rtgs()。
         """
         cfg_rl_waymo = self.cfg_rl_waymo

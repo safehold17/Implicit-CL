@@ -27,12 +27,11 @@ def reset(
 ) -> None:
     adapter = service.adapter
     if vehicles_to_control:
-        if adapter.batch_inference:
-            if adapter.dataset is None:
-                adapter._load_dataset_only()
-        else:
-            if adapter.model is None or adapter.dataset is None:
-                adapter._load_model_and_dataset()
+        if adapter._checkpoint_cfg is None:
+            adapter._load_checkpoint_cfg()
+            adapter._validate_external_cfg_compatibility()
+        if adapter.dataset is None:
+            adapter._load_dataset_only()
         adapter._policy = adapter._create_policy()
     else:
         adapter._policy = None
@@ -221,4 +220,3 @@ def post_step_fix_opponent_positions(
             continue
 
         adapter._opponent_vehicle_exits[veh_id] = _keep_exists_on_invalid(sim_exists, prev_exists)
-

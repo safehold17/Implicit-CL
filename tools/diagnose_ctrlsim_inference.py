@@ -33,7 +33,9 @@ if PROJECT_ROOT not in sys.path:
 
 from adapters.config_loader import create_minimal_config
 from adapters.data_bridge import DataBridge
+from adapters.opponent_vehicle.batch_runtime import capture_sampling_rng_state
 from adapters.opponent_vehicle import CtrlSimOpponentAdapter
+from batch_inference import ExternalTeacher
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 
 
@@ -84,8 +86,25 @@ class DiagnosticResults:
         print("\n" + "=" * 80)
 
 
+def _predict_opponent_actions_batch(
+    env: NocturneCtrlSimAdversarial,
+    teacher: ExternalTeacher,
+) -> Dict[int, Tuple[float, float]]:
+    worker_rng_state = capture_sampling_rng_state(env.device)
+    prepared = env.opponent.prepare_step(
+        env.current_step,
+        env.vehicles,
+        worker_rng_state=worker_rng_state,
+    )
+    if prepared is None:
+        return {}
+    outputs = teacher.batched_forward([prepared])[0]
+    return env.opponent.apply_predictions(outputs)
+
+
 def test_1_model_input_output(
     env: NocturneCtrlSimAdversarial,
+    teacher: ExternalTeacher,
     results: DiagnosticResults,
     num_steps: int = 15  # 需要超过 history_steps (默认10) 才能看到模型动作
 ) -> Dict[str, Any]:
@@ -166,8 +185,7 @@ def test_1_model_input_output(
         # 随机动作（会被忽略，因为我们关注的是对手）
         action = np.zeros(2, dtype=np.float32)
         
-        # 在 step 之前获取对手动作（内部会调用 opponent.step）
-        opponent_actions = opponent.step(t, env.vehicles)
+        opponent_actions = _predict_opponent_actions_batch(env, teacher)
         
         # ✅ 记录动作到 vehicle_data_dict（必须在下一次 step 之前调用）
         if hasattr(opponent, 'record_all_actions'):
@@ -278,6 +296,7 @@ def test_1_model_input_output(
 
 def test_2_gt_action_comparison(
     env: NocturneCtrlSimAdversarial,
+    teacher: ExternalTeacher,
     results: DiagnosticResults,
     num_steps: int = 10
 ) -> Dict[str, Any]:
@@ -308,8 +327,7 @@ def test_2_gt_action_comparison(
     for step in range(num_steps):
         t = env.current_step
         
-        # 获取模型动作
-        model_actions = opponent.step(t, env.vehicles)
+        model_actions = _predict_opponent_actions_batch(env, teacher)
         
         # ✅ 记录动作到 vehicle_data_dict（必须在下一次 step 之前调用）
         if hasattr(opponent, 'record_all_actions'):
@@ -973,6 +991,11 @@ def main():
         traceback.print_exc()
         results.print_summary()
         return
+
+    teacher = ExternalTeacher(
+        checkpoint_path=args.checkpoint_path,
+        device=args.device,
+    )
     
     # 运行测试
     try:
@@ -984,7 +1007,7 @@ def main():
         
         # 测试1: 模型输入输出
         try:
-            test_1_model_input_output(env, results, num_steps=args.num_steps)
+            test_1_model_input_output(env, teacher, results, num_steps=args.num_steps)
         except Exception as e:
             results.add_issue(f"测试1失败: {str(e)}")
             import traceback
@@ -993,7 +1016,7 @@ def main():
         
         # 测试2: GT动作对比
         try:
-            test_2_gt_action_comparison(env, results, num_steps=args.num_steps)
+            test_2_gt_action_comparison(env, teacher, results, num_steps=args.num_steps)
         except Exception as e:
             results.add_issue(f"测试2失败: {str(e)}")
             import traceback

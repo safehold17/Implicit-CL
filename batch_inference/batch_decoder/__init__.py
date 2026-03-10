@@ -1,2 +1,1 @@
-"""ExternalTeacher batch decode implementation modules."""
-
+"""ExternalTeacher batch decode implementation modules and pipeline entrypoints."""

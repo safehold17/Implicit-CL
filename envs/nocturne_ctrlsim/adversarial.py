@@ -57,7 +57,7 @@ from tools.build_scenario_index import ScenarioIndex
 from adapters.config_loader import create_minimal_config
 from adapters.data_bridge import DataBridge
 from adapters.opponent_vehicle import CtrlSimOpponentAdapter
-from batch_inference.prepare_and_apply import capture_sampling_rng_state
+from adapters.opponent_vehicle.batch_runtime import capture_sampling_rng_state
 class NocturneCtrlSimAdversarial(gym.Env):
     """
     DCD adversarial environment: Nocturne scenario + CtRL-Sim opponent
@@ -147,7 +147,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 "tilt_range must satisfy low <= high, "
                 f"got {tilt_range}"
             )
-        batch_inference = kwargs.get('batch_inference', False)
         action_repeat_interval = int(
             kwargs.get("action_repeat_interval", 2)
         )
@@ -178,9 +177,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 preprocess_dir=preprocess_dir,
             )
         self.cfg = cfg
+        self.opponent_checkpoint = opponent_checkpoint
         self.scenario_data_dir = scenario_data_dir
         self.preprocess_dir = preprocess_dir
         self.preproc_cache_size = preproc_cache_size
+        self.inference_precision = kwargs.get('inference_precision', 'fp32')
         opponent_runtime_mode = kwargs.get('opponent_runtime_mode', 'normal')
         
         # Vehicle map path (for loading pre-computed ego/opponent IDs)
@@ -203,9 +204,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
             preproc_cache_size=preproc_cache_size,
         )
         
-        # ========== Batch inference flag ==========
-        self.batch_inference = batch_inference
-        
         # ========== Opponent policy adapter ==========
         self.opponent = CtrlSimOpponentAdapter(
             cfg=cfg,
@@ -215,8 +213,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
             sparse_inference_action_repeat=sparse_inference_action_repeat,
             load_on_init=(opponent_runtime_mode == 'normal'),
         )
-        if self.batch_inference:
-            self.opponent.batch_inference = True
         
         # ========== Environment config ==========
         if max_episode_steps is None:
@@ -270,6 +266,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.scenario = None
         self.vehicles: List = []
         self._vehicle_by_id_cache: Dict = {}
+        self._single_env_teacher = None
         self.ego_vehicle = None
         self.opponent_vehicles: List = []
         self.opponent_vehicle_ids: List[int] = []
@@ -1187,8 +1184,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
     def step_prepare(self, action: np.ndarray) -> Optional[Dict]:
         """Phase 1: Apply student action, build opponent data for external inference.
 
-        Only valid when ``self.batch_inference`` is True.
-
         Returns:
             prepared_dict sent to ExternalTeacher, or None when no opponent vehicles.
         """
@@ -1211,9 +1206,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self, model_outputs: Optional[Dict]
     ) -> Tuple[np.ndarray, float, bool, Dict]:
         """Phase 2: Apply opponent predictions, GT actions, sim.step, reward/done.
-
-        Only valid when ``self.batch_inference`` is True.
-        Must be called after ``step_prepare``.
         """
         # Decode model outputs → opponent actions
         runtime_mode = getattr(self, "opponent_runtime_mode", "normal")
@@ -1224,32 +1216,29 @@ class NocturneCtrlSimAdversarial(gym.Env):
 
         return self._step_post_actions(opponent_actions)
 
-    # ========== Original single-phase step ==========
-
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
-        """
-        Execute one step simulation (Student action)
-        
-        Data flow:
-        1. Opponent policy inference (using CtrlSimOpponentAdapter)
-        2. Apply all actions to Nocturne simulation
-        3. Step simulation
-        4. Calculate reward and termination conditions
-        5. If recording is enabled, capture current frame
-        """
-        self.current_step += 1
-        
-        # 1. Opponent policy inference (normal mode only)
-        runtime_mode = getattr(self, "opponent_runtime_mode", "normal")
-        if runtime_mode == "normal" and len(self.opponent_vehicle_ids) > 0:
-            opponent_actions = self.opponent.step(self.current_step - 1, self.vehicles)
+        prepared = self.step_prepare(action)
+        if prepared is None:
+            model_output = None
         else:
-            opponent_actions = {}
-        
-        # 2. Apply student action to ego vehicle
-        apply_student_action(self, action)
-        
-        return self._step_post_actions(opponent_actions)
+            teacher = self._get_single_env_teacher()
+            model_output = teacher.batched_forward([prepared])[0]
+        return self.step_complete(model_output)
+
+    def _get_single_env_teacher(self):
+        teacher = self._single_env_teacher
+        if teacher is not None:
+            return teacher
+
+        from batch_inference import ExternalTeacher
+
+        teacher = ExternalTeacher(
+            checkpoint_path=self.opponent_checkpoint,
+            device=self.device,
+            inference_precision=self.inference_precision,
+        )
+        self._single_env_teacher = teacher
+        return teacher
 
     def _step_post_actions(
         self, opponent_actions: Dict[int, Tuple[float, float]]

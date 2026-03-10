@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import copy
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Tuple
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 import pytest
@@ -13,8 +19,6 @@ from batch_inference.ipc_codec import unpack_prepared
 from envs.nocturne_ctrlsim import ScenarioLevel
 from tools.test_ctrlsim_policy_solving_rate import CtrlSimEgoWrapper
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT_PATH = PROJECT_ROOT / "checkpoints" / "model.ckpt"
 DEFAULT_VEHICLE_MAP_PATH = PROJECT_ROOT / "data" / "vehicle_map_filtered_train.json"
 DEFAULT_SCENARIO_INDEX_PATH = PROJECT_ROOT / "data" / "scenarios_index_filtered_train.json"
@@ -89,7 +93,7 @@ def _ensure_runtime_resources() -> Dict[str, str]:
     return resources
 
 
-def _wrapper_kwargs(resources: Dict[str, str], batch_inference: bool) -> Dict[str, Any]:
+def _wrapper_kwargs(resources: Dict[str, str]) -> Dict[str, Any]:
     return {
         "scenario_index_path": resources["scenario_index_path"],
         "opponent_checkpoint": resources["checkpoint_path"],
@@ -107,10 +111,18 @@ def _wrapper_kwargs(resources: Dict[str, str], batch_inference: bool) -> Dict[st
         "xpid": "pytest-opponent-batch-parity",
         "device": "cuda",
         "seed": BASE_SEED,
-        "batch_inference": batch_inference,
+        "inference_precision": "fp32",
         "action_repeat_interval": 2,
         "sparse_inference_action_repeat": False,
     }
+
+
+def _build_teacher(resources: Dict[str, str]) -> ExternalTeacher:
+    return ExternalTeacher(
+        checkpoint_path=resources["checkpoint_path"],
+        device="cuda",
+        base_seed=BASE_SEED,
+    )
 
 
 def _reset_wrapper_to_fixed_level(wrapper: CtrlSimEgoWrapper) -> None:
@@ -125,21 +137,6 @@ def _clear_teacher_rng(teacher: ExternalTeacher) -> None:
     generators = getattr(teacher, "_generators", None)
     if generators is not None:
         generators.clear()
-
-
-def _step_nobatch_and_capture_opponent(wrapper: CtrlSimEgoWrapper) -> Dict[int, Tuple[float, float]]:
-    t = wrapper.env.current_step
-    ego_actions = wrapper.ego_adapter.step(t, wrapper.env.vehicles)
-    if wrapper.ego_id is not None and wrapper.ego_id in ego_actions:
-        accel, steer = ego_actions[wrapper.ego_id]
-    else:
-        accel, steer = 0.0, 0.0
-    opponent_actions = wrapper.env.opponent.step(t, wrapper.env.vehicles)
-    wrapper._step_with_ego_action(accel, steer, opponent_actions)
-    return {
-        int(veh_id): (float(action[0]), float(action[1]))
-        for veh_id, action in opponent_actions.items()
-    }
 
 
 def _step_batch_and_capture_opponent(
@@ -180,86 +177,13 @@ def _compare_action_dicts(
         )
 
 
-def _motion_data_to_numpy(motion_data: Any) -> Dict[str, np.ndarray]:
-    return {
-        "agent_states": motion_data["agent"].agent_states.detach().cpu().numpy()[0].copy(),
-        "agent_types": motion_data["agent"].agent_types.detach().cpu().numpy()[0].copy(),
-        "goals": motion_data["agent"].goals.detach().cpu().numpy()[0].copy(),
-        "actions": motion_data["agent"].actions.detach().cpu().numpy()[0].copy(),
-        "rtgs": motion_data["agent"].rtgs.detach().cpu().numpy()[0].copy(),
-        "timesteps": motion_data["agent"].timesteps.detach().cpu().numpy()[0].copy(),
-        "moving_agent_mask": motion_data["agent"].moving_agent_mask.detach().cpu().numpy()[0].copy(),
-        "road_points": motion_data["map"].road_points.detach().cpu().numpy()[0].copy(),
-        "road_types": motion_data["map"].road_types.detach().cpu().numpy()[0].copy(),
-    }
-
-
-def _collect_nobatch_snapshot(wrapper: CtrlSimEgoWrapper) -> Dict[str, Any]:
-    opponent = wrapper.env.opponent
-    t = wrapper.env.current_step
-    opponent._vehicle_data_dict = opponent._update_vehicle_data_dict(
-        t,
-        wrapper.env.vehicles,
-        opponent._vehicle_data_dict,
-    )
-    opponent.update_policy_state(t)
-
-    policy = opponent._policy
-    assert policy is not None
-
-    motion_datas, dead_ids, new_agent_idx_dicts, data_veh_ids = policy.get_data(
-        opponent._gt_data_dict,
-        opponent._preproc_data,
-        opponent.dataset,
-        opponent._vehicles_to_control,
-        t,
-    )
-    token_index = t if t < policy.cfg_rl_waymo.train_context_length else -1
-
-    per_focal: Dict[int, Dict[str, Any]] = {}
-    for focal_id, motion_data in motion_datas.items():
-        focal_data_veh_ids = list(data_veh_ids[focal_id])
-        data = motion_data.to(wrapper.device)
-        focal_idx_in_model = new_agent_idx_dicts[focal_id][policy.veh_id_to_idx[focal_data_veh_ids[0]]]
-        data["focal_idx_in_model"] = focal_idx_in_model
-        with torch.no_grad():
-            preds = policy.model(data, eval=True)
-        action_logits = preds["action_preds"].float().detach().cpu().numpy()[0]
-
-        per_focal[int(focal_id)] = {
-            "token_index": int(token_index),
-            "motion_data": _motion_data_to_numpy(motion_data),
-            "data_veh_ids": focal_data_veh_ids,
-            "veh_ids_in_context": [
-                policy.idx_to_veh_id[idx]
-                for idx in policy.relevant_agent_idxs[focal_id]
-            ],
-            "new_agent_idx_dict": dict(new_agent_idx_dicts[focal_id]),
-            "action_logits": action_logits,
-            "argmax_by_vehicle": {
-                int(veh_id): int(
-                    np.argmax(
-                        action_logits[
-                            new_agent_idx_dicts[focal_id][policy.veh_id_to_idx[veh_id]],
-                            token_index,
-                        ]
-                    )
-                )
-                for veh_id in focal_data_veh_ids
-            },
-        }
-
-    return {
-        "dead_ids": sorted(int(veh_id) for veh_id in dead_ids),
-        "per_focal": per_focal,
-    }
-
-
 def _collect_batch_snapshot(
     wrapper: CtrlSimEgoWrapper,
     teacher: ExternalTeacher,
 ) -> Dict[str, Any]:
-    prepared = unpack_prepared(wrapper.env.opponent.prepare_step(wrapper.env.current_step, wrapper.env.vehicles))
+    prepared = unpack_prepared(
+        wrapper.env.opponent.prepare_step(wrapper.env.current_step, wrapper.env.vehicles)
+    )
     per_focal: Dict[int, Dict[str, Any]] = {}
 
     for focal_batch in prepared["focal_batches"]:
@@ -309,6 +233,41 @@ def _collect_batch_snapshot(
         "dead_ids": sorted(int(veh_id) for veh_id in prepared["dead_ids"]),
         "per_focal": per_focal,
     }
+
+
+def _collect_duplicate_chunk_logits(
+    wrapper: CtrlSimEgoWrapper,
+    teacher: ExternalTeacher,
+) -> Dict[int, Dict[str, Any]]:
+    prepared = unpack_prepared(
+        wrapper.env.opponent.prepare_step(wrapper.env.current_step, wrapper.env.vehicles)
+    )
+    per_focal: Dict[int, Dict[str, Any]] = {}
+
+    for focal_batch in prepared["focal_batches"]:
+        base_job = {
+            "env_idx": 0,
+            "prepared": prepared,
+            "focal_batch": focal_batch,
+        }
+        duplicated_job = {
+            "env_idx": 1,
+            "prepared": prepared,
+            "focal_batch": copy.deepcopy(focal_batch),
+        }
+        batched_data, batch_meta = teacher._collate_chunk_with_padding([base_job, duplicated_job])
+        with teacher.model_forward_context():
+            preds = teacher.model(batched_data, eval=True)
+        action_logits = preds["action_preds"].float().detach().cpu().numpy()
+        token_indices = batch_meta["token_index_per_job"].detach().cpu().numpy()
+        focal_id = int(focal_batch["focal_id"])
+        per_focal[focal_id] = {
+            "token_indices": token_indices.copy(),
+            "first": action_logits[0].copy(),
+            "second": action_logits[1].copy(),
+        }
+
+    return per_focal
 
 
 def _assert_numpy_fields_match(
@@ -375,24 +334,9 @@ def parity_resources() -> Dict[str, str]:
     return _ensure_runtime_resources()
 
 
-def _collect_nobatch_snapshot_from_fresh_runtime(resources: Dict[str, str]) -> Dict[str, Any]:
-    wrapper = CtrlSimEgoWrapper(**_wrapper_kwargs(resources, batch_inference=False))
-    try:
-        _reset_wrapper_to_fixed_level(wrapper)
-        for _ in range(FIRST_MODEL_STEP):
-            _step_nobatch_and_capture_opponent(wrapper)
-        return _collect_nobatch_snapshot(wrapper)
-    finally:
-        wrapper.close()
-
-
 def _collect_batch_snapshot_from_fresh_runtime(resources: Dict[str, str]) -> Dict[str, Any]:
-    teacher = ExternalTeacher(
-        checkpoint_path=resources["checkpoint_path"],
-        device="cuda",
-        base_seed=BASE_SEED,
-    )
-    wrapper = CtrlSimEgoWrapper(**_wrapper_kwargs(resources, batch_inference=True))
+    teacher = _build_teacher(resources)
+    wrapper = CtrlSimEgoWrapper(**_wrapper_kwargs(resources))
     try:
         _clear_teacher_rng(teacher)
         _reset_wrapper_to_fixed_level(wrapper)
@@ -403,25 +347,11 @@ def _collect_batch_snapshot_from_fresh_runtime(resources: Dict[str, str]) -> Dic
         wrapper.close()
 
 
-def _collect_nobatch_trace_from_fresh_runtime(resources: Dict[str, str]) -> list[Dict[int, Tuple[float, float]]]:
-    wrapper = CtrlSimEgoWrapper(**_wrapper_kwargs(resources, batch_inference=False))
-    try:
-        _reset_wrapper_to_fixed_level(wrapper)
-        trace = []
-        for _ in range(TRACE_STEPS):
-            trace.append(_step_nobatch_and_capture_opponent(wrapper))
-        return trace
-    finally:
-        wrapper.close()
-
-
-def _collect_batch_trace_from_fresh_runtime(resources: Dict[str, str]) -> list[Dict[int, Tuple[float, float]]]:
-    teacher = ExternalTeacher(
-        checkpoint_path=resources["checkpoint_path"],
-        device="cuda",
-        base_seed=BASE_SEED,
-    )
-    wrapper = CtrlSimEgoWrapper(**_wrapper_kwargs(resources, batch_inference=True))
+def _collect_batch_trace_from_fresh_runtime(
+    resources: Dict[str, str],
+) -> list[Dict[int, Tuple[float, float]]]:
+    teacher = _build_teacher(resources)
+    wrapper = CtrlSimEgoWrapper(**_wrapper_kwargs(resources))
     try:
         _clear_teacher_rng(teacher)
         _reset_wrapper_to_fixed_level(wrapper)
@@ -438,10 +368,12 @@ def _collect_batch_trace_from_fresh_runtime(resources: Dict[str, str]) -> list[D
 @pytest.mark.requires_gpu
 @pytest.mark.requires_checkpoint
 @pytest.mark.requires_real_data
-def test_fixed_level_opponent_inputs_logits_and_argmax_match(parity_resources) -> None:
-    no_batch_snapshot = _collect_nobatch_snapshot_from_fresh_runtime(parity_resources)
-    batch_snapshot = _collect_batch_snapshot_from_fresh_runtime(parity_resources)
-    _assert_snapshots_match(batch_snapshot, no_batch_snapshot)
+def test_fixed_level_opponent_inputs_logits_and_argmax_are_deterministic(
+    parity_resources,
+) -> None:
+    snapshot_a = _collect_batch_snapshot_from_fresh_runtime(parity_resources)
+    snapshot_b = _collect_batch_snapshot_from_fresh_runtime(parity_resources)
+    _assert_snapshots_match(snapshot_b, snapshot_a)
 
 
 @pytest.mark.integration
@@ -449,11 +381,45 @@ def test_fixed_level_opponent_inputs_logits_and_argmax_match(parity_resources) -
 @pytest.mark.requires_gpu
 @pytest.mark.requires_checkpoint
 @pytest.mark.requires_real_data
-def test_fixed_level_opponent_action_trace_matches_for_40_steps(parity_resources) -> None:
-    no_batch_trace = _collect_nobatch_trace_from_fresh_runtime(parity_resources)
-    batch_trace = _collect_batch_trace_from_fresh_runtime(parity_resources)
+def test_fixed_level_opponent_action_trace_matches_for_40_steps(
+    parity_resources,
+) -> None:
+    trace_a = _collect_batch_trace_from_fresh_runtime(parity_resources)
+    trace_b = _collect_batch_trace_from_fresh_runtime(parity_resources)
 
-    assert len(batch_trace) == len(no_batch_trace) == TRACE_STEPS
-    for step_idx, (no_batch_actions, batch_actions) in enumerate(zip(no_batch_trace, batch_trace), start=1):
-        _compare_action_dicts(batch_actions, no_batch_actions)
+    assert len(trace_a) == len(trace_b) == TRACE_STEPS
+    for step_idx, (actions_a, actions_b) in enumerate(zip(trace_a, trace_b), start=1):
+        _compare_action_dicts(actions_b, actions_a)
         assert step_idx <= TRACE_STEPS
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.requires_gpu
+@pytest.mark.requires_checkpoint
+@pytest.mark.requires_real_data
+def test_duplicate_jobs_in_same_batch_keep_identical_action_logits(
+    parity_resources,
+) -> None:
+    teacher = _build_teacher(parity_resources)
+    wrapper = CtrlSimEgoWrapper(**_wrapper_kwargs(parity_resources))
+    try:
+        _clear_teacher_rng(teacher)
+        _reset_wrapper_to_fixed_level(wrapper)
+        for _ in range(FIRST_MODEL_STEP):
+            _step_batch_and_capture_opponent(wrapper, teacher)
+
+        duplicate_logits = _collect_duplicate_chunk_logits(wrapper, teacher)
+        assert duplicate_logits
+        for focal_id, focal_entry in duplicate_logits.items():
+            token_indices = focal_entry["token_indices"]
+            assert int(token_indices[0]) == int(token_indices[1]), focal_id
+            np.testing.assert_allclose(
+                focal_entry["first"],
+                focal_entry["second"],
+                atol=1.5e-4,
+                rtol=0.0,
+                err_msg=f"focal_id={focal_id} duplicated chunk logits 不一致",
+            )
+    finally:
+        wrapper.close()

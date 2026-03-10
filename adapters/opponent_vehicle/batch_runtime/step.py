@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -64,7 +64,7 @@ def prepare_step(
             }
         )
 
-    tilt_by_veh_id: Dict[int, Tuple[int, int, int]] = (
+    tilt_by_veh_id: Dict[int, tuple[int, int, int]] = (
         dict(adapter.per_vehicle_tilting) if adapter.per_vehicle_tilting else {}
     )
     prepared_dict = {

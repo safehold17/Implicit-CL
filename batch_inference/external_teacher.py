@@ -17,17 +17,11 @@ ctrlsim_path()
 from models.ctrl_sim import CtRLSim
 
 from .external_teacher_batch_collator import collate_chunk_with_padding
-from .external_teacher_batch_decoder import (
+from .batch_decoder.pipeline import (
     decode_action_stage_batched,
     decode_rtg_stage_batched,
     forward_chunk_batched,
     get_next_worker_rng_state,
-)
-from .external_teacher_job_scheduler import (
-    build_chunks,
-    collect_flat_jobs,
-    estimate_job_tokens,
-    fill_empty_ok_env_results,
 )
 from .ipc_codec import pack_model_outputs, release_prepared_payload, unpack_prepared
 
@@ -56,6 +50,97 @@ def _aggregate_forward_chunk_profiles(chunk_profiles: List[Dict[str, Any]]) -> D
         _merge_profile_sums(aggregate["stage_ms"], profile.get("stage_ms", {}))
         _merge_profile_sums(aggregate["detail_ms"], profile.get("detail_ms", {}))
     return aggregate
+
+
+def _collect_flat_jobs(
+    per_env_prepared: List[Optional[Dict[str, Any]]],
+    results: List[Optional[Dict[str, Any]]],
+    build_empty_env_result,
+) -> List[Dict[str, Any]]:
+    flat_jobs: List[Dict[str, Any]] = []
+    for env_idx, prepared in enumerate(per_env_prepared):
+        if prepared is None:
+            continue
+
+        _assert_required_keys(
+            prepared,
+            ("status", "step_t", "token_index", "dead_ids"),
+            f"prepared env_idx={env_idx}",
+        )
+        status = prepared["status"]
+        if status == "skip":
+            results[env_idx] = build_empty_env_result(prepared, env_idx=env_idx, status="skip")
+            continue
+        if status != "ok":
+            raise ValueError(f"prepared env_idx={env_idx} has invalid status={status!r}")
+
+        _assert_required_keys(prepared, ("focal_batches",), f"prepared env_idx={env_idx}")
+        for focal_batch in prepared["focal_batches"]:
+            _assert_required_keys(focal_batch, ("focal_id", "motion_data_np"), "prepared focal_batch")
+            flat_jobs.append(
+                {
+                    "env_idx": env_idx,
+                    "prepared": prepared,
+                    "focal_batch": focal_batch,
+                }
+            )
+
+    return flat_jobs
+
+
+def _fill_empty_ok_env_results(
+    per_env_prepared: List[Optional[Dict[str, Any]]],
+    results: List[Optional[Dict[str, Any]]],
+    build_empty_env_result,
+) -> None:
+    for env_idx, prepared in enumerate(per_env_prepared):
+        if prepared is None or prepared["status"] != "ok":
+            continue
+        if results[env_idx] is None:
+            results[env_idx] = build_empty_env_result(prepared, env_idx=env_idx, status="ok")
+
+
+def _job_chunk_key(job: Dict[str, Any]) -> Tuple[int, int, int]:
+    agent_states = job["focal_batch"]["motion_data_np"]["agent_states"]
+    seq_len = int(agent_states.shape[1])
+    max_num_agents = int(agent_states.shape[0])
+    predict_rtgs = 1 if bool(job["focal_batch"].get("predict_rtgs", True)) else 0
+    return seq_len, max_num_agents, predict_rtgs
+
+
+def _estimate_job_tokens(job: Dict[str, Any]) -> int:
+    agent_states = job["focal_batch"]["motion_data_np"]["agent_states"]
+    seq_len = int(agent_states.shape[1])
+    max_num_agents = int(agent_states.shape[0])
+    return seq_len * max_num_agents * 3
+
+
+def _build_chunks(
+    flat_jobs: List[Dict[str, Any]],
+    micro_batch: Optional[int],
+) -> List[List[Dict[str, Any]]]:
+    if not flat_jobs:
+        return []
+
+    buckets: Dict[Tuple[int, int, int], List[Dict[str, Any]]] = {}
+    for job in flat_jobs:
+        buckets.setdefault(_job_chunk_key(job), []).append(job)
+
+    max_chunk_jobs = micro_batch if micro_batch and micro_batch > 0 else None
+    chunks: List[List[Dict[str, Any]]] = []
+    for chunk_key in sorted(buckets.keys()):
+        current_chunk: List[Dict[str, Any]] = []
+        for job in buckets[chunk_key]:
+            exceed_job_budget = max_chunk_jobs is not None and len(current_chunk) >= max_chunk_jobs
+            if exceed_job_budget:
+                chunks.append(current_chunk)
+                current_chunk = []
+
+            current_chunk.append(job)
+
+        if current_chunk:
+            chunks.append(current_chunk)
+    return chunks
 
 
 class ExternalTeacher:
@@ -362,7 +447,7 @@ class ExternalTeacher:
         per_env_prepared: List[Optional[Dict[str, Any]]],
         results: List[Optional[Dict[str, Any]]],
     ) -> List[Dict[str, Any]]:
-        return collect_flat_jobs(
+        return _collect_flat_jobs(
             per_env_prepared=per_env_prepared,
             results=results,
             build_empty_env_result=self._build_empty_env_result,
@@ -373,7 +458,7 @@ class ExternalTeacher:
         per_env_prepared: List[Optional[Dict[str, Any]]],
         results: List[Optional[Dict[str, Any]]],
     ) -> None:
-        fill_empty_ok_env_results(
+        _fill_empty_ok_env_results(
             per_env_prepared=per_env_prepared,
             results=results,
             build_empty_env_result=self._build_empty_env_result,
@@ -426,10 +511,10 @@ class ExternalTeacher:
             )
 
     def _estimate_job_tokens(self, job: Dict[str, Any]) -> int:
-        return estimate_job_tokens(job)
+        return _estimate_job_tokens(job)
 
     def _build_chunks(self, flat_jobs: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
-        return build_chunks(
+        return _build_chunks(
             flat_jobs=flat_jobs,
             micro_batch=self.micro_batch,
         )

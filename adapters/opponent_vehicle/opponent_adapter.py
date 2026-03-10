@@ -45,7 +45,8 @@ class CtrlSimOpponentAdapter:
     adapter.reset(scenario, vehicles, gt_data_dict, preproc_data, opponent_ids)
 
     for t in range(max_steps):
-        actions = adapter.step(t, vehicles)
+        prepared = adapter.prepare_step(t, vehicles)
+        actions = adapter.apply_predictions(model_outputs)
         for veh_id, (accel, steer) in actions.items():
             adapter.apply_action(vehicle_map[veh_id], (accel, steer))
         sim.step(dt)
@@ -81,7 +82,6 @@ class CtrlSimOpponentAdapter:
         self.checkpoint_path = checkpoint_path
         self.model = None
         self.dataset = None
-        self.batch_inference = False
         self._checkpoint_cfg = None
         self._policy_service = OpponentPolicyService(self)
         self._reward_service = OpponentRewardService(self)
@@ -153,7 +153,9 @@ class CtrlSimOpponentAdapter:
         self._default_initial_rtg = np.array([10.0, 90.0, 90.0], dtype=np.float32)
 
         if load_on_init:
-            self._load_model_and_dataset()
+            self._load_checkpoint_cfg()
+            self._validate_external_cfg_compatibility()
+            self._load_dataset_only()
 
     # ===== policy service delegation =====
 
@@ -288,10 +290,6 @@ class CtrlSimOpponentAdapter:
     def apply_predictions(self, model_outputs: Optional[Dict]):
         self._ensure_services()
         return self._state_service.apply_predictions(model_outputs)
-
-    def step(self, t: int, vehicles: List):
-        self._ensure_services()
-        return self._state_service.step(t, vehicles)
 
     def apply_action(self, veh, action: Tuple[float, float]):
         self._ensure_services()

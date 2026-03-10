@@ -15,7 +15,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from adapters.opponent_vehicle import CtrlSimOpponentAdapter
-from batch_inference.prepare_and_apply import capture_sampling_rng_state
+from adapters.opponent_vehicle.batch_runtime import capture_sampling_rng_state
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 from envs.wrappers import ParallelAdversarialVecEnv
 from eval import Evaluator
@@ -47,12 +47,11 @@ class CtrlSimEgoWrapper:
         xpid: str,
         device: str = "cuda",
         seed: int = 0,
-        batch_inference: bool = False,
+        inference_precision: str = "fp32",
         action_repeat_interval: int = 2,
         sparse_inference_action_repeat: bool = False,
         **_kwargs,
     ):
-        self.batch_inference = batch_inference
         self.env = NocturneCtrlSimAdversarial(
             scenario_index_path=scenario_index_path,
             opponent_checkpoint=opponent_checkpoint,
@@ -65,7 +64,7 @@ class CtrlSimEgoWrapper:
             seed=seed,
             tilting_mode=tilting_mode,
             tilt_range=tilt_range,
-            batch_inference=batch_inference,
+            inference_precision=inference_precision,
             action_repeat_interval=action_repeat_interval,
             sparse_inference_action_repeat=sparse_inference_action_repeat,
         )
@@ -77,18 +76,18 @@ class CtrlSimEgoWrapper:
         self.show_vehicle_ids = show_vehicle_ids
         self.output_dir = output_dir
         self.xpid = xpid
+        self.inference_precision = inference_precision
         self.episode_idx = 0
         self.goal_pos_tolerance = 1.0
         self._opponent_reached_goal_ids = set()
         self._episode_position_reached = False
+        self._single_env_teacher = None
 
         self.ego_adapter = CtrlSimOpponentAdapter(
             cfg=self.env.cfg,
             checkpoint_path=self.checkpoint_path,
             device=self.device,
         )
-        if self.batch_inference:
-            self.ego_adapter.batch_inference = True
         self.ego_adapter.set_tilting(0, 0, 0)
         self.ego_id = None
 
@@ -292,18 +291,26 @@ class CtrlSimEgoWrapper:
         return self._postprocess_step(obs, reward, done, info)
 
     def step(self, _action):
-        t = self.env.current_step
-        ego_actions = self.ego_adapter.step(t, self.env.vehicles)
-        if self.ego_id is not None and self.ego_id in ego_actions:
-            accel, steer = ego_actions[self.ego_id]
-        else:
-            accel, steer = 0.0, 0.0
-        runtime_mode = getattr(self.env, "opponent_runtime_mode", "normal")
-        if runtime_mode == "normal" and len(self.env.opponent_vehicle_ids) > 0:
-            opponent_actions = self.env.opponent.step(t, self.env.vehicles)
-        else:
-            opponent_actions = {}
-        return self._step_with_ego_action(accel, steer, opponent_actions)
+        prepared = self.step_prepare(_action)
+        teacher = self._get_single_env_teacher()
+        ego_outputs = teacher.batched_forward([prepared["ego"]])[0]
+        opp_outputs = teacher.batched_forward([prepared["opponent"]])[0]
+        return self.step_complete({"ego": ego_outputs, "opponent": opp_outputs})
+
+    def _get_single_env_teacher(self):
+        teacher = self._single_env_teacher
+        if teacher is not None:
+            return teacher
+
+        from batch_inference import ExternalTeacher
+
+        teacher = ExternalTeacher(
+            checkpoint_path=self.checkpoint_path,
+            device=self.device,
+            inference_precision=self.inference_precision,
+        )
+        self._single_env_teacher = teacher
+        return teacher
 
     # ========== Batch inference two-phase step ==========
 
@@ -461,8 +468,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--show_vehicle_ids", action="store_true")
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--xpid", type=str, required=True)
-    parser.add_argument("--batch_inference", action="store_true",
-                        help="Use batched GPU inference in main process instead of per-subprocess models.")
     parser.add_argument(
         "--action_repeat_interval",
         type=int,
@@ -479,7 +484,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         choices=["fp32", "amp_fp16", "amp_bf16"],
         default="fp32",
-        help="Inference precision for ExternalTeacher in batch_inference mode.",
+        help="Inference precision for ExternalTeacher.",
     )
     return parser.parse_args()
 
@@ -629,7 +634,6 @@ def evaluate_with_metrics(
             action = agent.process_action(action)
 
         if external_teacher is not None:
-            # 3-phase batch inference: prepare → batched forward → complete
             per_env_prepared = venv.step_prepare(action)
             ego_prepared = [p.get("ego") if p else None for p in per_env_prepared]
             opp_prepared = [p.get("opponent") if p else None for p in per_env_prepared]
@@ -640,8 +644,6 @@ def evaluate_with_metrics(
                 for e, o in zip(ego_results, opp_results)
             ]
             obs, reward, done, infos = venv.step_complete(combined, reset_random=True)
-        elif env_name.startswith("Nocturne"):
-            obs, reward, done, infos = venv.step_env(action, reset_random=True)
         else:
             obs, reward, done, infos = venv.step(action)
 
@@ -771,21 +773,19 @@ def main() -> None:
         output_dir=args.output_dir,
         xpid=args.xpid,
         video_dir=video_dir,
-        batch_inference=args.batch_inference,
+        inference_precision=args.inference_precision,
         action_repeat_interval=args.action_repeat_interval,
         sparse_inference_action_repeat=args.sparse_inference_action_repeat,
     )
 
-    # Build ExternalTeacher for batched inference (single GPU model in main process)
-    external_teacher = None
-    if args.batch_inference:
-        from batch_inference import ExternalTeacher
-        external_teacher = ExternalTeacher(
-            checkpoint_path=args.checkpoint_path,
-            device=args.device,
-            base_seed=base_seed,
-            inference_precision=args.inference_precision,
-        )
+    from batch_inference import ExternalTeacher
+
+    external_teacher = ExternalTeacher(
+        checkpoint_path=args.checkpoint_path,
+        device=args.device,
+        base_seed=base_seed,
+        inference_precision=args.inference_precision,
+    )
 
     action_space = evaluator.venv[env_names[0]].action_space
     if evaluator.is_discrete_actions:

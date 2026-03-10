@@ -798,15 +798,11 @@ parser.add_argument(
 
 # ============== Opponent Inference ==============
 parser.add_argument(
-    '--batch_inference',
-    type=str2bool, nargs='?', const=True, default=False,
-    help='Move ctrl-sim GPU inference to main process (batched across envs).')
-parser.add_argument(
     '--inference_precision',
     type=str,
     choices=['fp32', 'amp_fp16', 'amp_bf16'],
     default='fp32',
-    help='Inference precision for ExternalTeacher when batch_inference is enabled.')
+    help='Inference precision for batched ExternalTeacher inference.')
 parser.add_argument(
     '--sparse_inference_action_repeat',
     type=str2bool, nargs='?', const=True, default=False,

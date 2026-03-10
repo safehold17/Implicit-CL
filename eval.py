@@ -155,15 +155,11 @@ def parse_args():
 		type=str2bool, nargs='?', const=True, default=False,
 		help="Record video of first environment evaluation process.")
 	parser.add_argument(
-		'--batch_inference',
-		type=str2bool, nargs='?', const=True, default=False,
-		help='Enable main-process batched ctrl-sim inference for Nocturne evaluation.')
-	parser.add_argument(
 		'--inference_precision',
 		type=str,
 		choices=['fp32', 'amp_fp16', 'amp_bf16'],
 		default='fp32',
-		help='Inference precision for ExternalTeacher when batch_inference is enabled.')
+		help='Inference precision for batched ExternalTeacher inference.')
 
 	return parser.parse_args()
 
@@ -223,7 +219,6 @@ class Evaluator(object):
 				'opponent_vehicle_number',
 				'action_repeat_interval',
 				'sparse_inference_action_repeat',
-				'batch_inference',
 				'veh_veh_collision_rew_multiplier',
 				'veh_edge_collision_rew_multiplier',
 				'pos_target_achieved_rew_multiplier',
@@ -503,12 +498,9 @@ class Evaluator(object):
 					action = action.cpu().numpy()
 					if not self.is_discrete_actions:
 						action = agent.process_action(action)
-					use_batch_inference = (
-						env_name.startswith('Nocturne')
-						and self.kwargs.get('batch_inference', False)
-						and external_teacher is not None
-					)
-					if use_batch_inference:
+					if env_name.startswith('Nocturne'):
+						if external_teacher is None:
+							raise RuntimeError("Nocturne evaluation requires an ExternalTeacher.")
 						per_env_prepared = venv.step_prepare(action)
 						first_prepared = next(
 							(item for item in per_env_prepared if item is not None),
@@ -534,8 +526,6 @@ class Evaluator(object):
 						else:
 							model_outputs = external_teacher.batched_forward(per_env_prepared)
 						obs, reward, done, infos = venv.step_complete(model_outputs, reset_random=True)
-					elif env_name.startswith('Nocturne'):
-						obs, reward, done, infos = venv.step_env(action, reset_random=True)
 					else:
 						obs, reward, done, infos = venv.step(action)
 
@@ -597,7 +587,6 @@ def _collect_nocturne_required_args(flags, cli_args):
 		"opponent_vehicle_number",
 		"action_repeat_interval",
 		"sparse_inference_action_repeat",
-		"batch_inference",
 		"inference_precision",
 		"scenario_data_dir",
 		"preprocess_dir",
@@ -763,12 +752,12 @@ if __name__ == '__main__':
 			num_seeds += 1
 
 			external_teacher = None
-			if args.batch_inference and any(name.startswith("Nocturne") for name in env_names):
+			if any(name.startswith("Nocturne") for name in env_names):
 				from batch_inference import ExternalTeacher
 				opponent_checkpoint = nocturne_required.get("opponent_checkpoint")
 				if opponent_checkpoint is None:
 					raise ValueError(
-						"batch_inference requires opponent_checkpoint for Nocturne evaluation."
+						"Nocturne evaluation requires opponent_checkpoint."
 					)
 				external_teacher = ExternalTeacher(
 					checkpoint_path=opponent_checkpoint,

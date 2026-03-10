@@ -270,7 +270,11 @@ if __name__ == '__main__':
         train=True,
         plr_args=plr_args,
         device=device,
-        external_teacher=_build_external_teacher(args, device) if getattr(args, 'batch_inference', False) else None,
+        external_teacher=(
+            _build_external_teacher(args, device)
+            if args.env_name.startswith('Nocturne')
+            else None
+        ),
     )
 
     # === Configure checkpointing ===
@@ -342,7 +346,7 @@ if __name__ == '__main__':
                 vehicle_map_path=args.vehicle_map_path,
                 max_episode_steps=args.nocturne_max_episode_steps,
                 tilt_range=args.tilt_range,
-                batch_inference=args.batch_inference)
+            )
 
     # === Train === 
     last_checkpoint_idx = getattr(train_runner, args.checkpoint_basis)

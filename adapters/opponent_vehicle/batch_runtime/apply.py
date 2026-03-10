@@ -4,9 +4,10 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-from .ipc_codec import unpack_model_outputs, validate_model_outputs_payload
-from .preparation.rng import restore_sampling_rng_state
-from .preparation.shared import (
+from batch_inference.ipc_codec import unpack_model_outputs, validate_model_outputs_payload
+
+from .rng import restore_sampling_rng_state
+from .shared import (
     NEXT_RTG_KEYS,
     consume_pending_sparse_actions,
     get_step_controlled_ids,

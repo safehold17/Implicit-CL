@@ -34,4 +34,3 @@ def restore_sampling_rng_state(device: Any, rng_state: Any) -> None:
         torch.cuda.set_rng_state(state_tensor, device=torch_device)
         return
     torch.set_rng_state(state_tensor)
-

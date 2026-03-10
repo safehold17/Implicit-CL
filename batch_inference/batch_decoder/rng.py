@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 
-from ..discretization_utils import decode_predicted_action
+from adapters.ctrlsim_discretization import decode_predicted_action
 
 
 def get_device_rng_state(device: Any) -> torch.Tensor:
@@ -130,4 +130,3 @@ def reserve_action_rng_states_for_job(
             generator=env_generator,
         )
     return reserved_states
-

@@ -139,15 +139,8 @@ class OpponentPolicyService:
         )
 
     def _load_model_and_dataset(self):
-        # 加载模型（参考: eval_sim.py 第 35 行）
-        print(f"Loading CtRL-Sim model from {self.adapter.checkpoint_path}...")
-        self.adapter.model = CtRLSim.load_from_checkpoint(self.adapter.checkpoint_path)
-        self.adapter.model.to(self.adapter.device)
-        self.adapter.model.eval()
-        print("Model loaded successfully.")
-
-        # 初始化数据集（用于数据处理，参考: policy_evaluator.py 第 40 行）
-        # 注：mode='eval' 用于推理时的数据预处理
+        self._load_checkpoint_cfg()
+        self._validate_external_cfg_compatibility()
         self._load_dataset_only()
 
     def _create_policy(self) -> AutoregressivePolicy:
@@ -156,15 +149,10 @@ class OpponentPolicyService:
 
         参考: eval_sim.py 第 42-66 行
         """
-        if self.adapter.batch_inference:
-            if self.adapter._checkpoint_cfg is None:
-                self._load_checkpoint_cfg()
-                self._validate_external_cfg_compatibility()
-            model = _DummyModel(self.adapter._checkpoint_cfg)
-        else:
-            if self.adapter.model is None:
-                raise RuntimeError("CtrlSim model is not loaded.")
-            model = self.adapter.model
+        if self.adapter._checkpoint_cfg is None:
+            self._load_checkpoint_cfg()
+            self._validate_external_cfg_compatibility()
+        model = _DummyModel(self.adapter._checkpoint_cfg)
 
         if self.adapter.per_vehicle_tilting is not None:
             tilt_dict = self._build_per_vehicle_tilt_dict(self.adapter.per_vehicle_tilting)

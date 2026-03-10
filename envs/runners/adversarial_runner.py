@@ -831,12 +831,14 @@ class AdversarialRunner(object):
 
             if is_env:
                 obs, reward, done, infos = self.ued_venv.step_adversary(_action)
-            elif self.external_teacher is not None:
+            elif args.env_name.startswith('Nocturne'):
                 # Three-phase step: prepare → batched GPU inference → complete
                 prepared = self.venv.step_prepare(_action)
                 if all(item is None for item in prepared):
                     model_outputs = [None] * len(prepared)
                 else:
+                    if self.external_teacher is None:
+                        raise RuntimeError("Nocturne training requires an ExternalTeacher.")
                     model_outputs = self.external_teacher.batched_forward(prepared)
                 obs, reward, done, infos = self.venv.step_complete(
                     model_outputs, reset_random=reset_random,
