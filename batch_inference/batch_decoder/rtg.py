@@ -4,7 +4,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import torch
 
-from adapters.ctrlsim_discretization import decode_predicted_rtg, get_tilt_logits
+from ctrlsim_adapter.ctrlsim_discretization import decode_predicted_rtg, get_tilt_logits
 from utils.data import MotionData
 
 RTGCache = Dict[Tuple[int, int], Tuple[int, int, int]]

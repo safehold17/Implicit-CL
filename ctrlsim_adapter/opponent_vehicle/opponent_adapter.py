@@ -7,7 +7,7 @@ CtRL-Sim 对手策略适配器
 - policies/autoregressive_policy.py 核心推理逻辑
 - policies/policy.py Policy 基类
 """
-from adapters.ctrlsim_path import ctrlsim_path
+from ctrlsim_adapter.ctrlsim_path import ctrlsim_path
 
 ctrlsim_path()
 
@@ -22,9 +22,9 @@ from .existence_logic import (
     _keep_exists_on_invalid,
     _should_drop_after_goal,
 )
-from .opponent_policy import OpponentPolicyService
-from .opponent_reward import OpponentRewardService
-from .opponent_state import OpponentStateService
+from .policy_service import OpponentPolicyService
+from .reward_service import OpponentRewardService
+from .state_service import OpponentStateService
 from .sparse_inference import SparseInferenceConfig, SparseInferenceController
 from .tilting import TiltConfig
 

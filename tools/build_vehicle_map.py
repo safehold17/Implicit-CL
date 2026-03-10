@@ -36,8 +36,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from adapters.config_loader import create_minimal_config
-from adapters.data_bridge import DataBridge
+from ctrlsim_adapter.config_loader import create_minimal_config
+from ctrlsim_adapter.data_bridge import DataBridge
 
 
 def _load_config_defaults(config_path: str) -> Optional[str]:

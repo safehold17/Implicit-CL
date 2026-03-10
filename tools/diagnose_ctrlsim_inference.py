@@ -31,10 +31,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from adapters.config_loader import create_minimal_config
-from adapters.data_bridge import DataBridge
-from adapters.opponent_vehicle.batch_runtime import capture_sampling_rng_state
-from adapters.opponent_vehicle import CtrlSimOpponentAdapter
+from ctrlsim_adapter.config_loader import create_minimal_config
+from ctrlsim_adapter.data_bridge import DataBridge
+from ctrlsim_adapter.opponent_vehicle.batch_runtime import capture_sampling_rng_state
+from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
 from batch_inference import ExternalTeacher
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 

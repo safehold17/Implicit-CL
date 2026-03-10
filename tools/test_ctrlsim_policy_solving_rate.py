@@ -14,8 +14,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from adapters.opponent_vehicle import CtrlSimOpponentAdapter
-from adapters.opponent_vehicle.batch_runtime import capture_sampling_rng_state
+from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
+from ctrlsim_adapter.opponent_vehicle.batch_runtime import capture_sampling_rng_state
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 from envs.wrappers import ParallelAdversarialVecEnv
 from eval import Evaluator
@@ -315,7 +315,7 @@ class CtrlSimEgoWrapper:
     # ========== Batch inference two-phase step ==========
 
     def step_prepare(self, _action):
-        """Phase 1: Prepare inference data for both ego and opponent adapters."""
+        """Phase 1: Prepare inference data for both ego and opponent ctrlsim_adapter."""
         t = self.env.current_step
         worker_rng_state = capture_sampling_rng_state(self.device)
         ego_prepared = self.ego_adapter.prepare_step(

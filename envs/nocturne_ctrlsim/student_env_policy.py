@@ -6,7 +6,7 @@ import heapq
 import math
 import numpy as np
 
-from ..utils.common import angle_of_rotation, angle_sub, to_local
+from .utils.common import angle_of_rotation, angle_sub, to_local
 
 ROAD_FEATURE_DIM = 13
 ROAD_TYPE_DIM = 7

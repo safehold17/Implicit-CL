@@ -31,8 +31,8 @@ from omegaconf import OmegaConf
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from adapters.ctrlsim_path import ctrlsim_path
-from adapters.data_bridge import DataBridge
+from ctrlsim_adapter.ctrlsim_path import ctrlsim_path
+from ctrlsim_adapter.data_bridge import DataBridge
 
 ctrlsim_path()
 

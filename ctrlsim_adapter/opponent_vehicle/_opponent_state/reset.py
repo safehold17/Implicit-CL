@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from adapters.existence import sim_position_exists
+from ctrlsim_adapter.existence import sim_position_exists
 from utils.sim import get_road_data
 
 from ..existence_logic import (
@@ -12,7 +12,7 @@ from ..existence_logic import (
     _keep_exists_on_invalid,
     _should_drop_after_goal,
 )
-from ..opponent_state_helpers import extract_road_edge_polylines
+from ..state_helpers import extract_road_edge_polylines
 
 
 def reset(

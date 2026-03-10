@@ -24,7 +24,7 @@ from .scenario_helpers import (
     remove_background_moving_vehicles,
 )
 
-from .policies.opponent_policy import (
+from .gt_helpers import (
     get_goal_point_for_vehicle,
     get_gt_action,
     build_episode_gt_action_cache,
@@ -32,7 +32,7 @@ from .policies.opponent_policy import (
     is_ego_position_reached,
 )
 from .student_reward import compute_student_reward
-from .policies.student_env_policy import (
+from .student_env_policy import (
     apply_student_action,
     get_student_observation,
 )
@@ -54,10 +54,10 @@ from .utils import visualization as viz
 
 from tools.build_scenario_index import ScenarioIndex
 
-from adapters.config_loader import create_minimal_config
-from adapters.data_bridge import DataBridge
-from adapters.opponent_vehicle import CtrlSimOpponentAdapter
-from adapters.opponent_vehicle.batch_runtime import capture_sampling_rng_state
+from ctrlsim_adapter.config_loader import create_minimal_config
+from ctrlsim_adapter.data_bridge import DataBridge
+from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
+from ctrlsim_adapter.opponent_vehicle.batch_runtime import capture_sampling_rng_state
 class NocturneCtrlSimAdversarial(gym.Env):
     """
     DCD adversarial environment: Nocturne scenario + CtRL-Sim opponent

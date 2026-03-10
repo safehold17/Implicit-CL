@@ -4,7 +4,7 @@ Student reward computation for Nocturne CtrlSim adversarial env.
 
 import numpy as np
 
-from adapters.ctrlsim_path import ctrlsim_path
+from ctrlsim_adapter.ctrlsim_path import ctrlsim_path
 from .utils.common import is_valid_world_position
 
 ctrlsim_path()

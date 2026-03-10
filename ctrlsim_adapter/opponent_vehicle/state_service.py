@@ -3,8 +3,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from adapters.existence import sim_position_exists
-from tools.safe_bicycle import safe_backward_action_from_states
+from ctrlsim_adapter.existence import sim_position_exists
+from ctrlsim_adapter.gt_helpers import (
+    build_gt_action_target_cache,
+    compute_goal_dist_normalizer,
+    get_gt_traj_array,
+    reconstruct_gt_action,
+    resolve_goal_state,
+    resolve_next_gt_state,
+)
 from utils.data import get_object_type_str
 
 from . import batch_runtime as _batch_io
@@ -16,23 +23,6 @@ from .existence_logic import (
 from ._opponent_state import policy_sync as _policy_sync_module
 from ._opponent_state import reset as _reset_module
 from ._opponent_state import update as _update_module
-
-
-def _build_gt_action_target_cache(gt_traj_by_id: Dict[int, np.ndarray]) -> Dict[int, Dict[str, np.ndarray]]:
-    cache: Dict[int, Dict[str, np.ndarray]] = {}
-    for veh_id, gt_traj in gt_traj_by_id.items():
-        traj = np.asarray(gt_traj)
-        if traj.ndim != 2 or traj.shape[0] < 2:
-            continue
-        cache[int(veh_id)] = {
-            "curr_exists": traj[:-1, 4].astype(bool, copy=False),
-            "next_exists": traj[1:, 4].astype(bool, copy=False),
-            "next_pos": traj[1:, :2].astype(np.float32, copy=False),
-            "next_heading": traj[1:, 2].astype(np.float32, copy=False),
-            "next_speed": traj[1:, 3].astype(np.float32, copy=False),
-            "wheel_base": traj[1:, -1].astype(np.float32, copy=False),
-        }
-    return cache
 
 
 class OpponentStateService:
@@ -68,7 +58,7 @@ class OpponentStateService:
             preproc_data=preproc_data,
             vehicles_to_control=vehicles_to_control,
             ego_id=ego_id,
-            build_gt_action_target_cache_fn=_build_gt_action_target_cache,
+            build_gt_action_target_cache_fn=build_gt_action_target_cache,
         )
 
     def cache_last_valid_positions(self, vehicles: List):
@@ -185,7 +175,6 @@ class OpponentStateService:
                 getattr(self.adapter, "_gt_traj_by_id", {})
             )
             self.adapter._gt_action_target_cache = gt_action_target_cache
-        target = gt_action_target_cache.get(veh_id)
 
         is_controlled = veh_id in self.adapter._vehicles_to_control_set
         is_protected = (veh_id == self.adapter._ego_id) or is_controlled
@@ -234,29 +223,23 @@ class OpponentStateService:
         if cached_action is not None:
             return cached_action
 
-        if target is None:
-            next_pos = gt_traj[t + 1, :2]
-            next_heading = float(gt_traj[t + 1, 2])
-            next_speed = float(gt_traj[t + 1, 3])
-            wheel_base = float(gt_traj[t + 1, -1])
-        else:
-            next_pos = target["next_pos"][t]
-            next_heading = float(target["next_heading"][t])
-            next_speed = float(target["next_speed"][t])
-            wheel_base = float(target["wheel_base"][t])
-
-        accel, steer = safe_backward_action_from_states(
-            prev_pos=(float(pos.x), float(pos.y)),
-            prev_theta=heading,
-            prev_vel=speed,
-            curr_pos=(float(next_pos[0]), float(next_pos[1])),
-            curr_theta=next_heading,
-            curr_vel=next_speed,
+        next_pos, next_heading, next_speed, wheel_base = resolve_next_gt_state(
+            gt_traj,
+            gt_action_target_cache,
+            veh_id,
+            t,
+        )
+        action = reconstruct_gt_action(
+            pos_x=float(pos.x),
+            pos_y=float(pos.y),
+            heading=heading,
+            speed=speed,
+            next_pos=next_pos,
+            next_heading=next_heading,
+            next_speed=next_speed,
             wheel_base=wheel_base,
             dt=self.adapter.dt,
         )
-
-        action = (float(accel), float(steer))
         runtime_cache[cache_key] = action
         return action
 
@@ -267,16 +250,11 @@ class OpponentStateService:
             gt_traj_by_id = {}
             self.adapter._gt_traj_by_id = gt_traj_by_id
 
-        gt_traj = gt_traj_by_id.get(veh_id)
-        if gt_traj is not None:
-            return gt_traj
-        gt_data_dict = getattr(self.adapter, "_gt_data_dict", {})
-        data = gt_data_dict.get(veh_id)
-        if not isinstance(data, dict) or "traj" not in data:
-            return None
-        gt_traj = np.asarray(data["traj"])
-        self.adapter._gt_traj_by_id[veh_id] = gt_traj
-        return gt_traj
+        return get_gt_traj_array(
+            getattr(self.adapter, "_gt_data_dict", {}),
+            gt_traj_by_id,
+            veh_id,
+        )
 
     def _initialize_goal_dict(self, veh, gt_traj_data: np.ndarray) -> Dict:
         """
@@ -284,26 +262,15 @@ class OpponentStateService:
 
         参考: evaluator.py 第 60-73 行 initialize_goal_dict()
         """
-        goal_pos = np.array([veh.target_position.x, veh.target_position.y])
-        goal_heading = veh.target_heading
-        goal_speed = veh.target_speed
-
-        idx_disappear = np.where(gt_traj_data[:, 4] == 0)[0]
-        if len(idx_disappear) > 0:
-            idx_goal = idx_disappear[0] - 1
-            if (
-                idx_goal >= 0
-                and np.linalg.norm(gt_traj_data[idx_goal, :2] - goal_pos) > 0.0
-            ):
-                goal_pos = gt_traj_data[idx_goal, :2]
-                goal_heading = gt_traj_data[idx_goal, 2]
-                goal_speed = gt_traj_data[idx_goal, 3]
-
-        return {
-            "pos": goal_pos,
-            "heading": goal_heading,
-            "speed": goal_speed,
-        }
+        return resolve_goal_state(
+            target_position=np.array(
+                [veh.target_position.x, veh.target_position.y],
+                dtype=np.float32,
+            ),
+            target_heading=veh.target_heading,
+            target_speed=veh.target_speed,
+            gt_traj_data=gt_traj_data,
+        )
 
     def _initialize_vehicle_data_dict(self, veh, goal_dict: Dict) -> Dict:
         """
@@ -351,9 +318,10 @@ class OpponentStateService:
         参考: evaluator.py 第 76-81 行 compute_goal_dist_normalizer()
         """
         obj_pos = veh.getPosition()
-        obj_pos = np.array([obj_pos.x, obj_pos.y])
-        dist = np.linalg.norm(obj_pos - goal_pos)
-        return dist if dist > 0 else 1.0
+        return compute_goal_dist_normalizer(
+            np.array([obj_pos.x, obj_pos.y], dtype=np.float32),
+            goal_pos,
+        )
 
     def _get_initial_rtg(self, veh_id: int, veh_idx: int, t: int) -> np.ndarray:
         """读取初始 RTG；缺失或越界时返回默认值。"""

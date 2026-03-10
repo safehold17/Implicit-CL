@@ -3,10 +3,10 @@ from typing import Dict, Tuple
 
 from policies.autoregressive_policy import AutoregressivePolicy
 
-from adapters.ctrlsim_discretization import (
+from ctrlsim_adapter.ctrlsim_discretization import (
     decode_predicted_rtg as _decode_predicted_rtg,
 )
-from adapters.ctrlsim_discretization import (
+from ctrlsim_adapter.ctrlsim_discretization import (
     get_tilt_logits as _get_tilt_logits,
 )
 

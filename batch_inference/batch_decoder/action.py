@@ -224,7 +224,7 @@ def decode_action_for_job(
     token_index: int,
     reserved_rng_states: Optional[Dict[int, torch.Tensor]] = None,
 ) -> Dict[int, Tuple[float, float]]:
-    from adapters.ctrlsim_discretization import decode_predicted_action
+    from ctrlsim_adapter.ctrlsim_discretization import decode_predicted_action
 
     return decode_action_for_job_impl(
         teacher=teacher,

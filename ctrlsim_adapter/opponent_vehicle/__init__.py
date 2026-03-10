@@ -1,15 +1,15 @@
 """
-adapters/opponent_vehicle package initialization.
+ctrlsim_adapter/opponent_vehicle package initialization.
 Sets up the environment for using ctrl-sim.
 """
 
-from adapters.ctrlsim_path import ctrlsim_path
+from ctrlsim_adapter.ctrlsim_path import ctrlsim_path
 
 ctrlsim_path()
 
 from .opponent_adapter import CtrlSimOpponentAdapter, TiltConfig
-from adapters.data_bridge import DataBridge, ScenarioDataLoader
-from adapters.config_loader import (
+from ctrlsim_adapter.data_bridge import DataBridge, ScenarioDataLoader
+from ctrlsim_adapter.config_loader import (
     load_ctrl_sim_config,
     load_ctrl_sim_config_from_yaml,
     get_default_opponent_config,
@@ -20,7 +20,7 @@ from adapters.config_loader import (
 )
 
 __all__ = [
-    # Core adapters
+    # Core adapter API
     'CtrlSimOpponentAdapter',
     'TiltConfig',
     

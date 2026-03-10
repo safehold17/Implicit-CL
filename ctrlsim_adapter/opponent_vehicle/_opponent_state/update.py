@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from ..opponent_state_helpers import (
+from ..state_helpers import (
     append_gt_state_for_step,
     get_sim_state_entries,
     get_state_update_vehicle_ids,

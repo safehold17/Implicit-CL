@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from adapters.ctrlsim_path import ctrlsim_path
+from ctrlsim_adapter.ctrlsim_path import ctrlsim_path
 
 ctrlsim_path()
 
