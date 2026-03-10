@@ -4,14 +4,11 @@ ctrl-sim config loader
 Load and manage Hydra configs for ctrl-sim
 
 Design reference:
-- get CONFIG_PATH from cfgs/dcd_config.py
 - configs are combined through Hydra's defaults mechanism
 
 References:
 - ctrlsim/eval_sim.py: config loading example
 - ctrlsim/cfgs/config.py: CONFIG_PATH
-- cfgs/dcd_config.py: DCD project's CONFIG_PATH
-- cfgs/data/ctrl_sim.yaml: local path overrides
 """
 import os
 from functools import lru_cache
@@ -22,9 +19,6 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf, DictConfig
 
 from ctrlsim_adapter.ctrlsim_path import get_ctrlsim_root
-
-# import CONFIG_PATH from DCD config module (same as ctrl-sim's mode)
-from cfgs.dcd_config import CONFIG_PATH as DCD_CONFIG_PATH
 
 # ctrl-sim config path
 CTRL_SIM_ROOT = str(get_ctrlsim_root())
@@ -51,112 +45,21 @@ def _apply_overrides(
     return cfg
 
 
-def _resolve_local_ctrl_sim_yaml_path() -> Optional[str]:
-    try:
-        dcd_cfg = _load_dcd_config()
-    except Exception:
-        return None
-    local_cfg_path = os.path.join(dcd_cfg.dcd_config_path, "ctrl_sim.yaml")
-    if os.path.exists(local_cfg_path):
-        return local_cfg_path
-    return None
-
-
 def _default_model_checkpoint_path() -> str:
-    return os.path.join(
-        os.path.dirname(__file__),
-        "../checkpoints/model.ckpt",
-    )
+    from arguments import NOCTURNE_CTRLSIM_DEFAULTS
 
-
-@lru_cache(maxsize=1)
-def _load_dcd_config() -> DictConfig:
-    """
-    加载 DCD 项目配置（带缓存）
-    Load the cached DCD project config.
-
-    使用 DCD_CONFIG_PATH（从 cfgs/dcd_config.py 导入）加载配置，
-    Load the config using DCD_CONFIG_PATH imported from cfgs/dcd_config.py.
-
-    Returns:
-    DCD 项目配置对象（包含 dcd_config_path 等）
-    DCD project config object, including dcd_config_path and related fields.
-    """
-    return _compose_config_from_dir(DCD_CONFIG_PATH)
-
-
-def _apply_local_path_overrides(cfg: DictConfig, local_cfg: DictConfig) -> DictConfig:
-    """
-    应用本地路径覆盖配置
-    Apply local path override config.
-
-    将 cfgs/data/ctrl_sim.yaml 中的路径映射到 ctrl-sim 配置结构
-    Map the paths in cfgs/data/ctrl_sim.yaml into the ctrl-sim config structure.
-
-    Args:
-    cfg: ctrl-sim 基础配置
-    cfg: base ctrl-sim config.
-    local_cfg: 本地路径配置（从 cfgs/data/ctrl_sim.yaml 加载）
-    local_cfg: local path config loaded from cfgs/data/ctrl_sim.yaml.
-
-    Returns:
-    更新后的配置对象
-    Updated config object.
-    """
-    if 'ctrl_sim' not in local_cfg:
-        return cfg
-    
-    local = local_cfg.ctrl_sim
-    
-    # 路径映射：(源路径, 目标路径)
-    # Path mappings: (source path, destination path).
-    mappings = [
-        # 顶层路径
-        # Top-level paths.
-        ('dataset_root', 'dataset_root'),
-        ('project_root', 'project_root'),
-        ('nocturne_waymo_data_folder', 'nocturne_waymo_data_folder'),
-        ('nocturne_waymo_train_folder', 'nocturne_waymo_train_folder'),
-        ('nocturne_waymo_val_folder', 'nocturne_waymo_val_folder'),
-        ('nocturne_waymo_val_interactive_folder', 'nocturne_waymo_val_interactive_folder'),
-        ('preprocess_dir', 'dataset.waymo.preprocess_dir'),
-        ('simulated_dataset', 'dataset.waymo.simulated_dataset'),
-        ('simulated_dataset_preprocessed_dir', 'dataset.waymo.simulated_dataset_preprocessed_dir'),
-        # offline_rl 路径
-        # offline_rl paths.
-        ('offline_rl.dataset_path', 'dataset.waymo.dataset_path'),
-        ('offline_rl.output_data_folder_train', 'offline_rl.output_data_folder_train'),
-        ('offline_rl.output_data_folder_val', 'offline_rl.output_data_folder_val'),
-        ('offline_rl.output_data_folder_val_interactive', 'offline_rl.output_data_folder_val_interactive'),
-    ]
-    
-    for src, dest in mappings:
-        value = OmegaConf.select(local, src)
-        if value is not None:
-            OmegaConf.update(cfg, dest, value)
-    
-    return cfg
+    return NOCTURNE_CTRLSIM_DEFAULTS['opponent_checkpoint']
 
 
 def load_ctrl_sim_config(
     checkpoint_path: Optional[str] = None,
     overrides: Optional[Dict[str, Any]] = None,
-    use_local_paths: bool = True,
+    use_local_paths: bool = False,
 ) -> DictConfig:
+    del use_local_paths
 
     cfg = _compose_config_from_dir(CTRL_SIM_CONFIG_PATH)
-    
-    # 应用本地路径覆盖
-    # Apply local path overrides.
-    if use_local_paths:
-        try:
-            local_cfg_path = _resolve_local_ctrl_sim_yaml_path()
-            if local_cfg_path is not None:
-                local_cfg = OmegaConf.load(local_cfg_path)
-                cfg = _apply_local_path_overrides(cfg, local_cfg)
-        except Exception as e:
-            print(f"Warning: Failed to load local path config: {e}")
-    
+
     # 设置 checkpoint 路径
     # Set the checkpoint path.
     if checkpoint_path:
@@ -210,8 +113,8 @@ def get_default_opponent_config() -> Dict[str, Any]:
     获取对手策略的默认配置
     Get the default opponent-policy config.
 
-    从 ctrl-sim 的 YAML 配置文件加载，model_path 从 DCD 配置获取
-    Load the config from ctrl-sim YAML and source model_path from the DCD config.
+    从 ctrl-sim 的 YAML 配置文件加载，model_path 使用共享默认值。
+    Load the config from ctrl-sim YAML and source model_path from the shared defaults.
 
     Returns:
     config: 默认配置字典
@@ -229,15 +132,7 @@ def get_default_opponent_config() -> Dict[str, Any]:
         config.pop('defaults', None)
         config.pop('model_path', None)
         
-        # 从 DCD 配置获取 model_path（在 cfgs/config.yaml 中定义）
-        # Read model_path from the DCD config defined in cfgs/config.yaml.
-        try:
-            dcd_cfg = _load_dcd_config()
-            config['model_path'] = dcd_cfg.model_path
-        except Exception:
-            # 回退到默认路径
-            # Fall back to the default path.
-            config['model_path'] = _default_model_checkpoint_path()
+        config['model_path'] = _default_model_checkpoint_path()
         
         # 确保 tilting 参数存在（默认为 0）
         # Ensure tilting parameters exist with a default value of 0.
@@ -432,7 +327,7 @@ class ConfigManager:
         self,
         checkpoint_path: Optional[str] = None,
         overrides: Optional[Dict[str, Any]] = None,
-        use_local_paths: bool = True,
+        use_local_paths: bool = False,
     ) -> DictConfig:
         """
         加载配置

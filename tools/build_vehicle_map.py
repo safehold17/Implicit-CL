@@ -36,18 +36,9 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from arguments import NOCTURNE_CTRLSIM_DEFAULTS
 from ctrlsim_adapter.config_loader import create_minimal_config
 from ctrlsim_adapter.data_bridge import DataBridge
-
-
-def _load_config_defaults(config_path: str) -> Optional[str]:
-    """Load scenario_dir from config.yaml."""
-    if not config_path or not os.path.exists(config_path):
-        return None
-    cfg = OmegaConf.load(config_path)
-    OmegaConf.resolve(cfg)
-    scenario_dir = OmegaConf.select(cfg, "nocturne_env.scenario_data_dir")
-    return scenario_dir
 
 
 def _load_scenario_index(index_path: str) -> Tuple[List[str], Optional[str]]:
@@ -687,30 +678,24 @@ def _worker_loop(
         result_queue.put(result)
 
 
-def main() -> None:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build vehicle map for scenarios")
     parser.add_argument(
         "--scenario_index_json",
         type=str,
-        default="/home/chen/workspace/dcd-ctrlsim/data/scenarios_index_train.json",
+        default=NOCTURNE_CTRLSIM_DEFAULTS["scenario_index_path"],
         help="Path to scenarios_index.json",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="/home/chen/workspace/dcd-ctrlsim/cfgs/config.yaml",
-        help="Path to config.yaml for defaults",
     )
     parser.add_argument(
         "--scenario_dir",
         type=str,
-        default="/home/chen/Downloads/data/nocturne_mini/formatted_json_v2_no_tl_train/formatted_json_v2_no_tl_train",
-        help="Scenario directory (overrides config.yaml)",
+        default=NOCTURNE_CTRLSIM_DEFAULTS["scenario_data_dir"],
+        help="Scenario directory",
     )
     parser.add_argument(
         "--preprocess_dir",
         type=str,
-        default="/home/chen/Downloads/data/processed/training",
+        default=NOCTURNE_CTRLSIM_DEFAULTS["preprocess_dir"],
         help="Preprocessed data directory (required to filter vehicles by preprocessed data)",
     )
     parser.add_argument(
@@ -767,15 +752,18 @@ def main() -> None:
             "Use --resume_from_checkpoint / --no-resume_from_checkpoint."
         ),
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
-    cfg_scenario_dir = _load_config_defaults(args.config)
+
+def main(argv: Optional[List[str]] = None) -> None:
+    args = parse_args(argv)
+
     scenario_ids, index_source_dir = _load_scenario_index(args.scenario_index_json)
     if args.scenario_dir is None:
-        args.scenario_dir = index_source_dir or cfg_scenario_dir
+        args.scenario_dir = index_source_dir
 
     if not args.scenario_dir:
-        raise ValueError("scenario_dir is required (set via --scenario_dir or config.yaml).")
+        raise ValueError("scenario_dir is required (set via --scenario_dir).")
     if not os.path.exists(args.scenario_index_json):
         raise FileNotFoundError(
             f"scenarios_index.json not found: {args.scenario_index_json}"

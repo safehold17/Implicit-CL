@@ -3,18 +3,15 @@
 Build Nocturne scenario index.
 
 Usage:
-    python util/build_scenario_index.py
+    python tools/build_scenario_index.py --data_dir ... --output ...
 """
+import argparse
 import json
 import os
 from pathlib import Path
 from typing import Optional
-import hydra
-from omegaconf import OmegaConf
 
-
-CONFIG_PATH = str(Path(__file__).resolve().parents[1] / "cfgs" / "data")
-CONFIG_NAME = "scenario_index"
+from arguments import NOCTURNE_CTRLSIM_DEFAULTS
 
 
 class ScenarioIndex:
@@ -102,12 +99,41 @@ def build_scenario_index(
     return index_data
 
 
-@hydra.main(version_base=None, config_path=CONFIG_PATH, config_name=CONFIG_NAME)
-def main(cfg):
-    scenario_cfg = cfg.scenario_index
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build Nocturne scenario index")
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=NOCTURNE_CTRLSIM_DEFAULTS["scenario_data_dir"],
+        help="Nocturne scenario data directory.",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=NOCTURNE_CTRLSIM_DEFAULTS["scenario_index_path"],
+        help="Output JSON path for the scenario index.",
+    )
+    parser.add_argument(
+        "--valid_files_json",
+        type=str,
+        default=None,
+        help="Optional valid_files.json path used to filter scenario ids.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Disable progress prints.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    args = parse_args(argv)
     build_scenario_index(
-        nocturne_data_dir=scenario_cfg.data_dir,
-        output_path=scenario_cfg.output,
+        nocturne_data_dir=args.data_dir,
+        output_path=args.output,
+        valid_files_json=args.valid_files_json,
+        verbose=not args.quiet,
     )
 
 

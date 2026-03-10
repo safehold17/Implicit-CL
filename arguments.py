@@ -11,6 +11,15 @@ import torch
 from util import str2bool
 
 
+NOCTURNE_CTRLSIM_DEFAULTS = {
+    'scenario_index_path': 'data/scenarios_index.json',
+    'scenario_data_dir': 'data/nocturne_waymo/formatted_json_v2_no_tl_train',
+    'preprocess_dir': 'data/preprocess/test',
+    'opponent_checkpoint': 'data/checkpoints/model.ckpt',
+    'vehicle_map_path': 'data/vehicle_map_valid.json',
+}
+
+
 parser = argparse.ArgumentParser(description='RL')
 
 
@@ -773,27 +782,27 @@ parser.add_argument(
 parser.add_argument(
     '--scenario_index_path',
     type=str,
-    default='data/scenarios_index.json',
+    default=NOCTURNE_CTRLSIM_DEFAULTS['scenario_index_path'],
     help='The path to the Nocturne scenario index JSON file')
 parser.add_argument(
     '--scenario_data_dir',
     type=str,
-    default='data/nocturne_waymo/formatted_json_v2_no_tl_train',
+    default=NOCTURNE_CTRLSIM_DEFAULTS['scenario_data_dir'],
     help='The directory of the Nocturne scenario data')
 parser.add_argument(
     '--preprocess_dir',
     type=str,
-    default='data/preprocess/test',
+    default=NOCTURNE_CTRLSIM_DEFAULTS['preprocess_dir'],
     help='The directory of the ctrl-sim preprocessed data')
 parser.add_argument(
     '--opponent_checkpoint',
     type=str,
-    default='checkpoints/model.ckpt',
+    default=NOCTURNE_CTRLSIM_DEFAULTS['opponent_checkpoint'],
     help='The path to the ctrl-sim opponent model checkpoint')
 parser.add_argument(
     '--vehicle_map_path',
     type=str,
-    default='data/vehicle_map_valid.json',
+    default=NOCTURNE_CTRLSIM_DEFAULTS['vehicle_map_path'],
     help='The path to the vehicle map JSON file')
 
 # ============== Opponent Inference ==============

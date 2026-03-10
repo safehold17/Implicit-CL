@@ -35,34 +35,40 @@ class ScenarioLevel:
     # Per-vehicle tilting (flattened, variable length)
     per_vehicle_tilting: Tuple[int, ...] = ()
 
+    @staticmethod
+    def _coerce_integer_tilt(name: str, value: float) -> int:
+        tilt = float(value)
+        if not tilt.is_integer():
+            raise ValueError(f"{name} must be an integer, got {value}")
+        tilt_int = int(tilt)
+        if not (-25 <= tilt_int <= 25):
+            raise ValueError(f"{name} must be in [-25, 25], got {tilt_int}")
+        return tilt_int
+
     def __post_init__(self):
         if self.seed < 0:
             raise ValueError(f"seed must be non-negative, got {self.seed}")
 
         for name in ["goal_tilt", "veh_veh_tilt", "veh_edge_tilt"]:
-            val = int(round(float(getattr(self, name))))
-            setattr(self, name, val)
-            if not (-25 <= val <= 25):
-                raise ValueError(f"{name} must be in [-25, 25], got {val}")
-        
+            object.__setattr__(
+                self,
+                name,
+                self._coerce_integer_tilt(name, getattr(self, name)),
+            )
+
         normalized_per_vehicle_tilting = tuple(
-            int(round(float(val))) for val in self.per_vehicle_tilting
+            self._coerce_integer_tilt(f"per_vehicle_tilting[{i}]", val)
+            for i, val in enumerate(self.per_vehicle_tilting)
         )
         object.__setattr__(self, 'per_vehicle_tilting', normalized_per_vehicle_tilting)
-
-        # Validate per_vehicle_tilting values
-        for i, val in enumerate(self.per_vehicle_tilting):
-            val = int(round(float(val)))
-            if not (-25 <= val <= 25):
-                raise ValueError(f"per_vehicle_tilting[{i}] must be in [-25, 25], got {val}")
 
     def to_tuple(self) -> Tuple:
         return (
             self.scenario_id,
             self.seed,
-            round(self.goal_tilt),
-            round(self.veh_veh_tilt),
-            round(self.veh_edge_tilt),
+            self.goal_tilt,
+            self.veh_veh_tilt,
+            self.veh_edge_tilt,
             self.per_vehicle_tilting,
         )
 
@@ -92,9 +98,9 @@ class ScenarioLevel:
         encoding = np.array(
             [
                 scenario_index,
-                round(self.goal_tilt),
-                round(self.veh_veh_tilt),
-                round(self.veh_edge_tilt),
+                self.goal_tilt,
+                self.veh_veh_tilt,
+                self.veh_edge_tilt,
                 *self.per_vehicle_tilting,
                 self.seed,
             ],
@@ -128,8 +134,9 @@ class ScenarioLevel:
             per_vehicle_tilting=per_vehicle_tilting,
         )
 
-    @staticmethod
+    @classmethod
     def decode_encoding_fields(
+        cls,
         encoding: np.ndarray,
     ) -> Tuple[int, float, float, float, Tuple[int, ...], int]:
         """
@@ -146,15 +153,18 @@ class ScenarioLevel:
             # [scenario_idx, goal, veh_veh, veh_edge, per_vehicle..., seed]
             seed_idx = len(encoding) - 1
             per_vehicle_tilting = tuple(
-                int(round(float(encoding[i])))
+                cls._coerce_integer_tilt(
+                    f"per_vehicle_tilting[{i - 4}]",
+                    encoding[i],
+                )
                 for i in range(4, seed_idx)
             )
 
         return (
             int(float(encoding[0])),
-            int(round(float(encoding[1]))),
-            int(round(float(encoding[2]))),
-            int(round(float(encoding[3]))),
+            cls._coerce_integer_tilt("goal_tilt", encoding[1]),
+            cls._coerce_integer_tilt("veh_veh_tilt", encoding[2]),
+            cls._coerce_integer_tilt("veh_edge_tilt", encoding[3]),
             per_vehicle_tilting,
             int(float(encoding[seed_idx])),
         )

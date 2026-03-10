@@ -13,7 +13,6 @@ import timeit
 import numpy as np
 import torch
 from torchvision import utils as vutils
-
 from envs.registration import make as gym_make
 from .make_agent import make_agent
 from .filewriter import FileWriter
@@ -149,6 +148,8 @@ def _make_env(args):
     
     # Nocturne environment configuration
     if args.env_name.startswith('Nocturne'):
+        from arguments import NOCTURNE_CTRLSIM_DEFAULTS
+
         explicit_device = getattr(args, 'device', None)
         if explicit_device is not None:
             env_device = str(explicit_device)
@@ -172,13 +173,33 @@ def _make_env(args):
                 max_episode_steps = getattr(args, 'max_episode_steps', 90)
         
         nocturne_kwargs = {
-            'scenario_index_path': getattr(args, 'scenario_index_path', 'data/scenarios_index.json'),
-            'opponent_checkpoint': getattr(args, 'opponent_checkpoint', 'checkpoints/model.ckpt'),
-            'scenario_data_dir': getattr(args, 'scenario_data_dir', 'data/nocturne_waymo/formatted_json_v2_no_tl_train'),
-            'preprocess_dir': getattr(args, 'preprocess_dir', 'data/preprocess'),
+            'scenario_index_path': getattr(
+                args,
+                'scenario_index_path',
+                NOCTURNE_CTRLSIM_DEFAULTS['scenario_index_path'],
+            ),
+            'opponent_checkpoint': getattr(
+                args,
+                'opponent_checkpoint',
+                NOCTURNE_CTRLSIM_DEFAULTS['opponent_checkpoint'],
+            ),
+            'scenario_data_dir': getattr(
+                args,
+                'scenario_data_dir',
+                NOCTURNE_CTRLSIM_DEFAULTS['scenario_data_dir'],
+            ),
+            'preprocess_dir': getattr(
+                args,
+                'preprocess_dir',
+                NOCTURNE_CTRLSIM_DEFAULTS['preprocess_dir'],
+            ),
             'preproc_cache_size': getattr(args, 'preproc_cache_size', 64),
             'opponent_k': getattr(args, 'opponent_vehicle_number', 7),
-            'vehicle_map_path': getattr(args, 'vehicle_map_path', 'data/vehicle_map_valid.json'),
+            'vehicle_map_path': getattr(
+                args,
+                'vehicle_map_path',
+                NOCTURNE_CTRLSIM_DEFAULTS['vehicle_map_path'],
+            ),
             'max_episode_steps': max_episode_steps,
             'done_on_position_reached_only': getattr(
                 args, 'done_on_position_reached_only', True
