@@ -1,3 +1,10 @@
+"""
+负责对手车辆存在性状态转移中的几个小判定规则。
+该模块封装 goal hold、到点后消失以及非法状态回退等逻辑，供状态更新流程复用。
+Encapsulates the small decision rules used in opponent-vehicle existence state transitions.
+Covers goal-hold timing, post-goal disappearance, and fallback behavior on invalid states for reuse in updates.
+"""
+
 from typing import Optional
 
 

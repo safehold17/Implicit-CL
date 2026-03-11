@@ -1,3 +1,10 @@
+"""
+负责定位仓库中的 ctrl-sim 源码目录，并在运行时注入 `sys.path`。
+该模块为 adapter 与 batch inference 模块导入原始 ctrl-sim 代码提供统一入口。
+Locates the vendored ctrl-sim source tree and injects the path into `sys.path` at runtime.
+Provides a single import-path bootstrap point for adapter and batch-inference modules.
+"""
+
 from __future__ import annotations
 
 import sys

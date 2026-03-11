@@ -1,3 +1,10 @@
+"""
+负责对手车辆状态生命周期的统一管理，包括 reset、逐步更新和 policy 同步。
+该模块是 opponent adapter 内部的状态协调层，连接 GT、奖励、存在性与 batch runtime。
+Provides the main lifecycle management service for opponent-vehicle state, including reset, step updates, and policy sync.
+Acts as the coordination layer inside the adapter, connecting GT, rewards, existence logic, and batch runtime.
+"""
+
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 

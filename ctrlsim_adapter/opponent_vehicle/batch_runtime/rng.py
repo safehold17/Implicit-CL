@@ -1,3 +1,10 @@
+"""
+负责 adapter 侧批量运行时的采样 RNG 抓取、恢复与默认解析。
+该模块保证 worker 端与主进程端在动作采样上的随机状态能够正确衔接。
+Captures, restores, and resolves sampling RNG state for the adapter-side batch runtime.
+Keeps random state aligned between worker-side decoding and the main-process adapter path.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Optional

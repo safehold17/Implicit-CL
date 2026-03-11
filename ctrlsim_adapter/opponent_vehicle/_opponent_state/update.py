@@ -1,3 +1,10 @@
+"""
+负责在每个仿真步更新 adapter 内部的 vehicle_data_dict 与相关缓存。
+该模块汇总车辆真实状态、奖励、存在性与 GT 信息，为后续 policy 同步和批量准备提供输入。
+Updates adapter-side `vehicle_data_dict` and related caches on every simulation step.
+Collects live vehicle state, reward, existence, and GT data for later policy sync and batch preparation.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List

@@ -1,3 +1,10 @@
+"""
+负责按仿真步为对手车辆计算与 ctrl-sim 兼容的奖励分量。
+该模块聚合车辆间距离、道路边界距离与目标相关信息，生成状态更新所需奖励。
+Computes ctrl-sim-compatible reward terms for opponent vehicles at each simulation step.
+Aggregates inter-vehicle distance, road-edge distance, and goal-related signals for state updates.
+"""
+
 from typing import Any, Dict, List
 
 import numpy as np

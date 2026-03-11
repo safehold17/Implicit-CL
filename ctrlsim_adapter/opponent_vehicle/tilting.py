@@ -1,3 +1,10 @@
+"""
+负责定义 tilting 配置，并在 AutoregressivePolicy 上注入按车辆覆盖的 tilting 行为。
+该模块扩展原始 ctrl-sim policy，使不同对手车辆能够使用独立的 RTG 偏置。
+Defines tilting configuration and injects per-vehicle tilting behavior into AutoregressivePolicy.
+Extends the original ctrl-sim policy so different opponent vehicles can use distinct RTG biases.
+"""
+
 from dataclasses import dataclass
 from typing import Dict, Tuple
 

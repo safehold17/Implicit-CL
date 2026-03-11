@@ -1,3 +1,10 @@
+"""
+负责 RTG logits 的批量解码、车辆索引解析与 tilt logits 缓存。
+该模块将模型输出转换成按车辆组织的 RTG 结果，并维护解码过程中复用的中间状态。
+Handles batched RTG-logit decoding, vehicle-index resolution, and tilt-logit caching.
+Converts model outputs into per-vehicle RTG results while maintaining reusable decode state.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple

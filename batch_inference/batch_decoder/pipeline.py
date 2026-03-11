@@ -1,6 +1,8 @@
 """
-ExternalTeacher 的两阶段解码入口（RTG -> Action）。
-Two-stage decode entry point for ExternalTeacher (RTG -> Action).
+负责 ExternalTeacher 内部 RTG -> Action 的两阶段批量解码入口。
+该模块串联 RTG 解码、动作解码、tilt 注入与 RNG 预留，对外暴露统一的阶段接口。
+Serves as the batched RTG -> Action two-stage decode entrypoint inside ExternalTeacher.
+Wires together RTG decoding, action decoding, tilt injection, and RNG reservation behind one stage API.
 """
 
 from __future__ import annotations

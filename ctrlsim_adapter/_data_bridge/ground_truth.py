@@ -1,3 +1,10 @@
+"""
+负责从离线场景文件或已创建的仿真器对象中提取 ground-truth 轨迹。
+该模块为 DataBridge 暴露统一的 GT 读取接口，避免重复走场景加载流程。
+Extracts ground-truth trajectories from scenario files or already-instantiated simulations.
+Gives DataBridge a unified GT access path without duplicating scenario-loading work.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict
@@ -62,4 +69,3 @@ def get_ground_truth_from_sim(
 
     sim.reset()
     return state_dict
-

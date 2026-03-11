@@ -1,3 +1,10 @@
+"""
+负责在大体积 motion 数组场景下通过共享内存传递 IPC 负载。
+该模块根据环境变量与字节阈值决定是否启用 SHM，并提供数组写入、恢复和清理逻辑。
+Provides shared-memory transport helpers for large motion arrays in IPC payloads.
+Decides when to use SHM from env/size thresholds and implements write, restore, and cleanup paths.
+"""
+
 from __future__ import annotations
 
 import os
@@ -57,4 +64,3 @@ def close_and_unlink_shared_memory(shm_handle: shared_memory.SharedMemory) -> No
             shm_handle.unlink()
         except FileNotFoundError:
             pass
-

@@ -1,3 +1,10 @@
+"""
+负责把适配器维护的逐车状态历史写回 ctrl-sim policy 的张量缓存。
+该模块在每个时间步同步 states、actions、rtgs、goals 等字段，保持 policy 输入一致。
+Writes adapter-maintained per-vehicle histories back into ctrl-sim policy tensor buffers.
+Synchronizes states, actions, rtgs, goals, and related fields each timestep to keep policy inputs consistent.
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -61,4 +68,3 @@ def update_policy_state(service: Any, t: int) -> None:
             goal_slot[3] = veh_data["goal_velocity_y"]
         if goal_dim > 4:
             goal_slot[4] = veh_data["goal_heading"]
-

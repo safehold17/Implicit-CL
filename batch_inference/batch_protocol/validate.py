@@ -1,3 +1,10 @@
+"""
+负责校验 batch inference IPC 负载的字段完整性、状态值与基础结构约束。
+该模块在 prepared/model_outputs 等协议边界上尽早暴露格式错误，避免下游解码阶段出现隐式失败。
+Validates required fields, status values, and structural constraints of batch inference IPC payloads.
+Surfaces malformed prepared/model_outputs payloads at the protocol boundary before downstream decoding.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Sequence
@@ -95,4 +102,3 @@ def validate_model_outputs_payload(model_outputs: Dict[str, Any]) -> None:
         "model_outputs",
     )
     require_valid_status(model_outputs["status"], "model_outputs")
-

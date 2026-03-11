@@ -1,6 +1,8 @@
 """
-ExternalTeacher 的 chunk collate/padding 逻辑。
-Chunk collate and padding logic for ExternalTeacher.
+负责将多个 focal job 整理成统一的批量输入，并完成 padding 与缓冲区复用。
+该模块将离散的 numpy 字段转换成 MotionData，供 ExternalTeacher 的批量前向阶段直接消费。
+Builds uniform batched inputs from focal jobs, including padding and reusable buffer management.
+Converts scattered numpy fields into MotionData for ExternalTeacher's batched forward stage.
 """
 
 from __future__ import annotations

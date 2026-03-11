@@ -1,3 +1,10 @@
+"""
+负责奖励计算所需的二维几何基础运算，如点积、叉积和到 polyline 的符号距离。
+该模块为道路边界与车辆关系奖励提供纯 numpy 的底层几何实现。
+Provides low-level 2D geometry helpers such as dot products, cross products, and signed polyline distances.
+Supplies the pure-numpy geometric primitives used by road-edge and vehicle-relation reward terms.
+"""
+
 from __future__ import annotations
 
 import numpy as np

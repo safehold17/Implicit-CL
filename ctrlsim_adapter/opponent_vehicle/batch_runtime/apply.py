@@ -1,3 +1,10 @@
+"""
+负责消费 batch inference 返回的 model_outputs，并生成当前步的对手动作结果。
+该模块同时处理 skip 状态、稀疏动作复用和 RNG 恢复，是 worker 输出回接 adapter 的出口。
+Consumes `model_outputs` from batch inference and produces opponent actions for the current step.
+Handles skip states, sparse action reuse, and RNG restoration as the adapter-side output bridge.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple

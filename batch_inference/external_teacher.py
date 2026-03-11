@@ -1,6 +1,8 @@
 """
-ExternalTeacher: 主进程跨 env 批量推理引擎。
-ExternalTeacher: main-process cross-env batched inference engine.
+负责在主进程中聚合多个环境的 prepared 输入，并执行跨 env 的批量推理。
+该模块处理作业收集、chunk 划分、模型前向、结果汇总以及 IPC 负载的进出边界。
+Implements the main-process engine for aggregating prepared inputs and running cross-environment batched inference.
+Handles job collection, chunking, model forward passes, result aggregation, and IPC payload boundaries.
 """
 
 from __future__ import annotations

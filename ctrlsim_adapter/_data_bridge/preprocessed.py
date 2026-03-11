@@ -1,3 +1,10 @@
+"""
+负责定位、缓存、加载并整理 ctrl-sim 预处理数据。
+该模块将原始预处理文件转换成适配器直接可用的 RTG、道路和奖励相关结构。
+Locates, caches, loads, and normalizes ctrl-sim preprocessed data for the bridge layer.
+Turns raw preprocessed files into adapter-ready RTG, road, and reward-related structures.
+"""
+
 from __future__ import annotations
 
 import os
@@ -113,4 +120,3 @@ def load_preprocessed_data_direct(
     scenario_filename: str,
 ) -> Tuple[Optional[Dict], bool]:
     return load_preprocessed_data(bridge, scenario_filename)
-

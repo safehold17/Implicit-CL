@@ -1,3 +1,10 @@
+"""
+负责从 policy 历史窗口中抽取每个 focal vehicle 的局部 batch 输入。
+该模块执行上下文筛选、坐标归一化和 RTG 归一化，生成送往 ExternalTeacher 的核心数据块。
+Builds per-focal-vehicle local batch inputs from the policy history window.
+Performs context selection, coordinate normalization, and RTG normalization to form ExternalTeacher inputs.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple

@@ -1,3 +1,10 @@
+"""
+负责 batch inference 协议中常见数组结构的类型转换、压平与重建。
+该模块服务于结果映射、ragged 列表和 motion 字段打包，是 prepared/model_outputs 的基础工具层。
+Provides type conversion, flattening, and reconstruction helpers for common array structures in the IPC protocol.
+Underpins prepared/model_outputs packing for result maps, ragged lists, and motion-data fields.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Sequence, Tuple
@@ -112,4 +119,3 @@ def unpack_motion_array(name: str, array: np.ndarray) -> np.ndarray:
     if name in ("actions", "rtgs", "timesteps"):
         return np.asarray(array, dtype=np.int64)
     return array
-

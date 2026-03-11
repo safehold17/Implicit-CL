@@ -1,3 +1,10 @@
+"""
+负责动作 logits 的批量解码、车辆索引展开与每车随机性控制。
+该模块将 action 头输出转换成按车辆组织的连续动作结果，并支持预留 RNG 状态回放。
+Handles batched action-logit decoding, vehicle-index expansion, and per-vehicle randomness control.
+Converts action-head outputs into per-vehicle continuous actions and supports replaying reserved RNG states.
+"""
+
 from __future__ import annotations
 
 import time

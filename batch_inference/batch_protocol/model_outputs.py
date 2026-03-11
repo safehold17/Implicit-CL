@@ -1,3 +1,10 @@
+"""
+负责模型输出负载在内存结构与 IPC 表示之间的转换。
+该模块将 action/RTG 结果、dead_ids 与 RNG 状态编码成跨进程可传递的 model_outputs payload。
+Converts model outputs between in-memory structures and their IPC representation.
+Encodes action/RTG results, dead_ids, and RNG state into transportable model_outputs payloads.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, cast
@@ -97,4 +104,3 @@ def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str,
             dtype=np.uint8,
         ),
     }
-

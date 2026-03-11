@@ -1,3 +1,10 @@
+"""
+负责构建对手控制所需的模型、数据集与 policy 实例。
+该模块集中处理 checkpoint 加载、tilt 参数注入以及 policy 构造参数的拼装。
+Builds the model, dataset, and policy instances needed for opponent control.
+Centralizes checkpoint loading, tilt injection, and policy-construction argument assembly.
+"""
+
 from typing import Dict, Tuple
 
 from datasets.rl_waymo.dataset_ctrl_sim import RLWaymoDatasetCtRLSim

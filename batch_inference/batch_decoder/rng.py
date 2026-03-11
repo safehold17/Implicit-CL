@@ -1,3 +1,10 @@
+"""
+负责批量解码阶段使用的 RNG 状态捕获、生成器构造与动作采样预留。
+该模块保证跨 worker 或跨环境的采样行为可复现，并支持动作级随机数状态管理。
+Manages RNG capture, generator construction, and action-sampling reservation for batch decoding.
+Keeps sampling reproducible across workers/environments and supports action-level RNG state handling.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional

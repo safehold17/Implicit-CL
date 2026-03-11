@@ -1,4 +1,9 @@
-"""Bridge the DCD environment with the ctrl-sim data format."""
+"""
+负责在 DCD 运行环境与 ctrl-sim 所需数据格式之间做双向桥接。
+该模块统一提供 ground truth、预处理特征、道路信息和场景索引等访问入口。
+Bridges the DCD runtime environment with the data format expected by ctrl-sim.
+Centralizes access to ground truth, preprocessed features, road data, and scenario indexing.
+"""
 
 import os
 from collections import OrderedDict

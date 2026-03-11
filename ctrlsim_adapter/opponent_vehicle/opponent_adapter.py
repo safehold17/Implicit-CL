@@ -1,16 +1,8 @@
 """
-CtRL-Sim 对手策略适配器
-CtRL-Sim opponent-policy adapter.
-
-复用 ctrl-sim 的 AutoregressivePolicy，适配 DCD 环境的调用模式。
-Reuse ctrl-sim's AutoregressivePolicy and adapt its call pattern to the DCD environment.
-
-- evaluators/policy_evaluator.py 第 427-560 行的评估循环
-- Evaluation loop in evaluators/policy_evaluator.py lines 427-560.
-- policies/autoregressive_policy.py 核心推理逻辑
-- Core inference logic in policies/autoregressive_policy.py.
-- policies/policy.py Policy 基类
-- Policy base class in policies/policy.py.
+负责把 ctrl-sim 的 AutoregressivePolicy 封装成 DCD 环境可直接调用的对手策略适配器。
+该模块统一管理配置、模型、状态服务、batch runtime 与 tilting，并复用原始 ctrl-sim 推理语义。
+Wraps ctrl-sim's AutoregressivePolicy into an opponent-policy adapter that can be called directly from DCD.
+Centrally manages config, model, state service, batch runtime, and tilting while preserving ctrl-sim inference semantics.
 """
 from ctrlsim_adapter.ctrlsim_path import ctrlsim_path
 

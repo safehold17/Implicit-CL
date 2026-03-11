@@ -1,3 +1,10 @@
+"""
+负责批量解码阶段的轻量计时与 chunk 模式判定。
+该模块为 forward/decode 流程提供统一的 profiling 小工具，不承载核心推理逻辑。
+Provides lightweight timing helpers and chunk-mode checks for batch decoding.
+Supports forward/decode profiling with small utilities rather than core inference logic.
+"""
+
 from __future__ import annotations
 
 import time
@@ -20,4 +27,3 @@ def chunk_predict_rtgs_mode(chunk: List[Dict[str, Any]]) -> bool:
     if len(predict_rtgs_flags) != 1:
         raise ValueError("Mixed predict_rtgs modes in the same chunk are not supported.")
     return predict_rtgs_flags.pop()
-

@@ -1,3 +1,10 @@
+"""
+负责 DataBridge 所需的场景级辅助能力，包括仿真创建、道路访问和场景枚举。
+该模块封装了对 `utils.sim` 的薄适配，保持桥接层调用接口整洁。
+Provides scenario-level helpers for DataBridge, including simulation creation, road access, and scenario enumeration.
+Acts as a thin adapter over `utils.sim` so the bridge layer can keep a clean interface.
+"""
+
 from __future__ import annotations
 
 import glob
@@ -53,4 +60,3 @@ def load_scenario(loader: Any, scenario_id: str) -> Tuple[Any, Dict, Optional[Di
 def get_scenario_list(loader: Any) -> List[str]:
     files = glob.glob(os.path.join(loader.scenario_dir, "*.json"))
     return [os.path.splitext(os.path.basename(f))[0] for f in files]
-

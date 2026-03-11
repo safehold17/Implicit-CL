@@ -1,14 +1,8 @@
 """
-ctrl-sim config loader
-
-Load and manage Hydra configs for ctrl-sim
-
-Design reference:
-- configs are combined through Hydra's defaults mechanism
-
-References:
-- ctrlsim/eval_sim.py: config loading example
-- ctrlsim/cfgs/config.py: CONFIG_PATH
+负责加载 ctrl-sim 的 Hydra 配置，并生成适配器运行所需的默认参数集合。
+该模块封装配置目录定位、override 合并与最小可运行配置构造逻辑。
+Loads ctrl-sim Hydra configs and assembles the default settings required by the adapter runtime.
+Encapsulates config-path resolution, override merging, and minimal runnable config construction.
 """
 import os
 from functools import lru_cache

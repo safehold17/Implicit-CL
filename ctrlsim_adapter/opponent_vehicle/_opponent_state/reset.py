@@ -1,3 +1,10 @@
+"""
+负责在 episode 开始时重置对手状态服务，并初始化 policy/GT/道路等运行时缓存。
+该模块连接场景输入、控制车辆集合和 adapter 内部状态，是一次 rollout 的初始化入口。
+Resets the opponent state service at episode start and initializes policy, GT, road, and runtime caches.
+Connects scenario inputs, controlled-vehicle sets, and adapter state as the rollout initialization entrypoint.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional

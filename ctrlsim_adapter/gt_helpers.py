@@ -1,3 +1,10 @@
+"""
+负责从 ground-truth 轨迹中提取缓存，并重建对手策略训练/评估所需的目标动作与状态。
+该模块服务于 reset、逐步更新和奖励计算过程中的 GT 查询与反推。
+Provides cached ground-truth trajectory access plus action/state reconstruction helpers for opponent policies.
+Supports reset, step updates, and reward computation when querying or reconstructing GT signals.
+"""
+
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Tuple
 
 import numpy as np

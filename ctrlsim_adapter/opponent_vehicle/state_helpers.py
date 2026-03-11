@@ -1,3 +1,10 @@
+"""
+负责对手状态更新过程中常用的辅助操作，如道路边界提取、车辆筛选与状态写入。
+该模块将零散的列表/字典处理逻辑从主更新流程中拆出，保持状态服务实现清晰。
+Provides reusable helpers for opponent-state updates such as road-edge extraction, vehicle filtering, and state writes.
+Pulls list/dict manipulation details out of the main update flow to keep the state service readable.
+"""
+
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np

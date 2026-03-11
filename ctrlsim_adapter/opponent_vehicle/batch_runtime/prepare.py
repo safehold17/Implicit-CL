@@ -1,3 +1,10 @@
+"""
+负责在当前仿真步收集控制车辆、构造 focal batches，并打包 prepared payload。
+该模块还处理稀疏推理动作缓存与下一步 RTG 字段，是 adapter 到 worker 的输入边界。
+Collects controlled vehicles, builds focal batches, and packs the prepared payload for the current step.
+Also manages sparse-action caches and next-step RTG fields as the adapter-to-worker input boundary.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple

@@ -1,3 +1,10 @@
+"""
+负责定义稀疏推理节奏，并决定哪些仿真步需要真正执行模型推理。
+该模块为动作复用场景维护轻量控制器，减少重复解码开销。
+Defines sparse-inference cadence and decides which simulation steps should run real model inference.
+Maintains a lightweight controller for action-reuse scenarios to reduce repeated decode cost.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

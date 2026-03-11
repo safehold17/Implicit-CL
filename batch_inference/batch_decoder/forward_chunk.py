@@ -1,3 +1,10 @@
+"""
+负责单个 chunk 的批量前向执行，以及 RTG/Action 解码阶段的调度。
+该模块连接 collate、模型前向、阶段 profiling 与结果组装，是 chunk 级推理主流程。
+Runs batched forward execution for one chunk and orchestrates RTG/action decode stages.
+Connects collation, model forward, stage profiling, and result assembly as the chunk-level inference flow.
+"""
+
 from __future__ import annotations
 
 import time

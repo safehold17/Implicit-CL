@@ -1,3 +1,10 @@
+"""
+负责定义 batch inference IPC 协议的常量、状态值与 TypedDict 结构。
+该模块是 prepared/model_outputs 两类负载的共享契约，供打包、校验和解包模块共同依赖。
+Defines constants, status values, and TypedDict schemas for the batch inference IPC protocol.
+Acts as the shared contract for prepared/model_outputs payloads across packing, validation, and unpacking code.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple, TypedDict
@@ -60,4 +67,3 @@ class ModelOutputsPayload(TypedDict):
     processed_rtg_veh_ids: List[int]
     dead_ids: List[int]
     next_worker_rng_state: np.ndarray
-

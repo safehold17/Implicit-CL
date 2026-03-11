@@ -1,4 +1,9 @@
-"""Shared discretization helpers for CtRL-Sim runtime code."""
+"""
+负责 CtRL-Sim 运行时共享的 tilting logits、动作与 RTG 的离散化转换。
+该模块被适配器侧和 batch inference 侧共同复用，保证解码语义与原始模型一致。
+Provides shared helpers for tilt logits plus action/RTG discretization conversions in CtRL-Sim runtime code.
+Keeps decoding semantics aligned with the model across both the adapter and batch-inference paths.
+"""
 
 from __future__ import annotations
 

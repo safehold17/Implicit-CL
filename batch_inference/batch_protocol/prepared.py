@@ -1,3 +1,10 @@
+"""
+负责 prepared 推理负载的序列化、反序列化与共享内存资源释放。
+该模块将适配器侧构造的批量输入转换成可跨进程传递的 IPC payload，并在消费后回收资源。
+Handles serialization, deserialization, and shared-memory cleanup for prepared inference payloads.
+Turns adapter-side batched inputs into IPC-safe payloads and releases resources after consumption.
+"""
+
 from __future__ import annotations
 
 from multiprocessing import shared_memory
@@ -302,4 +309,3 @@ def release_prepared_payload(prepared: Optional[Dict[str, Any]]) -> None:
     shm_handles = prepared.pop("_ipc_shm_handles", [])
     for shm_handle in shm_handles:
         close_and_unlink_shared_memory(shm_handle)
-
