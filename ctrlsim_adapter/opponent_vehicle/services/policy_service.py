@@ -11,7 +11,7 @@ from datasets.rl_waymo.dataset_ctrl_sim import RLWaymoDatasetCtRLSim
 from models.ctrl_sim import CtRLSim
 from policies.autoregressive_policy import AutoregressivePolicy
 
-from .tilting import PerVehicleAutoregressivePolicy, TiltConfig
+from ..tilting import PerVehicleAutoregressivePolicy, TiltConfig
 
 
 class _DummyModel:

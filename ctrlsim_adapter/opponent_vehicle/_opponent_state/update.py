@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from ..state_helpers import (
+from utils.sim import compute_reward
+
+from .state_helpers import (
     append_gt_state_for_step,
     get_sim_state_entries,
     get_state_update_vehicle_ids,
@@ -34,9 +36,6 @@ def update_vehicle_data_dict(
     collision_fix = getattr(adapter.cfg.nocturne, "collision_fix", True)
     goal_dict = adapter._goal_dict
     goal_dist_normalizer = adapter._goal_dist_normalizer
-    from .. import opponent_adapter as _opponent_adapter_module
-
-    reward_fn = _opponent_adapter_module.compute_reward
     step_vehicle_by_id: Dict[int, Any] = {}
     controlled_vehicle_ids_step: List[int] = []
     vehicles_by_id = getattr(adapter, "_vehicles_by_id_step", None)
@@ -109,7 +108,7 @@ def update_vehicle_data_dict(
             if dense_rewards:
                 veh_data["rtgs"].append(veh_data["rtgs"][-1] - dense_rewards[-1])
 
-        reward = reward_fn(
+        reward = compute_reward(
             rew_cfg,
             veh,
             goal_dict[veh_id],

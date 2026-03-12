@@ -12,16 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from policies.autoregressive_policy import AutoregressivePolicy
-from utils.sim import compute_reward
-
-from .existence_logic import (
-    _compute_goal_hold_until,
-    _keep_exists_on_invalid,
-    _should_drop_after_goal,
-)
-from .policy_service import OpponentPolicyService
-from .reward_service import OpponentRewardService
-from .state_service import OpponentStateService
+from .services.policy_service import OpponentPolicyService
+from .services.reward_service import OpponentRewardService
+from .services.state_service import OpponentStateService
 from .sparse_inference import SparseInferenceConfig, SparseInferenceController
 from .tilting import TiltConfig
 
@@ -388,7 +381,4 @@ class CtrlSimOpponentAdapter:
 __all__ = [
     "CtrlSimOpponentAdapter",
     "TiltConfig",
-    "_compute_goal_hold_until",
-    "_should_drop_after_goal",
-    "_keep_exists_on_invalid",
 ]

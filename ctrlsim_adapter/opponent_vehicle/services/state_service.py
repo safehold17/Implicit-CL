@@ -10,8 +10,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ctrlsim_adapter.existence import sim_position_exists
-from ctrlsim_adapter.gt_helpers import (
+from ctrlsim_adapter.opponent_vehicle._opponent_state.existence import (
+    _compute_goal_hold_until,
+    _keep_exists_on_invalid,
+    _should_drop_after_goal,
+    sim_position_exists,
+)
+from ctrlsim_adapter.opponent_vehicle._opponent_state.gt_helpers import (
     build_gt_action_target_cache,
     compute_goal_dist_normalizer,
     get_gt_traj_array,
@@ -21,15 +26,10 @@ from ctrlsim_adapter.gt_helpers import (
 )
 from utils.data import get_object_type_str
 
-from . import batch_runtime as _batch_io
-from .existence_logic import (
-    _compute_goal_hold_until,
-    _keep_exists_on_invalid,
-    _should_drop_after_goal,
-)
-from ._opponent_state import policy_sync as _policy_sync_module
-from ._opponent_state import reset as _reset_module
-from ._opponent_state import update as _update_module
+from .. import batch_runtime as _batch_io
+from .._opponent_state import policy_sync as _policy_sync_module
+from .._opponent_state import reset as _reset_module
+from .._opponent_state import update as _update_module
 
 
 class OpponentStateService:

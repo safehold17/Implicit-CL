@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from ctrlsim_adapter.gt_helpers import (
+from ctrlsim_adapter.opponent_vehicle._opponent_state.gt_helpers import (
     build_gt_action_target_cache,
     compute_goal_dist_normalizer,
     get_gt_traj_array,

@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ctrlsim_adapter.existence import sim_position_exists
-
-from .existence_logic import _keep_exists_on_invalid, _should_drop_after_goal
+from .existence import (
+    resolve_vehicle_exists,
+)
 
 
 def extract_road_edge_polylines(road_data: List[Dict]) -> List[np.ndarray]:
@@ -120,32 +120,3 @@ def get_sim_state_entries(
         veh.getHeading(),
     )
 
-
-def resolve_vehicle_exists(
-    adapter: Any,
-    *,
-    veh_id: int,
-    t: int,
-    is_controlled: bool,
-    ego_id: Optional[int],
-    gt_traj_data: np.ndarray,
-    pos: Any,
-    constant_state: Optional[Dict[str, Any]],
-) -> int:
-    if constant_state is not None:
-        return int(constant_state["existence"])
-
-    protected = (veh_id == ego_id) or is_controlled
-    if not protected:
-        return int(gt_traj_data[t, 4])
-    if not is_controlled:
-        return 1 if sim_position_exists(pos.x, pos.y) else 0
-
-    sim_exists = sim_position_exists(pos.x, pos.y)
-    prev_exists = adapter._opponent_vehicle_exits.get(veh_id, bool(sim_exists))
-    hold_until = adapter._opponent_goal_hold_until.get(veh_id)
-    exists = _keep_exists_on_invalid(sim_exists, prev_exists)
-    if _should_drop_after_goal(t, hold_until):
-        exists = False
-    adapter._opponent_vehicle_exits[veh_id] = bool(exists)
-    return 1 if exists else 0

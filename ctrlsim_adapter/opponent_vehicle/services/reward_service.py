@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 
-from . import reward_helpers as _reward_helpers
+from . import reward_geometry as _reward_helpers
 
 _compute_signed_distance_to_polyline_np = (
     _reward_helpers.compute_signed_distance_to_polyline_np

@@ -11,15 +11,14 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from ctrlsim_adapter.existence import sim_position_exists
-from utils.sim import get_road_data
-
-from ..existence_logic import (
+from .existence import (
     _compute_goal_hold_until,
     _keep_exists_on_invalid,
     _should_drop_after_goal,
+    sim_position_exists,
 )
-from ..state_helpers import extract_road_edge_polylines
+from utils.sim import get_road_data
+from .state_helpers import extract_road_edge_polylines
 
 
 def reset(

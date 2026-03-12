@@ -39,6 +39,33 @@ def _apply_overrides(
     return cfg
 
 
+def _apply_local_path_overrides(
+    cfg: DictConfig,
+    local_cfg: Optional[DictConfig],
+) -> DictConfig:
+    if local_cfg is None:
+        return cfg
+
+    preprocess_dir = OmegaConf.select(local_cfg, "ctrl_sim.preprocess_dir")
+    dataset_path = OmegaConf.select(local_cfg, "ctrl_sim.offline_rl.dataset_path")
+
+    if preprocess_dir is not None:
+        OmegaConf.update(
+            cfg,
+            "dataset.waymo.preprocess_dir",
+            preprocess_dir,
+            force_add=True,
+        )
+    if dataset_path is not None:
+        OmegaConf.update(
+            cfg,
+            "dataset.waymo.dataset_path",
+            dataset_path,
+            force_add=True,
+        )
+    return cfg
+
+
 def _default_model_checkpoint_path() -> str:
     from arguments import NOCTURNE_CTRLSIM_DEFAULTS
 
