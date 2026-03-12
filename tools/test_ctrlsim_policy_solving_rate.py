@@ -15,7 +15,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
-from ctrlsim_adapter.opponent_vehicle.batch_runtime import capture_sampling_rng_state
+from ctrlsim_adapter.opponent_vehicle.inference_bridge import capture_sampling_rng_state
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 from envs.wrappers import ParallelAdversarialVecEnv
 from eval import Evaluator

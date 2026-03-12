@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-from ctrlsim_adapter.opponent_vehicle.batch_runtime import capture_sampling_rng_state
+from ctrlsim_adapter.opponent_vehicle.inference_bridge import capture_sampling_rng_state
 
 from .gt_helpers import (
     build_episode_gt_action_cache,

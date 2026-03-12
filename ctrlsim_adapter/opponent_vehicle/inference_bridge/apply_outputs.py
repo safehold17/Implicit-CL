@@ -13,13 +13,13 @@ import numpy as np
 
 from batch_inference.batch_protocol import unpack_model_outputs, validate_model_outputs_payload
 
-from .prepare import (
+from .prepare_inference_payload import (
     NEXT_RTG_KEYS,
     consume_pending_sparse_actions,
     get_step_controlled_ids,
     require_vehicle_data,
 )
-from .rng import restore_sampling_rng_state
+from .sampling_rng import restore_sampling_rng_state
 
 
 def apply_predictions(

@@ -13,7 +13,7 @@ import numpy as np
 
 from batch_inference.batch_protocol import pack_prepared
 
-from .rng import resolve_sampling_rng_state
+from .sampling_rng import resolve_sampling_rng_state
 
 NEXT_RTG_KEYS = ("next_rtg_goal", "next_rtg_veh", "next_rtg_road")
 
@@ -172,7 +172,7 @@ def prepare_step(
         return None
 
     clear_pending_sparse_actions(adapter)
-    from .focal_batch import build_focal_batches
+    from .focal_input import build_focal_batches
 
     focal_batches, dead_ids = build_focal_batches(adapter, t)
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1

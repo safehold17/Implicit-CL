@@ -1,8 +1,8 @@
 """
 负责对手车辆状态生命周期的统一管理，包括 reset、逐步更新和 policy 同步。
-该模块是 opponent adapter 内部的状态协调层，连接 GT、奖励、存在性与 batch runtime。
+该模块是 opponent adapter 内部的状态协调层，连接 GT、奖励、存在性与 inference bridge。
 Provides the main lifecycle management service for opponent-vehicle state, including reset, step updates, and policy sync.
-Acts as the coordination layer inside the adapter, connecting GT, rewards, existence logic, and batch runtime.
+Acts as the coordination layer inside the adapter, connecting GT, rewards, existence logic, and the inference bridge.
 """
 
 import warnings
@@ -26,7 +26,7 @@ from ctrlsim_adapter.opponent_vehicle._opponent_state.gt_helpers import (
 )
 from utils.data import get_object_type_str
 
-from .. import batch_runtime as _batch_io
+from .. import inference_bridge as _batch_io
 from .._opponent_state import policy_sync as _policy_sync_module
 from .._opponent_state import reset as _reset_module
 from .._opponent_state import update as _update_module
