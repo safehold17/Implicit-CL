@@ -11,9 +11,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from ctrlsim_adapter.opponent_vehicle._opponent_state.existence import (
-    _compute_goal_hold_until,
-    _keep_exists_on_invalid,
-    _should_drop_after_goal,
     sim_position_exists,
 )
 from ctrlsim_adapter.opponent_vehicle._opponent_state.gt_helpers import (
@@ -210,7 +207,7 @@ class OpponentStateService:
             return (0.0, 0.0)
         gt_action_target_cache = getattr(self.adapter, "_gt_action_target_cache", None)
         if gt_action_target_cache is None:
-            gt_action_target_cache = _build_gt_action_target_cache(
+            gt_action_target_cache = build_gt_action_target_cache(
                 getattr(self.adapter, "_gt_traj_by_id", {})
             )
             self.adapter._gt_action_target_cache = gt_action_target_cache

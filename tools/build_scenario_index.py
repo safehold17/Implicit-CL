@@ -11,9 +11,6 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from arguments import NOCTURNE_CTRLSIM_DEFAULTS
-
-
 class ScenarioIndex:
     """
     Scenario index manager.
@@ -99,18 +96,25 @@ def build_scenario_index(
     return index_data
 
 
+def _get_nocturne_ctrlsim_defaults() -> dict:
+    from arguments import NOCTURNE_CTRLSIM_DEFAULTS
+
+    return NOCTURNE_CTRLSIM_DEFAULTS
+
+
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    defaults = _get_nocturne_ctrlsim_defaults()
     parser = argparse.ArgumentParser(description="Build Nocturne scenario index")
     parser.add_argument(
         "--data_dir",
         type=str,
-        default=NOCTURNE_CTRLSIM_DEFAULTS["scenario_data_dir"],
+        default=defaults["scenario_data_dir"],
         help="Nocturne scenario data directory.",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default=NOCTURNE_CTRLSIM_DEFAULTS["scenario_index_path"],
+        default=defaults["scenario_index_path"],
         help="Output JSON path for the scenario index.",
     )
     parser.add_argument(

@@ -11,11 +11,11 @@ from typing import Any, Dict, List
 
 from utils.sim import compute_reward
 
+from .existence import resolve_vehicle_exists
 from .state_helpers import (
     append_gt_state_for_step,
     get_sim_state_entries,
     get_state_update_vehicle_ids,
-    resolve_vehicle_exists,
 )
 
 

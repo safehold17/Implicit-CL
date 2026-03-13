@@ -9,10 +9,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .existence import (
-    resolve_vehicle_exists,
-)
-
 
 def extract_road_edge_polylines(road_data: List[Dict]) -> List[np.ndarray]:
     road_edge_polylines: List[np.ndarray] = []
