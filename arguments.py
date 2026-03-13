@@ -600,12 +600,12 @@ parser.add_argument(
 parser.add_argument(
     '--student_accel_discretization',
     type=int,
-    default=7,
+    default=20,
     help='Number of acceleration bins for student discrete action space.')
 parser.add_argument(
     '--student_steer_discretization',
     type=int,
-    default=13,
+    default=50,
     help='Number of steering bins for student discrete action space.')
 parser.add_argument(
     '--student_dropout',
