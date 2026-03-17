@@ -20,8 +20,8 @@ from utils.data import MotionData
 
 from . import action as action_impl
 from .action import decode_action_stage_batched_impl
-from .forward_chunk import forward_chunk_batched_impl
-from .profile import chunk_predict_rtgs_mode as _chunk_predict_rtgs_mode
+from .forward_batch import forward_job_batch_impl
+from .profile import batch_predict_rtgs_mode as _batch_predict_rtgs_mode
 from .profile import elapsed_ms as _elapsed_ms
 from .rng import (
     get_device_rng_state as _get_device_rng_state,
@@ -222,11 +222,11 @@ def decode_action_stage_batched(
     )
 
 
-def forward_chunk_batched(teacher: Any, chunk: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return forward_chunk_batched_impl(
+def forward_job_batch(teacher: Any, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return forward_job_batch_impl(
         teacher=teacher,
-        chunk=chunk,
-        chunk_predict_rtgs_mode_fn=_chunk_predict_rtgs_mode,
+        jobs=jobs,
+        batch_predict_rtgs_mode_fn=_batch_predict_rtgs_mode,
         elapsed_ms_fn=_elapsed_ms,
         get_env_sampling_generator_fn=_get_env_sampling_generator,
         decode_rtg_for_job_fn=_decode_rtg_for_job,
@@ -243,7 +243,7 @@ __all__ = [
     "RTGCache",
     "decode_action_stage_batched",
     "decode_rtg_stage_batched",
-    "forward_chunk_batched",
+    "forward_job_batch",
     "get_next_worker_rng_state",
     "_decode_action_for_job",
     "_decode_rtg_for_job",

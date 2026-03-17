@@ -43,14 +43,14 @@ def get_or_create_collate_buffers(
     return buffers
 
 
-def infer_chunk_layout(chunk: List[Dict[str, Any]]) -> Dict[str, Any]:
-    first_motion = chunk[0]["focal_batch"]["motion_data_np"]
+def infer_job_batch_layout(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    first_motion = jobs[0]["focal_batch"]["motion_data_np"]
     max_agents = 1
     max_seq_len = 1
     max_roads = 1
     max_road_pts = 1
     max_timestep_feat_dim = 1
-    for job in chunk:
+    for job in jobs:
         motion_data_np = job["focal_batch"]["motion_data_np"]
         max_agents = max(max_agents, int(motion_data_np["agent_states"].shape[0]))
         max_seq_len = max(max_seq_len, int(motion_data_np["agent_states"].shape[1]))
@@ -59,7 +59,7 @@ def infer_chunk_layout(chunk: List[Dict[str, Any]]) -> Dict[str, Any]:
         max_timestep_feat_dim = max(max_timestep_feat_dim, int(motion_data_np["timesteps"].shape[2]))
 
     return {
-        "batch_size": len(chunk),
+        "batch_size": len(jobs),
         "max_agents": max_agents,
         "max_seq_len": max_seq_len,
         "max_roads": max_roads,
@@ -161,8 +161,8 @@ def build_collate_cache_key(layout: Dict[str, Any]) -> Tuple[Any, ...]:
     )
 
 
-def fill_collate_buffers(chunk: List[Dict[str, Any]], buffers: Dict[str, np.ndarray]) -> None:
-    for batch_idx, job in enumerate(chunk):
+def fill_collate_buffers(jobs: List[Dict[str, Any]], buffers: Dict[str, np.ndarray]) -> None:
+    for batch_idx, job in enumerate(jobs):
         prepared = job["prepared"]
         motion_data_np = job["focal_batch"]["motion_data_np"]
         n_agents = int(motion_data_np["agent_states"].shape[0])
@@ -226,19 +226,19 @@ def build_motion_data_from_buffers(
     }
 
 
-def collate_chunk_with_padding(
-    chunk: List[Dict[str, Any]],
+def collate_jobs_with_padding(
+    jobs: List[Dict[str, Any]],
     device: str,
     collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]],
     profile_enabled: bool = False,
 ) -> Tuple[MotionData, Dict[str, Any]]:
-    if not chunk:
-        raise ValueError("chunk must not be empty")
+    if not jobs:
+        raise ValueError("jobs must not be empty")
 
     total_start = time.perf_counter() if profile_enabled else 0.0
 
     infer_layout_start = time.perf_counter() if profile_enabled else 0.0
-    layout = infer_chunk_layout(chunk)
+    layout = infer_job_batch_layout(jobs)
     infer_layout_ms = _elapsed_ms(infer_layout_start, profile_enabled)
 
     get_buffers_start = time.perf_counter() if profile_enabled else 0.0
@@ -252,7 +252,7 @@ def collate_chunk_with_padding(
     get_buffers_ms = _elapsed_ms(get_buffers_start, profile_enabled)
 
     fill_buffers_start = time.perf_counter() if profile_enabled else 0.0
-    fill_collate_buffers(chunk, buffers)
+    fill_collate_buffers(jobs, buffers)
     fill_buffers_ms = _elapsed_ms(fill_buffers_start, profile_enabled)
 
     build_motion_data_start = time.perf_counter() if profile_enabled else 0.0
@@ -268,7 +268,7 @@ def collate_chunk_with_padding(
     token_index_to_device_ms = _elapsed_ms(token_index_to_device_start, profile_enabled)
 
     batch_meta = {
-        "jobs": chunk,
+        "jobs": jobs,
         "token_index_per_job": token_index_per_job,
         "collate_profile": {
             "infer_layout": infer_layout_ms,

@@ -1,7 +1,7 @@
 """
-负责批量解码阶段的轻量计时与 chunk 模式判定。
+负责批量解码阶段的轻量计时与单批次模式判定。
 该模块为 forward/decode 流程提供统一的 profiling 小工具，不承载核心推理逻辑。
-Provides lightweight timing helpers and chunk-mode checks for batch decoding.
+Provides lightweight timing helpers and single-batch mode checks for batch decoding.
 Supports forward/decode profiling with small utilities rather than core inference logic.
 """
 
@@ -17,13 +17,13 @@ def elapsed_ms(start_time: float, profile_enabled: bool) -> float:
     return (time.perf_counter() - start_time) * 1000.0
 
 
-def chunk_predict_rtgs_mode(chunk: List[Dict[str, Any]]) -> bool:
+def batch_predict_rtgs_mode(jobs: List[Dict[str, Any]]) -> bool:
     predict_rtgs_flags = {
         bool(job["focal_batch"].get("predict_rtgs", True))
-        for job in chunk
+        for job in jobs
     }
     if not predict_rtgs_flags:
         return True
     if len(predict_rtgs_flags) != 1:
-        raise ValueError("Mixed predict_rtgs modes in the same chunk are not supported.")
+        raise ValueError("Mixed predict_rtgs modes in the same batch are not supported.")
     return predict_rtgs_flags.pop()

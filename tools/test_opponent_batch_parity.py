@@ -192,7 +192,7 @@ def _collect_batch_snapshot(
             "prepared": prepared,
             "focal_batch": focal_batch,
         }
-        batched_data, batch_meta = teacher._collate_chunk_with_padding([job])
+        batched_data, batch_meta = teacher._collate_jobs_with_padding([job])
         token_index = int(batch_meta["token_index_per_job"][0].item())
         with teacher.model_forward_context():
             preds = teacher.model(batched_data, eval=True)
@@ -235,7 +235,7 @@ def _collect_batch_snapshot(
     }
 
 
-def _collect_duplicate_chunk_logits(
+def _collect_duplicate_batch_logits(
     wrapper: CtrlSimEgoWrapper,
     teacher: ExternalTeacher,
 ) -> Dict[int, Dict[str, Any]]:
@@ -255,7 +255,7 @@ def _collect_duplicate_chunk_logits(
             "prepared": prepared,
             "focal_batch": copy.deepcopy(focal_batch),
         }
-        batched_data, batch_meta = teacher._collate_chunk_with_padding([base_job, duplicated_job])
+        batched_data, batch_meta = teacher._collate_jobs_with_padding([base_job, duplicated_job])
         with teacher.model_forward_context():
             preds = teacher.model(batched_data, eval=True)
         action_logits = preds["action_preds"].float().detach().cpu().numpy()
@@ -409,7 +409,7 @@ def test_duplicate_jobs_in_same_batch_keep_identical_action_logits(
         for _ in range(FIRST_MODEL_STEP):
             _step_batch_and_capture_opponent(wrapper, teacher)
 
-        duplicate_logits = _collect_duplicate_chunk_logits(wrapper, teacher)
+        duplicate_logits = _collect_duplicate_batch_logits(wrapper, teacher)
         assert duplicate_logits
         for focal_id, focal_entry in duplicate_logits.items():
             token_indices = focal_entry["token_indices"]
@@ -419,7 +419,7 @@ def test_duplicate_jobs_in_same_batch_keep_identical_action_logits(
                 focal_entry["second"],
                 atol=1.5e-4,
                 rtol=0.0,
-                err_msg=f"focal_id={focal_id} duplicated chunk logits 不一致",
+                err_msg=f"focal_id={focal_id} duplicated batch logits 不一致",
             )
     finally:
         wrapper.close()

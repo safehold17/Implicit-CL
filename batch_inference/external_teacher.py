@@ -1,8 +1,8 @@
 """
 负责在主进程中聚合多个环境的 prepared 输入，并执行跨 env 的批量推理。
-该模块处理作业收集、chunk 划分、模型前向、结果汇总以及 IPC 负载的进出边界。
+该模块处理作业收集、单批次模型前向、结果汇总以及 IPC 负载的进出边界。
 Implements the main-process engine for aggregating prepared inputs and running cross-environment batched inference.
-Handles job collection, chunking, model forward passes, result aggregation, and IPC payload boundaries.
+Handles job collection, single-batch model forward passes, result aggregation, and IPC payload boundaries.
 """
 
 from __future__ import annotations
@@ -21,11 +21,11 @@ ctrlsim_path()
 
 from models.ctrl_sim import CtRLSim
 
-from .external_teacher_batch_collator import collate_chunk_with_padding
+from .external_teacher_batch_collator import collate_jobs_with_padding
 from .batch_decoder.pipeline import (
     decode_action_stage_batched,
     decode_rtg_stage_batched,
-    forward_chunk_batched,
+    forward_job_batch,
     get_next_worker_rng_state,
 )
 from .batch_protocol import pack_model_outputs, release_prepared_payload, unpack_prepared
@@ -34,27 +34,6 @@ def _assert_required_keys(payload: Dict[str, Any], required: Tuple[str, ...], pa
     missing = [key for key in required if key not in payload]
     if missing:
         raise ValueError(f"{payload_name} missing required keys: {missing}")
-
-
-def _merge_profile_sums(target: Dict[str, Any], source: Dict[str, Any]) -> None:
-    for key, value in source.items():
-        if isinstance(value, dict):
-            child = target.setdefault(key, {})
-            _merge_profile_sums(child, value)
-            continue
-        target[key] = float(target.get(key, 0.0)) + float(value)
-
-
-def _aggregate_forward_chunk_profiles(chunk_profiles: List[Dict[str, Any]]) -> Dict[str, Any]:
-    aggregate: Dict[str, Any] = {
-        "chunk_count": len(chunk_profiles),
-        "stage_ms": {},
-        "detail_ms": {},
-    }
-    for profile in chunk_profiles:
-        _merge_profile_sums(aggregate["stage_ms"], profile.get("stage_ms", {}))
-        _merge_profile_sums(aggregate["detail_ms"], profile.get("detail_ms", {}))
-    return aggregate
 
 
 def _collect_flat_jobs(
@@ -105,47 +84,11 @@ def _fill_empty_ok_env_results(
             results[env_idx] = build_empty_env_result(prepared, env_idx=env_idx, status="ok")
 
 
-def _job_chunk_key(job: Dict[str, Any]) -> Tuple[int, int, int]:
-    agent_states = job["focal_batch"]["motion_data_np"]["agent_states"]
-    seq_len = int(agent_states.shape[1])
-    max_num_agents = int(agent_states.shape[0])
-    predict_rtgs = 1 if bool(job["focal_batch"].get("predict_rtgs", True)) else 0
-    return seq_len, max_num_agents, predict_rtgs
-
-
 def _estimate_job_tokens(job: Dict[str, Any]) -> int:
     agent_states = job["focal_batch"]["motion_data_np"]["agent_states"]
     seq_len = int(agent_states.shape[1])
     max_num_agents = int(agent_states.shape[0])
     return seq_len * max_num_agents * 3
-
-
-def _build_chunks(
-    flat_jobs: List[Dict[str, Any]],
-    micro_batch: Optional[int],
-) -> List[List[Dict[str, Any]]]:
-    if not flat_jobs:
-        return []
-
-    buckets: Dict[Tuple[int, int, int], List[Dict[str, Any]]] = {}
-    for job in flat_jobs:
-        buckets.setdefault(_job_chunk_key(job), []).append(job)
-
-    max_chunk_jobs = micro_batch if micro_batch and micro_batch > 0 else None
-    chunks: List[List[Dict[str, Any]]] = []
-    for chunk_key in sorted(buckets.keys()):
-        current_chunk: List[Dict[str, Any]] = []
-        for job in buckets[chunk_key]:
-            exceed_job_budget = max_chunk_jobs is not None and len(current_chunk) >= max_chunk_jobs
-            if exceed_job_budget:
-                chunks.append(current_chunk)
-                current_chunk = []
-
-            current_chunk.append(job)
-
-        if current_chunk:
-            chunks.append(current_chunk)
-    return chunks
 
 
 class ExternalTeacher:
@@ -158,12 +101,10 @@ class ExternalTeacher:
         self,
         checkpoint_path: str,
         device: str = "cuda",
-        micro_batch: Optional[int] = None,
         base_seed: int = 1,
         inference_precision: str = "fp32",
     ) -> None:
         self.device = device
-        self.micro_batch = micro_batch
         self.base_seed = base_seed
         self.inference_precision = inference_precision
         self._profile_enabled = self._read_env_flag(
@@ -208,8 +149,7 @@ class ExternalTeacher:
         self.num_reward_components = mdl.num_reward_components
 
         self._collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]] = {}
-        self._last_forward_chunk_profile: Optional[Dict[str, Any]] = None
-        self._last_forward_chunk_profiles: List[Dict[str, Any]] = []
+        self._last_forward_batch_profile: Optional[Dict[str, Any]] = None
         self._last_batched_forward_profile: Optional[Dict[str, Any]] = None
 
     def batched_forward(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
@@ -236,58 +176,45 @@ class ExternalTeacher:
                 pack_start = time.perf_counter() if profile_enabled else 0.0
                 packed_outputs = self._pack_outputs(results)
                 pack_ms = (time.perf_counter() - pack_start) * 1000.0 if profile_enabled else 0.0
-                forward_detail_ms = _aggregate_forward_chunk_profiles([])
                 self._last_batched_forward_profile = {
                     "num_envs": num_envs,
                     "flat_job_count": 0,
-                    "chunk_count": 0,
                     "stage_ms": {
                         "unpack": unpack_ms,
                         "collect": collect_ms,
-                        "build_chunks": 0.0,
                         "forward": 0.0,
                         "scatter": 0.0,
                         "pack": pack_ms,
                         "total": (time.perf_counter() - total_start) * 1000.0 if profile_enabled else 0.0,
                     },
-                    "forward_detail_ms": forward_detail_ms,
+                    "forward_detail_ms": None,
                 }
                 self._maybe_log_profile(
                     num_envs=num_envs,
                     flat_jobs=flat_jobs,
-                    chunks=[],
                     stage_ms=self._last_batched_forward_profile["stage_ms"],
-                    forward_detail_ms=forward_detail_ms,
                 )
                 return packed_outputs
 
-            build_chunks_start = time.perf_counter() if profile_enabled else 0.0
-            chunks = self._build_chunks(flat_jobs)
-            build_chunks_ms = (time.perf_counter() - build_chunks_start) * 1000.0 if profile_enabled else 0.0
-
             forward_start = time.perf_counter() if profile_enabled else 0.0
-            all_per_focal = self._run_forward_chunks(chunks)
+            all_per_focal = self._forward_job_batch(flat_jobs)
             forward_ms = (time.perf_counter() - forward_start) * 1000.0 if profile_enabled else 0.0
 
             scatter_start = time.perf_counter() if profile_enabled else 0.0
-            per_env_outputs = self._scatter_chunk_results(all_per_focal, decoded_prepared, results)
+            per_env_outputs = self._scatter_batch_results(all_per_focal, decoded_prepared, results)
             scatter_ms = (time.perf_counter() - scatter_start) * 1000.0 if profile_enabled else 0.0
 
             pack_start = time.perf_counter() if profile_enabled else 0.0
             packed_outputs = self._pack_outputs(per_env_outputs)
             pack_ms = (time.perf_counter() - pack_start) * 1000.0 if profile_enabled else 0.0
 
-            forward_detail_ms = _aggregate_forward_chunk_profiles(
-                getattr(self, "_last_forward_chunk_profiles", []),
-            )
+            forward_detail_ms = self._last_forward_batch_profile
             self._last_batched_forward_profile = {
                 "num_envs": num_envs,
                 "flat_job_count": len(flat_jobs),
-                "chunk_count": len(chunks),
                 "stage_ms": {
                     "unpack": unpack_ms,
                     "collect": collect_ms,
-                    "build_chunks": build_chunks_ms,
                     "forward": forward_ms,
                     "scatter": scatter_ms,
                     "pack": pack_ms,
@@ -298,7 +225,6 @@ class ExternalTeacher:
             self._maybe_log_profile(
                 num_envs=num_envs,
                 flat_jobs=flat_jobs,
-                chunks=chunks,
                 stage_ms=self._last_batched_forward_profile["stage_ms"],
                 forward_detail_ms=forward_detail_ms,
             )
@@ -352,28 +278,10 @@ class ExternalTeacher:
     def _pack_outputs(self, outputs: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
         return [pack_model_outputs(output) if output is not None else None for output in outputs]
 
-    def _run_forward_chunks(self, chunks: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-        all_per_focal: List[Dict[str, Any]] = []
-        chunk_profiles: List[Dict[str, Any]] = []
-        for chunk in chunks:
-            all_per_focal.extend(self._forward_chunk_batched(chunk))
-            chunk_profile = getattr(self, "_last_forward_chunk_profile", None)
-            if self._profile_enabled and chunk_profile is not None:
-                chunk_profiles.append(
-                    {
-                        "chunk_jobs": int(chunk_profile.get("chunk_jobs", len(chunk))),
-                        "stage_ms": dict(chunk_profile.get("stage_ms", {})),
-                        "detail_ms": dict(chunk_profile.get("detail_ms", {})),
-                    }
-                )
-        self._last_forward_chunk_profiles = chunk_profiles
-        return all_per_focal
-
     def _maybe_log_profile(
         self,
         num_envs: int,
         flat_jobs: List[Dict[str, Any]],
-        chunks: List[List[Dict[str, Any]]],
         stage_ms: Dict[str, float],
         forward_detail_ms: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -384,22 +292,12 @@ class ExternalTeacher:
         if self._profile_counter % self._profile_every != 0:
             return
 
-        chunk_sizes = [len(chunk) for chunk in chunks]
-        chunk_tokens = [sum(self._estimate_job_tokens(job) for job in chunk) for chunk in chunks]
-
-        def _summary(values: List[int]) -> Tuple[int, float, int]:
-            if not values:
-                return 0, 0.0, 0
-            return min(values), float(sum(values)) / len(values), max(values)
-
-        cs_min, cs_avg, cs_max = _summary(chunk_sizes)
-        ct_min, ct_avg, ct_max = _summary(chunk_tokens)
+        flat_job_tokens = sum(self._estimate_job_tokens(job) for job in flat_jobs)
         collate_detail = (forward_detail_ms or {}).get("detail_ms", {}).get("collate", {})
         print(
             (
-                "[ExternalTeacher][Profile] call=%d envs=%d flat_jobs=%d chunks=%d "
-                "chunk_jobs[min/avg/max]=%d/%.2f/%d chunk_tokens[min/avg/max]=%d/%.1f/%d "
-                "ms(unpack=%.2f collect=%.2f build=%.2f forward=%.2f scatter=%.2f pack=%.2f total=%.2f) "
+                "[ExternalTeacher][Profile] call=%d envs=%d flat_jobs=%d flat_job_tokens=%d "
+                "ms(unpack=%.2f collect=%.2f forward=%.2f scatter=%.2f pack=%.2f total=%.2f) "
                 "forward_detail(ms collate=%.2f model_rtg=%.2f rtg_decode=%.2f rng=%.2f model_action=%.2f action_decode=%.2f) "
                 "collate_detail(ms fill=%.2f from_numpy=%.2f to_device=%.2f token_index=%.2f)"
             )
@@ -407,16 +305,9 @@ class ExternalTeacher:
                 self._profile_counter,
                 num_envs,
                 len(flat_jobs),
-                len(chunks),
-                cs_min,
-                cs_avg,
-                cs_max,
-                ct_min,
-                ct_avg,
-                ct_max,
+                flat_job_tokens,
                 stage_ms.get("unpack", 0.0),
                 stage_ms.get("collect", 0.0),
-                stage_ms.get("build_chunks", 0.0),
                 stage_ms.get("forward", 0.0),
                 stage_ms.get("scatter", 0.0),
                 stage_ms.get("pack", 0.0),
@@ -475,7 +366,7 @@ class ExternalTeacher:
             build_empty_env_result=self._build_empty_env_result,
         )
 
-    def _scatter_chunk_results(
+    def _scatter_batch_results(
         self,
         all_per_focal: List[Dict[str, Any]],
         per_env_prepared: List[Optional[Dict[str, Any]]],
@@ -524,15 +415,9 @@ class ExternalTeacher:
     def _estimate_job_tokens(self, job: Dict[str, Any]) -> int:
         return _estimate_job_tokens(job)
 
-    def _build_chunks(self, flat_jobs: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
-        return _build_chunks(
-            flat_jobs=flat_jobs,
-            micro_batch=self.micro_batch,
-        )
-
-    def _collate_chunk_with_padding(self, chunk: List[Dict[str, Any]]):
-        return collate_chunk_with_padding(
-            chunk=chunk,
+    def _collate_jobs_with_padding(self, jobs: List[Dict[str, Any]]):
+        return collate_jobs_with_padding(
+            jobs=jobs,
             device=self.device,
             collate_numpy_buffers=self._collate_numpy_buffers,
             profile_enabled=self._profile_enabled,
@@ -561,5 +446,5 @@ class ExternalTeacher:
             reserved_rng_states_by_job=reserved_rng_states_by_job,
         )
 
-    def _forward_chunk_batched(self, chunk: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return forward_chunk_batched(self, chunk)
+    def _forward_job_batch(self, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return forward_job_batch(self, jobs)

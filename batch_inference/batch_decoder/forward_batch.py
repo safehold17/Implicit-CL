@@ -1,8 +1,8 @@
 """
-负责单个 chunk 的批量前向执行，以及 RTG/Action 解码阶段的调度。
-该模块连接 collate、模型前向、阶段 profiling 与结果组装，是 chunk 级推理主流程。
-Runs batched forward execution for one chunk and orchestrates RTG/action decode stages.
-Connects collation, model forward, stage profiling, and result assembly as the chunk-level inference flow.
+负责单个 flat job batch 的批量前向执行，以及 RTG/Action 解码阶段的调度。
+该模块连接 collate、模型前向、阶段 profiling 与结果组装，是单批次推理主流程。
+Runs batched forward execution for one flat job batch and orchestrates RTG/action decode stages.
+Connects collation, model forward, stage profiling, and result assembly as the single-batch inference flow.
 """
 
 from __future__ import annotations
@@ -15,35 +15,35 @@ import torch
 from .rtg import RTGCache
 
 
-def forward_chunk_batched_impl(
+def forward_job_batch_impl(
     teacher: Any,
-    chunk: List[Dict[str, Any]],
-    chunk_predict_rtgs_mode_fn: Any,
+    jobs: List[Dict[str, Any]],
+    batch_predict_rtgs_mode_fn: Any,
     elapsed_ms_fn: Any,
     get_env_sampling_generator_fn: Any,
     decode_rtg_for_job_fn: Any,
     reserve_action_rng_states_for_job_fn: Any,
     decode_rtg_jobs_batched_fn: Any = None,
 ) -> List[Dict[str, Any]]:
-    if not chunk:
+    if not jobs:
         return []
 
     profile_enabled = bool(getattr(teacher, "_profile_enabled", False))
     total_start = time.perf_counter() if profile_enabled else 0.0
 
     collate_start = time.perf_counter() if profile_enabled else 0.0
-    batched_data, batch_meta = teacher._collate_chunk_with_padding(chunk)
+    batched_data, batch_meta = teacher._collate_jobs_with_padding(jobs)
     collate_ms = elapsed_ms_fn(collate_start, profile_enabled)
 
-    if not chunk_predict_rtgs_mode_fn(chunk):
+    if not batch_predict_rtgs_mode_fn(jobs):
         action_results_by_job = teacher._decode_action_stage_batched(
             batched_data=batched_data,
             batch_meta=batch_meta,
             reserved_rng_states_by_job=None,
         )
         action_stage_profile = getattr(teacher, "_last_action_stage_profile", {})
-        teacher._last_forward_chunk_profile = {
-            "chunk_jobs": len(chunk),
+        teacher._last_forward_batch_profile = {
+            "batch_jobs": len(jobs),
             "stage_ms": {
                 "collate": collate_ms,
                 "model_rtg": 0.0,
@@ -66,7 +66,7 @@ def forward_chunk_batched_impl(
                 "rtg_results": {},
                 "processed_rtg_veh_ids": [],
             }
-            for idx, job in enumerate(chunk)
+            for idx, job in enumerate(jobs)
         ]
 
     model_rtg_start = time.perf_counter() if profile_enabled else 0.0
@@ -76,7 +76,7 @@ def forward_chunk_batched_impl(
     rtg_logits = preds["rtg_preds"].float()
 
     rtg_cache: RTGCache = {}
-    jobs: List[Dict[str, Any]] = batch_meta["jobs"]
+    batch_jobs: List[Dict[str, Any]] = batch_meta["jobs"]
     token_index_per_job: torch.Tensor = batch_meta["token_index_per_job"]
     rtg_results_by_job: List[Dict[int, Tuple[float, float, float]]] = []
     processed_rtg_veh_ids_by_job: List[List[int]] = []
@@ -90,12 +90,12 @@ def forward_chunk_batched_impl(
             teacher=teacher,
             batched_data=batched_data,
             rtg_logits=rtg_logits,
-            jobs=jobs,
+            jobs=batch_jobs,
             token_index_per_job=token_index_per_job,
             rtg_cache=rtg_cache,
         )
     else:
-        for batch_idx, job in enumerate(jobs):
+        for batch_idx, job in enumerate(batch_jobs):
             token_index = int(token_index_per_job[batch_idx])
             env_generator = get_env_sampling_generator_fn(
                 teacher=teacher,
@@ -117,7 +117,7 @@ def forward_chunk_batched_impl(
             processed_rtg_veh_ids_by_job.append(processed_rtg_veh_ids)
     rtg_decode_ms = elapsed_ms_fn(rtg_decode_start, profile_enabled)
 
-    for job in jobs:
+    for job in batch_jobs:
         env_generator = get_env_sampling_generator_fn(
             teacher=teacher,
             env_idx=int(job["env_idx"]),
@@ -141,8 +141,8 @@ def forward_chunk_batched_impl(
     )
     action_stage_profile = getattr(teacher, "_last_action_stage_profile", {})
 
-    teacher._last_forward_chunk_profile = {
-        "chunk_jobs": len(chunk),
+    teacher._last_forward_batch_profile = {
+        "batch_jobs": len(jobs),
         "stage_ms": {
             "collate": collate_ms,
             "model_rtg": model_rtg_ms,
@@ -165,5 +165,5 @@ def forward_chunk_batched_impl(
             "rtg_results": rtg_results_by_job[idx],
             "processed_rtg_veh_ids": processed_rtg_veh_ids_by_job[idx],
         }
-        for idx, job in enumerate(chunk)
+        for idx, job in enumerate(batch_jobs)
     ]
