@@ -33,7 +33,6 @@ if PROJECT_ROOT not in sys.path:
 
 from ctrlsim_adapter.config_loader import create_minimal_config
 from ctrlsim_adapter.data_bridge import DataBridge
-from ctrlsim_adapter.opponent_vehicle.inference_bridge import capture_sampling_rng_state
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
 from batch_inference import ExternalTeacher
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
@@ -90,11 +89,9 @@ def _predict_opponent_actions_batch(
     env: NocturneCtrlSimAdversarial,
     teacher: ExternalTeacher,
 ) -> Dict[int, Tuple[float, float]]:
-    worker_rng_state = capture_sampling_rng_state(env.device)
     prepared = env.opponent.prepare_step(
         env.current_step,
         env.vehicles,
-        worker_rng_state=worker_rng_state,
     )
     if prepared is None:
         return {}

@@ -15,7 +15,6 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
-from ctrlsim_adapter.opponent_vehicle.inference_bridge import capture_sampling_rng_state
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 from envs.wrappers import ParallelAdversarialVecEnv
 from eval import Evaluator
@@ -317,18 +316,15 @@ class CtrlSimEgoWrapper:
     def step_prepare(self, _action):
         """Phase 1: Prepare inference data for both ego and opponent ctrlsim_adapter."""
         t = self.env.current_step
-        worker_rng_state = capture_sampling_rng_state(self.device)
         ego_prepared = self.ego_adapter.prepare_step(
             t,
             self.env.vehicles,
-            worker_rng_state=worker_rng_state,
         )
         runtime_mode = getattr(self.env, "opponent_runtime_mode", "normal")
         if runtime_mode == "normal" and len(self.env.opponent_vehicle_ids) > 0:
             opp_prepared = self.env.opponent.prepare_step(
                 t,
                 self.env.vehicles,
-                worker_rng_state=worker_rng_state,
             )
         else:
             opp_prepared = None

@@ -55,9 +55,9 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "token_index": np.int32(int(prepared_typed["token_index"])),
         "dead_ids": as_int32_array(prepared_typed["dead_ids"]),
     }
-    worker_rng_state = prepared_typed.get("worker_rng_state")
-    if worker_rng_state is not None:
-        packed["worker_rng_state"] = np.asarray(worker_rng_state, dtype=np.uint8)
+    sampling_seed = prepared_typed.get("sampling_seed")
+    if sampling_seed is not None:
+        packed["sampling_seed"] = np.uint64(int(sampling_seed))
     if status == "skip":
         return packed
 
@@ -158,11 +158,8 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "token_index": int(packed["token_index"]),
         "dead_ids": as_int_list(packed["dead_ids"]),
     }
-    if "worker_rng_state" in packed:
-        prepared["worker_rng_state"] = np.asarray(
-            packed["worker_rng_state"],
-            dtype=np.uint8,
-        )
+    if "sampling_seed" in packed:
+        prepared["sampling_seed"] = int(packed["sampling_seed"])
     if status == "skip":
         return prepared
 

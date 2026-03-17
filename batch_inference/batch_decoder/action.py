@@ -1,120 +1,128 @@
 """
-负责动作 logits 的批量解码、车辆索引展开与每车随机性控制。
-该模块将 action 头输出转换成按车辆组织的连续动作结果，并支持预留 RNG 状态回放。
-Handles batched action-logit decoding, vehicle-index expansion, and per-vehicle randomness control.
-Converts action-head outputs into per-vehicle continuous actions and supports replaying reserved RNG states.
+负责动作 logits 的批量解码与按车辆组织的结果回填。
+该模块将 action 头输出转换成连续动作结果，并使用无状态 sampling tickets 保持可复现。
+Handles batched action-logit decoding and per-vehicle result assembly.
+Converts action-head outputs into continuous actions while using stateless sampling tickets for reproducibility.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
+import numpy as np
 import torch
 
+from ctrlsim_adapter.opponent_vehicle.discretization import undiscretize_action_index
+
 from .profile import elapsed_ms
-from .rng import get_decode_generator
 from .rtg import iter_resolved_vehicle_indices
+from .sampling import (
+    build_action_probabilities,
+    build_row_keys,
+    build_stateless_uniforms,
+    sample_categorical_from_uniform,
+)
 
 
-def _build_action_decode_rows(
-    jobs: List[Dict[str, Any]],
-    token_index_per_job: torch.Tensor,
-    iter_resolved_vehicle_indices_fn: Any,
-) -> Tuple[List[Dict[str, Any]], List[int]]:
-    rows: List[Dict[str, Any]] = []
-    job_offsets = [0]
-    for batch_idx, job in enumerate(jobs):
-        prepared = job["prepared"]
-        focal_batch = job["focal_batch"]
-        veh_id_to_idx = prepared["veh_id_to_idx"]
-        new_agent_idx_dict = focal_batch["new_agent_idx_dict"]
-        data_veh_ids = focal_batch["data_veh_ids"]
-        sampling = prepared["sampling"]
-        token_index = int(token_index_per_job[batch_idx])
+_ACTION_STAGE_TAG = 1
 
-        for veh_id, idx_in_model in iter_resolved_vehicle_indices_fn(
-            vehicle_ids=data_veh_ids,
-            veh_id_to_idx=veh_id_to_idx,
-            new_agent_idx_dict=new_agent_idx_dict,
-        ):
-            rows.append(
-                {
-                    "job_idx": batch_idx,
-                    "veh_id": int(veh_id),
-                    "idx_in_model": int(idx_in_model),
-                    "token_index": token_index,
-                    "action_temperature": float(sampling["action_temperature"]),
-                    "nucleus_sampling": bool(sampling["nucleus_sampling"]),
-                    "nucleus_threshold": float(sampling["nucleus_threshold"]),
-                }
-            )
-        job_offsets.append(len(rows))
-    return rows, job_offsets
+
+def _undiscretize_action_indices(
+    action_idx: torch.Tensor,
+    teacher: Any,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    accel_idx = torch.div(action_idx, int(teacher.steer_discretization), rounding_mode="floor")
+    steer_idx = torch.remainder(action_idx, int(teacher.steer_discretization))
+
+    accel = accel_idx.to(dtype=torch.float32) / float(teacher.accel_discretization - 1)
+    steer = steer_idx.to(dtype=torch.float32) / float(teacher.steer_discretization - 1)
+    accel = accel * float(teacher.max_accel - teacher.min_accel) + float(teacher.min_accel)
+    steer = steer * float(teacher.max_steer - teacher.min_steer) + float(teacher.min_steer)
+    return accel, steer
+
+
+def _sample_action_indices(
+    flat_logits: torch.Tensor,
+    temperatures: torch.Tensor,
+    nucleus_sampling: torch.Tensor,
+    nucleus_thresholds: torch.Tensor,
+    sampling_seed: np.ndarray,
+    step_t: np.ndarray,
+    veh_id: np.ndarray,
+) -> torch.Tensor:
+    action_probs = build_action_probabilities(
+        logits=flat_logits,
+        temperatures=temperatures,
+        nucleus_sampling=nucleus_sampling,
+        nucleus_thresholds=nucleus_thresholds,
+    )
+    row_keys = build_row_keys(step_t=step_t, veh_ids=veh_id, stage_tag=_ACTION_STAGE_TAG)
+    uniforms = build_stateless_uniforms(
+        base_seed=sampling_seed,
+        row_keys=row_keys,
+        draws_per_row=1,
+    ).reshape((-1,))
+    uniforms_t = torch.as_tensor(uniforms, dtype=flat_logits.dtype, device=flat_logits.device)
+    return sample_categorical_from_uniform(action_probs, uniforms_t)
 
 
 def decode_action_jobs_batched_impl(
     teacher: Any,
     action_logits: torch.Tensor,
-    jobs: List[Dict[str, Any]],
-    token_index_per_job: torch.Tensor,
-    decode_predicted_action_fn: Any,
-    get_decode_generator_fn: Any,
-    iter_resolved_vehicle_indices_fn: Any,
-    reserved_rng_states_by_job: Optional[List[Dict[int, torch.Tensor]]] = None,
+    decode_meta: Dict[str, np.ndarray],
 ) -> List[Dict[int, Tuple[float, float]]]:
-    rows, job_offsets = _build_action_decode_rows(
-        jobs=jobs,
-        token_index_per_job=token_index_per_job,
-        iter_resolved_vehicle_indices_fn=iter_resolved_vehicle_indices_fn,
-    )
-    if not rows:
-        return [{} for _ in jobs]
+    job_offsets = decode_meta["job_offsets"]
+    if decode_meta["job_idx"].size == 0:
+        return [{} for _ in range(int(decode_meta["job_count"][0]))]
 
     device = action_logits.device
-    row_batch_idx = torch.as_tensor([row["job_idx"] for row in rows], dtype=torch.long, device=device)
-    row_idx_in_model = torch.as_tensor([row["idx_in_model"] for row in rows], dtype=torch.long, device=device)
-    row_token_index = torch.as_tensor([row["token_index"] for row in rows], dtype=torch.long, device=device)
+    row_batch_idx = decode_meta.get("job_idx_t")
+    row_idx_in_model = decode_meta.get("idx_in_model_t")
+    row_token_index = decode_meta.get("token_index_t")
+    if row_batch_idx is None or row_idx_in_model is None or row_token_index is None:
+        row_batch_idx = torch.as_tensor(decode_meta["job_idx"], dtype=torch.long, device=device)
+        row_idx_in_model = torch.as_tensor(decode_meta["idx_in_model"], dtype=torch.long, device=device)
+        row_token_index = torch.as_tensor(decode_meta["token_index"], dtype=torch.long, device=device)
     flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index]
 
-    decode_generator = None
-    if reserved_rng_states_by_job is not None:
-        decode_generator = get_decode_generator_fn(teacher)
-
-    decoded_actions: List[Tuple[float, float]] = []
-    for row_idx, row in enumerate(rows):
-        generator = None
-        if decode_generator is not None:
-            reserved_states = reserved_rng_states_by_job[row["job_idx"]]
-            rng_state = reserved_states.get(row["veh_id"])
-            if rng_state is None:
-                raise ValueError(f"Missing reserved RNG state for veh_id={row['veh_id']}.")
-            decode_generator.set_state(rng_state)
-            generator = decode_generator
-        decoded_actions.append(
-            decode_predicted_action_fn(
-                flat_logits[row_idx],
-                row["action_temperature"],
-                row["nucleus_sampling"],
-                row["nucleus_threshold"],
-                teacher.accel_discretization,
-                teacher.steer_discretization,
-                teacher.min_accel,
-                teacher.max_accel,
-                teacher.min_steer,
-                teacher.max_steer,
-                generator=generator,
-            )
+    temperatures = decode_meta.get("temperature_t")
+    if temperatures is None:
+        temperatures = torch.as_tensor(decode_meta["temperature"], dtype=flat_logits.dtype, device=device)
+    nucleus_sampling = decode_meta.get("nucleus_sampling_t")
+    if nucleus_sampling is None:
+        nucleus_sampling = torch.as_tensor(decode_meta["nucleus_sampling"], dtype=torch.bool, device=device)
+    nucleus_thresholds = decode_meta.get("nucleus_threshold_t")
+    if nucleus_thresholds is None:
+        nucleus_thresholds = torch.as_tensor(
+            decode_meta["nucleus_threshold"],
+            dtype=flat_logits.dtype,
+            device=device,
         )
+
+    action_idx = _sample_action_indices(
+        flat_logits=flat_logits,
+        temperatures=temperatures,
+        nucleus_sampling=nucleus_sampling,
+        nucleus_thresholds=nucleus_thresholds,
+        sampling_seed=decode_meta["sampling_seed"],
+        step_t=decode_meta["step_t"],
+        veh_id=decode_meta["veh_id"],
+    )
+    accel_t, steer_t = _undiscretize_action_indices(action_idx, teacher)
 
     action_results_by_job: List[Dict[int, Tuple[float, float]]] = []
     for start, end in zip(job_offsets[:-1], job_offsets[1:]):
         per_job_results: Dict[int, Tuple[float, float]] = {}
-        for row, (accel, steer) in zip(rows[start:end], decoded_actions[start:end]):
-            per_job_results[row["veh_id"]] = (float(accel), float(steer))
+        for row_idx in range(int(start), int(end)):
+            veh_id = int(decode_meta["veh_id"][row_idx])
+            per_job_results[veh_id] = (
+                float(accel_t[row_idx]),
+                float(steer_t[row_idx]),
+            )
         action_results_by_job.append(per_job_results)
 
-    if len(action_results_by_job) != len(jobs):
+    if len(action_results_by_job) != int(decode_meta["job_count"][0]):
         raise ValueError("Action decode job/result count mismatch.")
     return action_results_by_job
 
@@ -125,10 +133,6 @@ def decode_action_for_job_impl(
     batch_idx: int,
     job: Dict[str, Any],
     token_index: int,
-    decode_predicted_action_fn: Any,
-    get_decode_generator_fn: Any,
-    iter_resolved_vehicle_indices_fn: Any,
-    reserved_rng_states: Optional[Dict[int, torch.Tensor]] = None,
 ) -> Dict[int, Tuple[float, float]]:
     prepared = job["prepared"]
     focal_batch = job["focal_batch"]
@@ -136,34 +140,37 @@ def decode_action_for_job_impl(
     new_agent_idx_dict = focal_batch["new_agent_idx_dict"]
     data_veh_ids = focal_batch["data_veh_ids"]
     sampling = prepared["sampling"]
-    decode_generator = None if reserved_rng_states is None else get_decode_generator_fn(teacher)
+    sampling_seed = np.asarray([prepared["sampling_seed"]], dtype=np.uint64)
+    temperature = torch.as_tensor([float(sampling["action_temperature"])], dtype=action_logits.dtype, device=action_logits.device)
+    nucleus_sampling = torch.as_tensor([bool(sampling["nucleus_sampling"])], dtype=torch.bool, device=action_logits.device)
+    nucleus_threshold = torch.as_tensor([float(sampling["nucleus_threshold"])], dtype=action_logits.dtype, device=action_logits.device)
 
     action_results: Dict[int, Tuple[float, float]] = {}
-    for veh_id, idx_in_model in iter_resolved_vehicle_indices_fn(
+    for veh_id, idx_in_model in iter_resolved_vehicle_indices(
         vehicle_ids=data_veh_ids,
         veh_id_to_idx=veh_id_to_idx,
         new_agent_idx_dict=new_agent_idx_dict,
     ):
-        if reserved_rng_states is not None:
-            rng_state = reserved_rng_states.get(int(veh_id))
-            if rng_state is None:
-                raise ValueError(f"Missing reserved RNG state for veh_id={veh_id}.")
-            decode_generator.set_state(rng_state)
         logits_1d = action_logits[batch_idx, idx_in_model, token_index]
-        accel, steer = decode_predicted_action_fn(
-            logits_1d,
-            sampling["action_temperature"],
-            sampling["nucleus_sampling"],
-            sampling["nucleus_threshold"],
+        action_idx = _sample_action_indices(
+            flat_logits=logits_1d.unsqueeze(0),
+            temperatures=temperature,
+            nucleus_sampling=nucleus_sampling,
+            nucleus_thresholds=nucleus_threshold,
+            sampling_seed=sampling_seed,
+            step_t=np.asarray([int(prepared["step_t"])], dtype=np.int64),
+            veh_id=np.asarray([int(veh_id)], dtype=np.int64),
+        )
+        accel, steer = undiscretize_action_index(
+            int(action_idx[0]),
             teacher.accel_discretization,
             teacher.steer_discretization,
             teacher.min_accel,
             teacher.max_accel,
             teacher.min_steer,
             teacher.max_steer,
-            generator=decode_generator,
         )
-        action_results[veh_id] = (accel, steer)
+        action_results[veh_id] = (float(accel), float(steer))
     return action_results
 
 
@@ -172,9 +179,6 @@ def decode_action_stage_batched_impl(
     teacher: Any,
     batched_data: Any,
     batch_meta: Dict[str, Any],
-    decode_action_for_job_fn: Any,
-    decode_action_jobs_batched_fn: Optional[Any] = None,
-    reserved_rng_states_by_job: Optional[List[Dict[int, torch.Tensor]]] = None,
 ) -> List[Dict[int, Tuple[float, float]]]:
     profile_enabled = bool(getattr(teacher, "_profile_enabled", False))
     model_forward_start = time.perf_counter() if profile_enabled else 0.0
@@ -184,31 +188,12 @@ def decode_action_stage_batched_impl(
     action_logits = preds["action_preds"].float()
 
     jobs: List[Dict[str, Any]] = batch_meta["jobs"]
-    token_index_per_job: torch.Tensor = batch_meta["token_index_per_job"]
     action_decode_start = time.perf_counter() if profile_enabled else 0.0
-    if decode_action_jobs_batched_fn is not None:
-        action_results_by_job = decode_action_jobs_batched_fn(
-            teacher=teacher,
-            action_logits=action_logits,
-            jobs=jobs,
-            token_index_per_job=token_index_per_job,
-            reserved_rng_states_by_job=reserved_rng_states_by_job,
-        )
-    else:
-        action_results_by_job: List[Dict[int, Tuple[float, float]]] = []
-        for batch_idx, job in enumerate(jobs):
-            token_index = int(token_index_per_job[batch_idx])
-            reserved_rng_states = None if reserved_rng_states_by_job is None else reserved_rng_states_by_job[batch_idx]
-            action_results_by_job.append(
-                decode_action_for_job_fn(
-                    teacher=teacher,
-                    action_logits=action_logits,
-                    batch_idx=batch_idx,
-                    job=job,
-                    token_index=token_index,
-                    reserved_rng_states=reserved_rng_states,
-                )
-            )
+    action_results_by_job = decode_action_jobs_batched_impl(
+        teacher=teacher,
+        action_logits=action_logits,
+        decode_meta=batch_meta["decode_meta"]["action"],
+    )
 
     action_decode_ms = elapsed_ms(action_decode_start, profile_enabled)
     teacher._last_action_stage_profile = {
@@ -216,31 +201,8 @@ def decode_action_stage_batched_impl(
             "model_action": model_action_ms,
             "action_decode": action_decode_ms,
         },
-        "detail_ms": {
-            "restore_rng": 0.0,
-        },
+        "detail_ms": {},
     }
+    if len(action_results_by_job) != len(jobs):
+        raise ValueError("Action stage job/result count mismatch.")
     return action_results_by_job
-
-
-def decode_action_for_job(
-    teacher: Any,
-    action_logits: torch.Tensor,
-    batch_idx: int,
-    job: Dict[str, Any],
-    token_index: int,
-    reserved_rng_states: Optional[Dict[int, torch.Tensor]] = None,
-) -> Dict[int, Tuple[float, float]]:
-    from ctrlsim_adapter.opponent_vehicle.discretization import decode_predicted_action
-
-    return decode_action_for_job_impl(
-        teacher=teacher,
-        action_logits=action_logits,
-        batch_idx=batch_idx,
-        job=job,
-        token_index=token_index,
-        decode_predicted_action_fn=decode_predicted_action,
-        get_decode_generator_fn=get_decode_generator,
-        iter_resolved_vehicle_indices_fn=iter_resolved_vehicle_indices,
-        reserved_rng_states=reserved_rng_states,
-    )

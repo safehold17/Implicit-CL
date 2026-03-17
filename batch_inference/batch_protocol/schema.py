@@ -49,7 +49,7 @@ class PreparedPayload(TypedDict):
     step_t: int
     token_index: int
     dead_ids: List[int]
-    worker_rng_state: np.ndarray
+    sampling_seed: int
     sampling: SamplingPayload
     default_tilt: Tuple[int, int, int]
     tilt_by_veh_id: Dict[int, Tuple[int, int, int]]
@@ -66,4 +66,3 @@ class ModelOutputsPayload(TypedDict):
     rtg_results: Dict[int, Tuple[float, float, float]]
     processed_rtg_veh_ids: List[int]
     dead_ids: List[int]
-    next_worker_rng_state: np.ndarray

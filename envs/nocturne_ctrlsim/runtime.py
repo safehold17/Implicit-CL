@@ -6,8 +6,6 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-from ctrlsim_adapter.opponent_vehicle.inference_bridge import capture_sampling_rng_state
-
 from .gt_helpers import (
     build_episode_gt_action_cache,
     get_gt_action,
@@ -191,12 +189,7 @@ class NocturneCtrlSimRuntime:
 
         runtime_mode = getattr(env, "opponent_runtime_mode", "normal")
         if runtime_mode == "normal" and len(env.opponent_vehicle_ids) > 0:
-            worker_rng_state = capture_sampling_rng_state(env.device)
-            return env.opponent.prepare_step(
-                env.current_step - 1,
-                env.vehicles,
-                worker_rng_state=worker_rng_state,
-            )
+            return env.opponent.prepare_step(env.current_step - 1, env.vehicles)
         return None
 
     def step_complete(

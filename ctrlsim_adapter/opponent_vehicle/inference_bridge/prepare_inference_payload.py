@@ -7,13 +7,13 @@ Also manages sparse-action caches and next-step RTG fields as the adapter-to-wor
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
 from batch_inference.batch_protocol import pack_prepared
 
-from .sampling_rng import resolve_sampling_rng_state
+from .sampling_rng import resolve_sampling_seed
 
 NEXT_RTG_KEYS = ("next_rtg_goal", "next_rtg_veh", "next_rtg_road")
 
@@ -142,7 +142,6 @@ def prepare_step(
     adapter: Any,
     t: int,
     vehicles: List[Any],
-    worker_rng_state: Optional[np.ndarray] = None,
 ) -> Optional[Dict[str, Any]]:
     if adapter._policy is None or len(vehicles) == 0:
         clear_pending_sparse_actions(adapter)
@@ -176,7 +175,7 @@ def prepare_step(
 
     focal_batches, dead_ids = build_focal_batches(adapter, t)
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1
-    sampling_rng_state = resolve_sampling_rng_state(adapter, worker_rng_state)
+    sampling_seed = resolve_sampling_seed(adapter)
     if not focal_batches and not dead_ids:
         return pack_prepared(
             {
@@ -184,7 +183,7 @@ def prepare_step(
                 "step_t": t,
                 "token_index": token_index,
                 "dead_ids": [],
-                "worker_rng_state": sampling_rng_state,
+                "sampling_seed": sampling_seed,
             }
         )
 
@@ -196,7 +195,7 @@ def prepare_step(
         "step_t": t,
         "token_index": token_index,
         "dead_ids": dead_ids,
-        "worker_rng_state": sampling_rng_state,
+        "sampling_seed": sampling_seed,
         "sampling": {
             "action_temperature": adapter.action_temperature,
             "nucleus_sampling": adapter.nucleus_sampling,

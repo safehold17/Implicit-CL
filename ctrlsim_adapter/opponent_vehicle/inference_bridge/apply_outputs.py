@@ -19,7 +19,6 @@ from .prepare_inference_payload import (
     get_step_controlled_ids,
     require_vehicle_data,
 )
-from .sampling_rng import restore_sampling_rng_state
 
 
 def apply_predictions(
@@ -37,10 +36,6 @@ def apply_predictions(
         return {}
 
     validate_model_outputs_payload(model_outputs)
-    restore_sampling_rng_state(
-        adapter.device,
-        model_outputs["next_worker_rng_state"],
-    )
 
     step_t = int(model_outputs["step_t"])
     status = str(model_outputs["status"])

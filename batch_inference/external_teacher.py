@@ -22,12 +22,11 @@ ctrlsim_path()
 from models.ctrl_sim import CtRLSim
 
 from .external_teacher_batch_collator import collate_jobs_with_padding
-from .batch_decoder.pipeline import (
-    decode_action_stage_batched,
-    decode_rtg_stage_batched,
-    forward_job_batch,
-    get_next_worker_rng_state,
-)
+from .batch_decoder.action import decode_action_stage_batched_impl
+from .batch_decoder.forward_batch import forward_job_batch_impl
+from .batch_decoder.profile import batch_predict_rtgs_mode as _batch_predict_rtgs_mode
+from .batch_decoder.profile import elapsed_ms as _elapsed_ms
+from .batch_decoder import rtg as rtg_impl
 from .batch_protocol import pack_model_outputs, release_prepared_payload, unpack_prepared
 
 def _assert_required_keys(payload: Dict[str, Any], required: Tuple[str, ...], payload_name: str) -> None:
@@ -298,7 +297,7 @@ class ExternalTeacher:
             (
                 "[ExternalTeacher][Profile] call=%d envs=%d flat_jobs=%d flat_job_tokens=%d "
                 "ms(unpack=%.2f collect=%.2f forward=%.2f scatter=%.2f pack=%.2f total=%.2f) "
-                "forward_detail(ms collate=%.2f model_rtg=%.2f rtg_decode=%.2f rng=%.2f model_action=%.2f action_decode=%.2f) "
+                "forward_detail(ms collate=%.2f model_rtg=%.2f rtg_decode=%.2f model_action=%.2f action_decode=%.2f) "
                 "collate_detail(ms fill=%.2f from_numpy=%.2f to_device=%.2f token_index=%.2f)"
             )
             % (
@@ -315,7 +314,6 @@ class ExternalTeacher:
                 (forward_detail_ms or {}).get("stage_ms", {}).get("collate", 0.0),
                 (forward_detail_ms or {}).get("stage_ms", {}).get("model_rtg", 0.0),
                 (forward_detail_ms or {}).get("stage_ms", {}).get("rtg_decode", 0.0),
-                (forward_detail_ms or {}).get("stage_ms", {}).get("rng_reserve", 0.0),
                 (forward_detail_ms or {}).get("stage_ms", {}).get("model_action", 0.0),
                 (forward_detail_ms or {}).get("stage_ms", {}).get("action_decode", 0.0),
                 collate_detail.get("fill_buffers", 0.0),
@@ -336,12 +334,6 @@ class ExternalTeacher:
             "rtg_results": {},
             "processed_rtg_veh_ids": [],
             "dead_ids": prepared["dead_ids"],
-            "next_worker_rng_state": get_next_worker_rng_state(
-                teacher=self,
-                env_idx=env_idx,
-                step_t=prepared["step_t"],
-                fallback_rng_state=prepared.get("worker_rng_state"),
-            ),
         }
 
     def _collect_flat_jobs(
@@ -391,26 +383,7 @@ class ExternalTeacher:
             results[env_idx] = env_output
 
         self._fill_empty_ok_env_results(per_env_prepared, results)
-        self._attach_next_worker_rng_states(per_env_prepared, results)
         return results
-
-    def _attach_next_worker_rng_states(
-        self,
-        per_env_prepared: List[Optional[Dict[str, Any]]],
-        results: List[Optional[Dict[str, Any]]],
-    ) -> None:
-        for env_idx, prepared in enumerate(per_env_prepared):
-            if prepared is None:
-                continue
-            result = results[env_idx]
-            if result is None:
-                continue
-            result["next_worker_rng_state"] = get_next_worker_rng_state(
-                teacher=self,
-                env_idx=env_idx,
-                step_t=prepared["step_t"],
-                fallback_rng_state=prepared.get("worker_rng_state"),
-            )
 
     def _estimate_job_tokens(self, job: Dict[str, Any]) -> int:
         return _estimate_job_tokens(job)
@@ -424,27 +397,35 @@ class ExternalTeacher:
         )
 
     @torch.no_grad()
-    def _decode_rtg_stage_batched(self, batched_data, batch_meta, rtg_cache):
-        return decode_rtg_stage_batched(
+    def _decode_rtg_stage_batched(self, batched_data, batch_meta):
+        with self.model_forward_context():
+            preds = self.model(batched_data, eval=True)
+        rtg_logits = preds["rtg_preds"].float()
+        rtg_results_by_job, processed_rtg_veh_ids_by_job = rtg_impl.decode_rtg_jobs_batched_impl(
             teacher=self,
             batched_data=batched_data,
-            batch_meta=batch_meta,
-            rtg_cache=rtg_cache,
+            rtg_logits=rtg_logits,
+            decode_meta=batch_meta["decode_meta"]["rtg"],
         )
+        return batched_data, rtg_results_by_job, processed_rtg_veh_ids_by_job
 
     @torch.no_grad()
     def _decode_action_stage_batched(
         self,
         batched_data,
         batch_meta,
-        reserved_rng_states_by_job=None,
     ):
-        return decode_action_stage_batched(
+        return decode_action_stage_batched_impl(
             teacher=self,
             batched_data=batched_data,
             batch_meta=batch_meta,
-            reserved_rng_states_by_job=reserved_rng_states_by_job,
         )
 
     def _forward_job_batch(self, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return forward_job_batch(self, jobs)
+        return forward_job_batch_impl(
+            teacher=self,
+            jobs=jobs,
+            batch_predict_rtgs_mode_fn=_batch_predict_rtgs_mode,
+            elapsed_ms_fn=_elapsed_ms,
+            decode_rtg_jobs_batched_fn=rtg_impl.decode_rtg_jobs_batched_impl,
+        )

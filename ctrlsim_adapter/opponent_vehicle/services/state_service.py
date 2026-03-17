@@ -102,13 +102,12 @@ class OpponentStateService:
         self,
         t: int,
         vehicles: List,
-        worker_rng_state: Optional[np.ndarray] = None,
     ) -> Optional[Dict]:
         """
         构建 prepared_dict，供 ExternalTeacher 批量推理。
         Build prepared_dict for ExternalTeacher batched inference.
         """
-        return _batch_io.prepare_step(self.adapter, t, vehicles, worker_rng_state=worker_rng_state)
+        return _batch_io.prepare_step(self.adapter, t, vehicles)
 
     def apply_predictions(
         self,

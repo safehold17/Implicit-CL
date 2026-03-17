@@ -45,10 +45,6 @@ def pack_model_outputs(model_outputs: Optional[Dict[str, Any]]) -> Optional[Dict
         "rtg_values": rtg_values,
         "processed_rtg_veh_ids": as_int32_array(model_outputs_typed["processed_rtg_veh_ids"]),
         "dead_ids": as_int32_array(model_outputs_typed["dead_ids"]),
-        "next_worker_rng_state": np.asarray(
-            model_outputs_typed["next_worker_rng_state"],
-            dtype=np.uint8,
-        ),
     }
 
 
@@ -71,7 +67,6 @@ def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str,
             "rtg_values",
             "processed_rtg_veh_ids",
             "dead_ids",
-            "next_worker_rng_state",
         ),
         "packed model_outputs payload",
     )
@@ -99,8 +94,4 @@ def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str,
         "rtg_results": rtg_results,
         "processed_rtg_veh_ids": as_int_list(packed["processed_rtg_veh_ids"]),
         "dead_ids": as_int_list(packed["dead_ids"]),
-        "next_worker_rng_state": np.asarray(
-            packed["next_worker_rng_state"],
-            dtype=np.uint8,
-        ),
     }

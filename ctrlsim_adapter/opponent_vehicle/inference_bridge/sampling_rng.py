@@ -1,43 +1,60 @@
 """
-负责 adapter 侧推理桥的采样 RNG 抓取、恢复与默认解析。
-该模块保证 worker 端与主进程端在动作采样上的随机状态能够正确衔接。
-Captures, restores, and resolves sampling RNG state for the adapter-side inference bridge.
-Keeps random state aligned between worker-side decoding and the main-process adapter path.
+负责 adapter 侧推理桥的采样 seed 抓取、episode 初始化与默认解析。
+该模块把旧的可变 RNG state 协议收敛为稳定的无状态 sampling seed。
+Captures, initializes, and resolves sampling seeds for the adapter-side inference bridge.
+Collapses the old mutable RNG-state protocol into a stable stateless sampling-seed contract.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
 
 
-def capture_sampling_rng_state(device: Any) -> np.ndarray:
+_UINT64_MASK = np.uint64(0xFFFFFFFFFFFFFFFF)
+_SPLITMIX64_GAMMA = np.uint64(0x9E3779B97F4A7C15)
+_SPLITMIX64_MUL1 = np.uint64(0xBF58476D1CE4E5B9)
+_SPLITMIX64_MUL2 = np.uint64(0x94D049BB133111EB)
+_SEED_MIX_CONST = np.uint64(0xD6E8FEB86659FD93)
+
+
+def _splitmix64(values: np.ndarray) -> np.ndarray:
+    x = (values.astype(np.uint64, copy=False) + _SPLITMIX64_GAMMA) & _UINT64_MASK
+    x ^= x >> np.uint64(30)
+    x = (x * _SPLITMIX64_MUL1) & _UINT64_MASK
+    x ^= x >> np.uint64(27)
+    x = (x * _SPLITMIX64_MUL2) & _UINT64_MASK
+    x ^= x >> np.uint64(31)
+    return x
+
+
+def capture_sampling_seed(device: Any) -> int:
     torch_device = torch.device(device)
     if torch_device.type == "cuda":
         rng_state = torch.cuda.get_rng_state(torch_device)
     else:
         rng_state = torch.get_rng_state()
-    return rng_state.detach().cpu().numpy().astype(np.uint8, copy=False)
+    rng_bytes = rng_state.detach().cpu().numpy().astype(np.uint8, copy=False)
+    seed_words = np.frombuffer(rng_bytes.tobytes(), dtype=np.uint64)
+    if seed_words.size == 0:
+        seed_words = np.asarray([np.uint64(0)], dtype=np.uint64)
+    mixed = _splitmix64(seed_words ^ (_SEED_MIX_CONST * np.arange(seed_words.size, dtype=np.uint64)))
+    return int(np.bitwise_xor.reduce(mixed, dtype=np.uint64))
 
 
-def resolve_sampling_rng_state(
-    adapter: Any,
-    worker_rng_state: Optional[np.ndarray],
-) -> np.ndarray:
-    if worker_rng_state is not None:
-        return np.asarray(worker_rng_state, dtype=np.uint8)
-    return capture_sampling_rng_state(adapter.device)
+def initialize_episode_sampling_seed(adapter: Any) -> int:
+    reset_count = int(getattr(adapter, "_sampling_episode_index", 0))
+    base_seed = np.uint64(capture_sampling_seed(adapter.device))
+    episode_seed = int(_splitmix64(np.asarray([base_seed ^ np.uint64(reset_count)], dtype=np.uint64))[0])
+    adapter._sampling_episode_index = reset_count + 1
+    adapter._sampling_seed = episode_seed
+    return episode_seed
 
 
-def restore_sampling_rng_state(device: Any, rng_state: Any) -> None:
-    state_tensor = torch.as_tensor(
-        np.asarray(rng_state, dtype=np.uint8),
-        dtype=torch.uint8,
-    )
-    torch_device = torch.device(device)
-    if torch_device.type == "cuda":
-        torch.cuda.set_rng_state(state_tensor, device=torch_device)
-        return
-    torch.set_rng_state(state_tensor)
+def resolve_sampling_seed(adapter: Any) -> int:
+    sampling_seed = getattr(adapter, "_sampling_seed", None)
+    if sampling_seed is None:
+        return initialize_episode_sampling_seed(adapter)
+    return int(sampling_seed)

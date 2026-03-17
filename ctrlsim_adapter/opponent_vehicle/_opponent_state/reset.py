@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from ctrlsim_adapter.opponent_vehicle.inference_bridge.sampling_rng import initialize_episode_sampling_seed
+
 from .existence import (
     _compute_goal_hold_until,
     _keep_exists_on_invalid,
@@ -86,6 +88,7 @@ def reset(
     adapter._batch_prepare_cache = {}
     adapter._pending_sparse_actions_step_t = None
     adapter._pending_sparse_actions = {}
+    initialize_episode_sampling_seed(adapter)
     adapter._constant_state_vehicle_ids = set()
     adapter._constant_state_by_id = {}
     static_speed_threshold = 1e-3

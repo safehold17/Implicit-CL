@@ -97,7 +97,6 @@ def validate_model_outputs_payload(model_outputs: Dict[str, Any]) -> None:
             "rtg_results",
             "processed_rtg_veh_ids",
             "dead_ids",
-            "next_worker_rng_state",
         ),
         "model_outputs",
     )

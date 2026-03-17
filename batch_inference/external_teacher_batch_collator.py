@@ -192,6 +192,155 @@ def fill_collate_buffers(jobs: List[Dict[str, Any]], buffers: Dict[str, np.ndarr
         buffers["token_index_per_job"][batch_idx] = resolved_token_index
 
 
+def _resolve_idx_in_model(
+    veh_id: int,
+    veh_id_to_idx: Dict[int, int],
+    new_agent_idx_dict: Dict[int, int],
+) -> int | None:
+    agent_key = veh_id_to_idx.get(int(veh_id))
+    if agent_key is None:
+        return None
+    idx_in_model = new_agent_idx_dict.get(int(agent_key))
+    if idx_in_model is None:
+        return None
+    return int(idx_in_model)
+
+
+def _as_int64_array(values: List[int]) -> np.ndarray:
+    return np.asarray(values, dtype=np.int64)
+
+
+def _as_float32_array(values: List[float]) -> np.ndarray:
+    return np.asarray(values, dtype=np.float32)
+
+
+def _as_bool_array(values: List[bool]) -> np.ndarray:
+    return np.asarray(values, dtype=np.bool_)
+
+
+def _as_uint64_array(values: List[int]) -> np.ndarray:
+    return np.asarray(values, dtype=np.uint64)
+
+
+def build_decode_metadata(
+    jobs: List[Dict[str, Any]],
+    token_index_per_job: np.ndarray,
+) -> Dict[str, Dict[str, np.ndarray]]:
+    action_job_idx: List[int] = []
+    action_idx_in_model: List[int] = []
+    action_token_index: List[int] = []
+    action_veh_id: List[int] = []
+    action_step_t: List[int] = []
+    action_sampling_seed: List[int] = []
+    action_temperature: List[float] = []
+    action_nucleus_sampling: List[bool] = []
+    action_nucleus_threshold: List[float] = []
+    action_job_offsets = [0]
+
+    rtg_job_idx: List[int] = []
+    rtg_env_idx: List[int] = []
+    rtg_idx_in_model: List[int] = []
+    rtg_token_index: List[int] = []
+    rtg_veh_id: List[int] = []
+    rtg_step_t: List[int] = []
+    rtg_sampling_seed: List[int] = []
+    rtg_goal_tilt: List[int] = []
+    rtg_veh_tilt: List[int] = []
+    rtg_road_tilt: List[int] = []
+    rtg_job_offsets = [0]
+
+    for batch_idx, job in enumerate(jobs):
+        prepared = job["prepared"]
+        focal_batch = job["focal_batch"]
+        veh_id_to_idx = prepared["veh_id_to_idx"]
+        new_agent_idx_dict = focal_batch["new_agent_idx_dict"]
+        token_index = int(token_index_per_job[batch_idx])
+        step_t = int(prepared["step_t"])
+        sampling_seed = int(prepared["sampling_seed"])
+
+        sampling = prepared["sampling"]
+        for veh_id in focal_batch["data_veh_ids"]:
+            idx_in_model = _resolve_idx_in_model(
+                veh_id=int(veh_id),
+                veh_id_to_idx=veh_id_to_idx,
+                new_agent_idx_dict=new_agent_idx_dict,
+            )
+            if idx_in_model is None:
+                continue
+            action_job_idx.append(batch_idx)
+            action_idx_in_model.append(idx_in_model)
+            action_token_index.append(token_index)
+            action_veh_id.append(int(veh_id))
+            action_step_t.append(step_t)
+            action_sampling_seed.append(sampling_seed)
+            action_temperature.append(float(sampling["action_temperature"]))
+            action_nucleus_sampling.append(bool(sampling["nucleus_sampling"]))
+            action_nucleus_threshold.append(float(sampling["nucleus_threshold"]))
+        action_job_offsets.append(len(action_job_idx))
+
+        if not bool(focal_batch["predict_rtgs"]):
+            rtg_job_offsets.append(len(rtg_job_idx))
+            continue
+
+        data_veh_id_set = set(int(veh_id) for veh_id in focal_batch["data_veh_ids"])
+        default_tilt = prepared["default_tilt"]
+        tilt_by_veh_id = prepared["tilt_by_veh_id"]
+        for veh_id in focal_batch["veh_ids_in_context"]:
+            idx_in_model = _resolve_idx_in_model(
+                veh_id=int(veh_id),
+                veh_id_to_idx=veh_id_to_idx,
+                new_agent_idx_dict=new_agent_idx_dict,
+            )
+            if idx_in_model is None:
+                continue
+            veh_id_int = int(veh_id)
+            if veh_id_int in data_veh_id_set:
+                goal_tilt, veh_tilt, road_tilt = tilt_by_veh_id.get(veh_id_int, default_tilt)
+            else:
+                goal_tilt, veh_tilt, road_tilt = (0, 0, 0)
+            rtg_job_idx.append(batch_idx)
+            rtg_env_idx.append(int(job["env_idx"]))
+            rtg_idx_in_model.append(idx_in_model)
+            rtg_token_index.append(token_index)
+            rtg_veh_id.append(veh_id_int)
+            rtg_step_t.append(step_t)
+            rtg_sampling_seed.append(sampling_seed)
+            rtg_goal_tilt.append(int(goal_tilt))
+            rtg_veh_tilt.append(int(veh_tilt))
+            rtg_road_tilt.append(int(road_tilt))
+        rtg_job_offsets.append(len(rtg_job_idx))
+
+    return {
+        "action": {
+            "job_idx": _as_int64_array(action_job_idx),
+            "idx_in_model": _as_int64_array(action_idx_in_model),
+            "token_index": _as_int64_array(action_token_index),
+            "veh_id": _as_int64_array(action_veh_id),
+            "step_t": _as_int64_array(action_step_t),
+            "sampling_seed": _as_uint64_array(action_sampling_seed),
+            "temperature": _as_float32_array(action_temperature),
+            "nucleus_sampling": _as_bool_array(action_nucleus_sampling),
+            "nucleus_threshold": _as_float32_array(action_nucleus_threshold),
+            "job_offsets": _as_int64_array(action_job_offsets),
+            "job_count": np.asarray([len(jobs)], dtype=np.int64),
+        },
+        "rtg": {
+            "job_idx": _as_int64_array(rtg_job_idx),
+            "env_idx": _as_int64_array(rtg_env_idx),
+            "idx_in_model": _as_int64_array(rtg_idx_in_model),
+            "token_index": _as_int64_array(rtg_token_index),
+            "veh_id": _as_int64_array(rtg_veh_id),
+            "step_t": _as_int64_array(rtg_step_t),
+            "sampling_seed": _as_uint64_array(rtg_sampling_seed),
+            "goal_tilt": _as_int64_array(rtg_goal_tilt),
+            "veh_tilt": _as_int64_array(rtg_veh_tilt),
+            "road_tilt": _as_int64_array(rtg_road_tilt),
+            "job_offsets": _as_int64_array(rtg_job_offsets),
+            "job_count": np.asarray([len(jobs)], dtype=np.int64),
+        },
+    }
+
+
 def build_motion_data_from_buffers(
     buffers: Dict[str, np.ndarray],
     device: str,
@@ -224,6 +373,27 @@ def build_motion_data_from_buffers(
         "to_device": to_device_ms,
         "total": from_numpy_ms + to_device_ms,
     }
+
+
+def attach_decode_meta_tensors(
+    decode_meta: Dict[str, Dict[str, np.ndarray]],
+    device: str,
+) -> None:
+    action_meta = decode_meta["action"]
+    action_meta["job_idx_t"] = torch.as_tensor(action_meta["job_idx"], dtype=torch.long, device=device)
+    action_meta["idx_in_model_t"] = torch.as_tensor(action_meta["idx_in_model"], dtype=torch.long, device=device)
+    action_meta["token_index_t"] = torch.as_tensor(action_meta["token_index"], dtype=torch.long, device=device)
+    action_meta["temperature_t"] = torch.as_tensor(action_meta["temperature"], dtype=torch.float32, device=device)
+    action_meta["nucleus_sampling_t"] = torch.as_tensor(action_meta["nucleus_sampling"], dtype=torch.bool, device=device)
+    action_meta["nucleus_threshold_t"] = torch.as_tensor(action_meta["nucleus_threshold"], dtype=torch.float32, device=device)
+
+    rtg_meta = decode_meta["rtg"]
+    rtg_meta["job_idx_t"] = torch.as_tensor(rtg_meta["job_idx"], dtype=torch.long, device=device)
+    rtg_meta["idx_in_model_t"] = torch.as_tensor(rtg_meta["idx_in_model"], dtype=torch.long, device=device)
+    rtg_meta["token_index_t"] = torch.as_tensor(rtg_meta["token_index"], dtype=torch.long, device=device)
+    rtg_meta["goal_tilt_t"] = torch.as_tensor(rtg_meta["goal_tilt"], dtype=torch.float32, device=device)
+    rtg_meta["veh_tilt_t"] = torch.as_tensor(rtg_meta["veh_tilt"], dtype=torch.float32, device=device)
+    rtg_meta["road_tilt_t"] = torch.as_tensor(rtg_meta["road_tilt"], dtype=torch.float32, device=device)
 
 
 def collate_jobs_with_padding(
@@ -267,9 +437,18 @@ def collate_jobs_with_padding(
     token_index_per_job = torch.from_numpy(buffers["token_index_per_job"])
     token_index_to_device_ms = _elapsed_ms(token_index_to_device_start, profile_enabled)
 
+    decode_meta_start = time.perf_counter() if profile_enabled else 0.0
+    decode_meta = build_decode_metadata(
+        jobs=jobs,
+        token_index_per_job=buffers["token_index_per_job"],
+    )
+    attach_decode_meta_tensors(decode_meta=decode_meta, device=device)
+    decode_meta_ms = _elapsed_ms(decode_meta_start, profile_enabled)
+
     batch_meta = {
         "jobs": jobs,
         "token_index_per_job": token_index_per_job,
+        "decode_meta": decode_meta,
         "collate_profile": {
             "infer_layout": infer_layout_ms,
             "get_buffers": get_buffers_ms,
@@ -278,6 +457,7 @@ def collate_jobs_with_padding(
             "from_numpy": motion_data_profile["from_numpy"],
             "to_device": motion_data_profile["to_device"],
             "token_index_to_device": token_index_to_device_ms,
+            "decode_meta": decode_meta_ms,
             "total": _elapsed_ms(total_start, profile_enabled),
         },
     }
