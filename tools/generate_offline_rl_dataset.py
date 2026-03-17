@@ -1,10 +1,16 @@
 import json
 import os
+from pathlib import Path
+import sys
 import time
 import hydra
 import numpy as np
 import nocturne
 import imageio
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CTRLSIM_ROOT = PROJECT_ROOT / "ctrlsim"
+sys.path.insert(0, str(CTRLSIM_ROOT))
 
 from nocturne import Simulation
 from nocturne.bicycle_model import BicycleModel
@@ -144,7 +150,11 @@ def collect_data(cfg, dt, steps, output_path, files_path, files, chunk):
         sim.reset()
 
 
-@hydra.main(version_base=None, config_path="../cfgs/", config_name="config")
+@hydra.main(
+    version_base=None,
+    config_path=str(CTRLSIM_ROOT / "cfgs"),
+    config_name="config",
+)
 def main(cfg):
     
     if cfg.offline_rl.mode == 'train':
