@@ -8,9 +8,28 @@ Turns raw preprocessed files into adapter-ready RTG, road, and reward-related st
 from __future__ import annotations
 
 import os
+import pickle
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+
+COMPRESSED_PREPROCESS_FORMAT = "ctrlsim_preprocessed_compressed"
+
+
+def update_preprocessed_data_cache(
+    bridge: Any,
+    scenario_id: str,
+    preproc_data: Dict[str, Any],
+) -> None:
+    if bridge.preproc_cache_size <= 0:
+        return
+
+    if scenario_id in bridge._preproc_data_cache:
+        bridge._preproc_data_cache.pop(scenario_id)
+    bridge._preproc_data_cache[scenario_id] = preproc_data
+    if len(bridge._preproc_data_cache) > bridge.preproc_cache_size:
+        bridge._preproc_data_cache.popitem(last=False)
 
 
 def ensure_preprocessed_files_cache(bridge: Any) -> None:
@@ -48,22 +67,37 @@ def load_preprocessed_data(
     if scenario_id not in bridge._preprocessed_files_cache:
         return None, False
 
+    file_path = bridge._preprocessed_files_cache[scenario_id]
     idx = bridge._preprocessed_indices_cache.get(scenario_id)
     if idx is None:
         return None, False
 
     try:
+        compressed_data = load_compressed_preprocessed_data(file_path)
+        if compressed_data is not None:
+            update_preprocessed_data_cache(bridge, scenario_id, compressed_data)
+            return compressed_data, True
+
         preproc_data = bridge.preprocessed_dset[idx]
-        if bridge.preproc_cache_size > 0:
-            if scenario_id in bridge._preproc_data_cache:
-                bridge._preproc_data_cache.pop(scenario_id)
-            bridge._preproc_data_cache[scenario_id] = preproc_data
-            if len(bridge._preproc_data_cache) > bridge.preproc_cache_size:
-                bridge._preproc_data_cache.popitem(last=False)
+        update_preprocessed_data_cache(bridge, scenario_id, preproc_data)
         return preproc_data, True
     except Exception as exc:
         print(f"Warning: Failed to load preprocessed data for {scenario_id}: {exc}")
         return None, False
+
+
+def load_compressed_preprocessed_data(file_path: str) -> Optional[Dict[str, Any]]:
+    with open(file_path, "rb") as file:
+        raw_data = pickle.load(file)
+
+    if raw_data.get("format") != COMPRESSED_PREPROCESS_FORMAT:
+        return None
+
+    return {
+        "rtgs": raw_data["rtgs"],
+        "road_points": raw_data["road_points"],
+        "road_types": raw_data["road_types"],
+    }
 
 
 def compute_rewards(
