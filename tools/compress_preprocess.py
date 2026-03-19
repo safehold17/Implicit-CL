@@ -250,17 +250,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     input_files = list(iter_input_files(input_dir))
     if args.limit is not None:
         input_files = input_files[: args.limit]
+    pending_input_files = [
+        input_path
+        for input_path in input_files
+        if not (output_dir / input_path.name).exists()
+    ]
+    skipped_existing_count = len(input_files) - len(pending_input_files)
 
     total_input_bytes = 0
     total_output_bytes = 0
     processed_count = 0
-    for input_path in tqdm(input_files):
+    failed_files: list[Path] = []
+    for input_path in tqdm(pending_input_files):
         output_path = output_dir / input_path.name
-        input_bytes, output_bytes = compress_preprocess_file(
-            input_path=input_path,
-            output_path=output_path,
-            config=config,
-        )
+        try:
+            input_bytes, output_bytes = compress_preprocess_file(
+                input_path=input_path,
+                output_path=output_path,
+                config=config,
+            )
+        except (OSError, EOFError, pickle.UnpicklingError) as exc:
+            print(f"Warning: skipping invalid preprocess file {input_path}: {exc}")
+            failed_files.append(input_path)
+            continue
         total_input_bytes += input_bytes
         total_output_bytes += output_bytes
         processed_count += 1
@@ -268,8 +280,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(
         "Compressed "
         f"{processed_count} files from {input_dir} to {output_dir}. "
-        f"size: {total_input_bytes} -> {total_output_bytes} bytes."
+        f"size: {total_input_bytes} -> {total_output_bytes} bytes. "
+        f"skipped existing: {skipped_existing_count}. "
+        f"skipped invalid: {len(failed_files)}."
     )
+    if failed_files:
+        print("Skipped files:")
+        for failed_path in failed_files:
+            print(f"  {failed_path}")
     return 0
 
 
