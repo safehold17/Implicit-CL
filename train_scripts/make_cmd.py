@@ -9,6 +9,16 @@ import json
 import os
 
 
+def format_cmd_args(key, value):
+    if key.startswith('__'):
+        return []
+
+    if isinstance(value, (list, tuple)):
+        return [f'--{key}', *(str(item) for item in value)]
+
+    return [f'--{key}={value}']
+
+
 def generate_train_cmds(
     params, num_trials=1, start_index=0, newlines=False, 
     xpid_generator=None, xpid_prefix='', xvfb=False, 
@@ -38,7 +48,7 @@ def generate_train_cmds(
                 if count_set is not None:
                     count_set.add(v)
 
-            cmd.append(f'--{k}={v}')
+            cmd.extend(format_cmd_args(k, v))
 
         cmd = separator.join(cmd)
 
