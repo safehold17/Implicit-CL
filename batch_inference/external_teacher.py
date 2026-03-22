@@ -24,7 +24,7 @@ from .batch_decoder.action import decode_action_stage_batched_impl
 from .batch_decoder.forward_batch import batch_predict_rtgs_mode as _batch_predict_rtgs_mode
 from .batch_decoder.forward_batch import forward_job_batch_impl
 from .batch_decoder import rtg as rtg_impl
-from .batch_protocol import pack_model_outputs, release_prepared_payload, unpack_prepared
+from .batch_ipc import pack_model_outputs, release_prepared_payload, unpack_prepared
 
 def _assert_required_keys(payload: Dict[str, Any], required: Tuple[str, ...], payload_name: str) -> None:
     missing = [key for key in required if key not in payload]

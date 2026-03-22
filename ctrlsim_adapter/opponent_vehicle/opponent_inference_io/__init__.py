@@ -1,4 +1,4 @@
-"""Adapter-side inference bridge helpers for Nocturne + CtRL-Sim."""
+"""Adapter-side opponent inference I/O helpers for Nocturne + CtRL-Sim."""
 
 from .apply_outputs import apply_predictions
 from .focal_input import build_focal_batch, build_focal_batches

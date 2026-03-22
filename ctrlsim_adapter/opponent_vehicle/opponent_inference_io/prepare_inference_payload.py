@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from batch_inference.batch_protocol import pack_prepared
+from batch_inference.batch_ipc import pack_prepared
 
 from .sampling_rng import resolve_sampling_seed
 

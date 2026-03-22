@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-from batch_inference.batch_protocol import unpack_model_outputs, validate_model_outputs_payload
+from batch_inference.batch_ipc import unpack_model_outputs, validate_model_outputs_payload
 
 from .prepare_inference_payload import (
     NEXT_RTG_KEYS,

@@ -23,7 +23,7 @@ from ctrlsim_adapter.opponent_vehicle._opponent_state.gt_helpers import (
 )
 from utils.data import get_object_type_str
 
-from .. import inference_bridge as _batch_io
+from .. import opponent_inference_io as _batch_io
 from .._opponent_state import policy_sync as _policy_sync_module
 from .._opponent_state import reset as _reset_module
 from .._opponent_state import update as _update_module

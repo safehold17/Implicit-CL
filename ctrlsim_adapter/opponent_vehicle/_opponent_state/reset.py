@@ -11,7 +11,9 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from ctrlsim_adapter.opponent_vehicle.inference_bridge.sampling_rng import initialize_episode_sampling_seed
+from ctrlsim_adapter.opponent_vehicle.opponent_inference_io.sampling_rng import (
+    initialize_episode_sampling_seed,
+)
 
 from .existence import (
     _compute_goal_hold_until,

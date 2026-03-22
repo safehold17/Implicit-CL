@@ -1,6 +1,6 @@
 """
-Batch protocol payload 编解码。
-Batch protocol payload encoding and decoding.
+Batch IPC payload 编解码。
+Batch IPC payload encoding and decoding.
 """
 
 from __future__ import annotations
