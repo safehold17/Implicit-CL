@@ -7,7 +7,6 @@ Converts action-head outputs into continuous actions while using stateless sampl
 
 from __future__ import annotations
 
-import time
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -15,7 +14,6 @@ import torch
 
 from ctrlsim_adapter.opponent_vehicle.discretization import undiscretize_action_index
 
-from .profile import elapsed_ms
 from .rtg import iter_resolved_vehicle_indices
 from .sampling import (
     build_action_probabilities,
@@ -180,29 +178,16 @@ def decode_action_stage_batched_impl(
     batched_data: Any,
     batch_meta: Dict[str, Any],
 ) -> List[Dict[int, Tuple[float, float]]]:
-    profile_enabled = bool(getattr(teacher, "_profile_enabled", False))
-    model_forward_start = time.perf_counter() if profile_enabled else 0.0
     with teacher.model_forward_context():
         preds = teacher.model(batched_data, eval=True)
-    model_action_ms = elapsed_ms(model_forward_start, profile_enabled)
     action_logits = preds["action_preds"].float()
 
     jobs: List[Dict[str, Any]] = batch_meta["jobs"]
-    action_decode_start = time.perf_counter() if profile_enabled else 0.0
     action_results_by_job = decode_action_jobs_batched_impl(
         teacher=teacher,
         action_logits=action_logits,
         decode_meta=batch_meta["decode_meta"]["action"],
     )
-
-    action_decode_ms = elapsed_ms(action_decode_start, profile_enabled)
-    teacher._last_action_stage_profile = {
-        "stage_ms": {
-            "model_action": model_action_ms,
-            "action_decode": action_decode_ms,
-        },
-        "detail_ms": {},
-    }
     if len(action_results_by_job) != len(jobs):
         raise ValueError("Action stage job/result count mismatch.")
     return action_results_by_job

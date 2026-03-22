@@ -7,19 +7,12 @@ Converts scattered numpy fields into MotionData for ExternalTeacher's batched fo
 
 from __future__ import annotations
 
-import time
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
 
 from utils.data import MotionData, from_numpy
-
-
-def _elapsed_ms(start_time: float, profile_enabled: bool) -> float:
-    if not profile_enabled:
-        return 0.0
-    return (time.perf_counter() - start_time) * 1000.0
 
 
 def get_or_create_collate_buffers(
@@ -344,8 +337,7 @@ def build_decode_metadata(
 def build_motion_data_from_buffers(
     buffers: Dict[str, np.ndarray],
     device: str,
-    profile_enabled: bool = False,
-) -> Tuple[MotionData, Dict[str, float]]:
+) -> MotionData:
     batched_np = {
         "agent": {
             "agent_states": buffers["agent_states_b"],
@@ -361,18 +353,8 @@ def build_motion_data_from_buffers(
             "road_types": buffers["road_types_b"],
         },
     }
-    from_numpy_start = time.perf_counter() if profile_enabled else 0.0
     batched_cpu = MotionData(from_numpy(batched_np))
-    from_numpy_ms = _elapsed_ms(from_numpy_start, profile_enabled)
-
-    to_device_start = time.perf_counter() if profile_enabled else 0.0
-    batched_data = batched_cpu.to(device)
-    to_device_ms = _elapsed_ms(to_device_start, profile_enabled)
-    return batched_data, {
-        "from_numpy": from_numpy_ms,
-        "to_device": to_device_ms,
-        "total": from_numpy_ms + to_device_ms,
-    }
+    return batched_cpu.to(device)
 
 
 def attach_decode_meta_tensors(
@@ -400,18 +382,11 @@ def collate_jobs_with_padding(
     jobs: List[Dict[str, Any]],
     device: str,
     collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]],
-    profile_enabled: bool = False,
 ) -> Tuple[MotionData, Dict[str, Any]]:
     if not jobs:
         raise ValueError("jobs must not be empty")
 
-    total_start = time.perf_counter() if profile_enabled else 0.0
-
-    infer_layout_start = time.perf_counter() if profile_enabled else 0.0
     layout = infer_job_batch_layout(jobs)
-    infer_layout_ms = _elapsed_ms(infer_layout_start, profile_enabled)
-
-    get_buffers_start = time.perf_counter() if profile_enabled else 0.0
     specs = build_collate_specs(layout)
     cache_key = build_collate_cache_key(layout)
     buffers = get_or_create_collate_buffers(
@@ -419,46 +394,25 @@ def collate_jobs_with_padding(
         cache_key=cache_key,
         specs=specs,
     )
-    get_buffers_ms = _elapsed_ms(get_buffers_start, profile_enabled)
 
-    fill_buffers_start = time.perf_counter() if profile_enabled else 0.0
     fill_collate_buffers(jobs, buffers)
-    fill_buffers_ms = _elapsed_ms(fill_buffers_start, profile_enabled)
 
-    build_motion_data_start = time.perf_counter() if profile_enabled else 0.0
-    batched_data, motion_data_profile = build_motion_data_from_buffers(
+    batched_data = build_motion_data_from_buffers(
         buffers,
         device=device,
-        profile_enabled=profile_enabled,
     )
-    build_motion_data_ms = _elapsed_ms(build_motion_data_start, profile_enabled)
 
-    token_index_to_device_start = time.perf_counter() if profile_enabled else 0.0
     token_index_per_job = torch.from_numpy(buffers["token_index_per_job"])
-    token_index_to_device_ms = _elapsed_ms(token_index_to_device_start, profile_enabled)
 
-    decode_meta_start = time.perf_counter() if profile_enabled else 0.0
     decode_meta = build_decode_metadata(
         jobs=jobs,
         token_index_per_job=buffers["token_index_per_job"],
     )
     attach_decode_meta_tensors(decode_meta=decode_meta, device=device)
-    decode_meta_ms = _elapsed_ms(decode_meta_start, profile_enabled)
 
     batch_meta = {
         "jobs": jobs,
         "token_index_per_job": token_index_per_job,
         "decode_meta": decode_meta,
-        "collate_profile": {
-            "infer_layout": infer_layout_ms,
-            "get_buffers": get_buffers_ms,
-            "fill_buffers": fill_buffers_ms,
-            "build_motion_data": build_motion_data_ms,
-            "from_numpy": motion_data_profile["from_numpy"],
-            "to_device": motion_data_profile["to_device"],
-            "token_index_to_device": token_index_to_device_ms,
-            "decode_meta": decode_meta_ms,
-            "total": _elapsed_ms(total_start, profile_enabled),
-        },
     }
     return batched_data, batch_meta

@@ -8,8 +8,6 @@ Handles job collection, single-batch model forward passes, result aggregation, a
 from __future__ import annotations
 
 from contextlib import nullcontext
-import os as _os
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -23,9 +21,8 @@ from models.ctrl_sim import CtRLSim
 
 from .external_teacher_batch_collator import collate_jobs_with_padding
 from .batch_decoder.action import decode_action_stage_batched_impl
+from .batch_decoder.forward_batch import batch_predict_rtgs_mode as _batch_predict_rtgs_mode
 from .batch_decoder.forward_batch import forward_job_batch_impl
-from .batch_decoder.profile import batch_predict_rtgs_mode as _batch_predict_rtgs_mode
-from .batch_decoder.profile import elapsed_ms as _elapsed_ms
 from .batch_decoder import rtg as rtg_impl
 from .batch_protocol import pack_model_outputs, release_prepared_payload, unpack_prepared
 
@@ -83,13 +80,6 @@ def _fill_empty_ok_env_results(
             results[env_idx] = build_empty_env_result(prepared, env_idx=env_idx, status="ok")
 
 
-def _estimate_job_tokens(job: Dict[str, Any]) -> int:
-    agent_states = job["focal_batch"]["motion_data_np"]["agent_states"]
-    seq_len = int(agent_states.shape[1])
-    max_num_agents = int(agent_states.shape[0])
-    return seq_len * max_num_agents * 3
-
-
 class ExternalTeacher:
     """
     主进程 GPU 批量推理引擎。
@@ -106,15 +96,6 @@ class ExternalTeacher:
         self.device = device
         self.base_seed = base_seed
         self.inference_precision = inference_precision
-        self._profile_enabled = self._read_env_flag(
-            "CTRLSIM_EXTERNAL_TEACHER_PROFILE",
-            default="0",
-        )
-        self._profile_every = max(
-            1,
-            int(_os.getenv("CTRLSIM_EXTERNAL_TEACHER_PROFILE_EVERY", "50")),
-        )
-        self._profile_counter = 0
 
         (
             self._autocast_enabled,
@@ -148,94 +129,27 @@ class ExternalTeacher:
         self.num_reward_components = mdl.num_reward_components
 
         self._collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]] = {}
-        self._last_forward_batch_profile: Optional[Dict[str, Any]] = None
-        self._last_batched_forward_profile: Optional[Dict[str, Any]] = None
 
     def batched_forward(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
         """
         跨 env 批量推理。
         Run batched inference across environments.
         """
-        profile_enabled = self._profile_enabled
-        total_start = time.perf_counter() if profile_enabled else 0.0
-
-        unpack_start = time.perf_counter() if profile_enabled else 0.0
         decoded_prepared = self._decode_prepared_batch(per_env_prepared)
-        unpack_ms = (time.perf_counter() - unpack_start) * 1000.0 if profile_enabled else 0.0
         try:
-            num_envs = len(decoded_prepared)
-            results: List[Optional[Dict[str, Any]]] = [None] * num_envs
-
-            collect_start = time.perf_counter() if profile_enabled else 0.0
+            results: List[Optional[Dict[str, Any]]] = [None] * len(decoded_prepared)
             flat_jobs = self._collect_flat_jobs(decoded_prepared, results)
-            collect_ms = (time.perf_counter() - collect_start) * 1000.0 if profile_enabled else 0.0
 
             if not flat_jobs:
                 self._fill_empty_ok_env_results(decoded_prepared, results)
-                pack_start = time.perf_counter() if profile_enabled else 0.0
-                packed_outputs = self._pack_outputs(results)
-                pack_ms = (time.perf_counter() - pack_start) * 1000.0 if profile_enabled else 0.0
-                self._last_batched_forward_profile = {
-                    "num_envs": num_envs,
-                    "flat_job_count": 0,
-                    "stage_ms": {
-                        "unpack": unpack_ms,
-                        "collect": collect_ms,
-                        "forward": 0.0,
-                        "scatter": 0.0,
-                        "pack": pack_ms,
-                        "total": (time.perf_counter() - total_start) * 1000.0 if profile_enabled else 0.0,
-                    },
-                    "forward_detail_ms": None,
-                }
-                self._maybe_log_profile(
-                    num_envs=num_envs,
-                    flat_jobs=flat_jobs,
-                    stage_ms=self._last_batched_forward_profile["stage_ms"],
-                )
-                return packed_outputs
+                return self._pack_outputs(results)
 
-            forward_start = time.perf_counter() if profile_enabled else 0.0
             all_per_focal = self._forward_job_batch(flat_jobs)
-            forward_ms = (time.perf_counter() - forward_start) * 1000.0 if profile_enabled else 0.0
-
-            scatter_start = time.perf_counter() if profile_enabled else 0.0
             per_env_outputs = self._scatter_batch_results(all_per_focal, decoded_prepared, results)
-            scatter_ms = (time.perf_counter() - scatter_start) * 1000.0 if profile_enabled else 0.0
-
-            pack_start = time.perf_counter() if profile_enabled else 0.0
-            packed_outputs = self._pack_outputs(per_env_outputs)
-            pack_ms = (time.perf_counter() - pack_start) * 1000.0 if profile_enabled else 0.0
-
-            forward_detail_ms = self._last_forward_batch_profile
-            self._last_batched_forward_profile = {
-                "num_envs": num_envs,
-                "flat_job_count": len(flat_jobs),
-                "stage_ms": {
-                    "unpack": unpack_ms,
-                    "collect": collect_ms,
-                    "forward": forward_ms,
-                    "scatter": scatter_ms,
-                    "pack": pack_ms,
-                    "total": (time.perf_counter() - total_start) * 1000.0 if profile_enabled else 0.0,
-                },
-                "forward_detail_ms": forward_detail_ms,
-            }
-            self._maybe_log_profile(
-                num_envs=num_envs,
-                flat_jobs=flat_jobs,
-                stage_ms=self._last_batched_forward_profile["stage_ms"],
-                forward_detail_ms=forward_detail_ms,
-            )
-            return packed_outputs
+            return self._pack_outputs(per_env_outputs)
         finally:
             for prepared in decoded_prepared:
                 release_prepared_payload(prepared)
-
-    @staticmethod
-    def _read_env_flag(name: str, default: str = "0") -> bool:
-        value = str(_os.getenv(name, default)).strip().lower()
-        return value in {"1", "true", "yes", "on"}
 
     def _resolve_inference_precision(self) -> Tuple[bool, Optional[torch.dtype]]:
         allowed = {"fp32", "amp_fp16", "amp_bf16"}
@@ -276,52 +190,6 @@ class ExternalTeacher:
 
     def _pack_outputs(self, outputs: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
         return [pack_model_outputs(output) if output is not None else None for output in outputs]
-
-    def _maybe_log_profile(
-        self,
-        num_envs: int,
-        flat_jobs: List[Dict[str, Any]],
-        stage_ms: Dict[str, float],
-        forward_detail_ms: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        if not self._profile_enabled:
-            return
-
-        self._profile_counter += 1
-        if self._profile_counter % self._profile_every != 0:
-            return
-
-        flat_job_tokens = sum(self._estimate_job_tokens(job) for job in flat_jobs)
-        collate_detail = (forward_detail_ms or {}).get("detail_ms", {}).get("collate", {})
-        print(
-            (
-                "[ExternalTeacher][Profile] call=%d envs=%d flat_jobs=%d flat_job_tokens=%d "
-                "ms(unpack=%.2f collect=%.2f forward=%.2f scatter=%.2f pack=%.2f total=%.2f) "
-                "forward_detail(ms collate=%.2f model_rtg=%.2f rtg_decode=%.2f model_action=%.2f action_decode=%.2f) "
-                "collate_detail(ms fill=%.2f from_numpy=%.2f to_device=%.2f token_index=%.2f)"
-            )
-            % (
-                self._profile_counter,
-                num_envs,
-                len(flat_jobs),
-                flat_job_tokens,
-                stage_ms.get("unpack", 0.0),
-                stage_ms.get("collect", 0.0),
-                stage_ms.get("forward", 0.0),
-                stage_ms.get("scatter", 0.0),
-                stage_ms.get("pack", 0.0),
-                stage_ms.get("total", 0.0),
-                (forward_detail_ms or {}).get("stage_ms", {}).get("collate", 0.0),
-                (forward_detail_ms or {}).get("stage_ms", {}).get("model_rtg", 0.0),
-                (forward_detail_ms or {}).get("stage_ms", {}).get("rtg_decode", 0.0),
-                (forward_detail_ms or {}).get("stage_ms", {}).get("model_action", 0.0),
-                (forward_detail_ms or {}).get("stage_ms", {}).get("action_decode", 0.0),
-                collate_detail.get("fill_buffers", 0.0),
-                collate_detail.get("from_numpy", 0.0),
-                collate_detail.get("to_device", 0.0),
-                collate_detail.get("token_index_to_device", 0.0),
-            )
-        )
 
     def _build_empty_env_result(self, prepared: Dict[str, Any], env_idx: int, status: str) -> Dict[str, Any]:
         _assert_required_keys(prepared, ("step_t", "token_index", "dead_ids"), f"prepared env_idx={env_idx}")
@@ -385,15 +253,11 @@ class ExternalTeacher:
         self._fill_empty_ok_env_results(per_env_prepared, results)
         return results
 
-    def _estimate_job_tokens(self, job: Dict[str, Any]) -> int:
-        return _estimate_job_tokens(job)
-
     def _collate_jobs_with_padding(self, jobs: List[Dict[str, Any]]):
         return collate_jobs_with_padding(
             jobs=jobs,
             device=self.device,
             collate_numpy_buffers=self._collate_numpy_buffers,
-            profile_enabled=self._profile_enabled,
         )
 
     @torch.no_grad()
@@ -426,6 +290,5 @@ class ExternalTeacher:
             teacher=self,
             jobs=jobs,
             batch_predict_rtgs_mode_fn=_batch_predict_rtgs_mode,
-            elapsed_ms_fn=_elapsed_ms,
             decode_rtg_jobs_batched_fn=rtg_impl.decode_rtg_jobs_batched_impl,
         )
