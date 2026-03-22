@@ -61,16 +61,7 @@ def init_clearml(args):
         output_uri="s3://tks-zx.fzi.de:9000/ri928"
     )
 
-    # Download ClearML dataset and remap paths.
-    if args.clearml_dataset_project and args.clearml_dataset_name:
-        dataset_dir = download_clearml_dataset(
-            args.clearml_dataset_project, args.clearml_dataset_name,
-        )
-        for key in ('scenario_index_path', 'scenario_data_dir', 'preprocess_dir',
-                     'opponent_checkpoint', 'vehicle_map_path'):
-            path = getattr(args, key)
-            if path and not os.path.isabs(path):
-                setattr(args, key, os.path.join(dataset_dir, path))
+
 
     task.connect(vars(args))
 
@@ -88,6 +79,17 @@ def init_clearml(args):
     )
     # execute on a remote GPU cluster
     task.execute_remotely('default', clone=False, exit_process=True)
+
+    # Download ClearML dataset and remap paths.
+    if args.clearml_dataset_project and args.clearml_dataset_name:
+        dataset_dir = download_clearml_dataset(
+            args.clearml_dataset_project, args.clearml_dataset_name,
+        )
+        for key in ('scenario_index_path', 'scenario_data_dir', 'preprocess_dir',
+                     'opponent_checkpoint', 'vehicle_map_path'):
+            path = getattr(args, key)
+            if path and not os.path.isabs(path):
+                setattr(args, key, os.path.join(dataset_dir, path))
 
     print('Using ClearML')
     return task
