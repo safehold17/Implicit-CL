@@ -95,7 +95,7 @@ def _predict_opponent_actions_batch(
     )
     if prepared is None:
         return {}
-    outputs = teacher.batched_forward([prepared])[0]
+    outputs = teacher.run_batched_forward([prepared])[0]
     return env.opponent.apply_predictions(outputs)
 
 

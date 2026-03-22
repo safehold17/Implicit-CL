@@ -32,12 +32,12 @@ def _assert_required_keys(payload: Dict[str, Any], required: Tuple[str, ...], pa
         raise ValueError(f"{payload_name} missing required keys: {missing}")
 
 
-def _collect_flat_jobs(
+def _collect_focal_jobs(
     per_env_prepared: List[Optional[Dict[str, Any]]],
     results: List[Optional[Dict[str, Any]]],
     build_empty_env_result,
 ) -> List[Dict[str, Any]]:
-    flat_jobs: List[Dict[str, Any]] = []
+    focal_jobs: List[Dict[str, Any]] = []
     for env_idx, prepared in enumerate(per_env_prepared):
         if prepared is None:
             continue
@@ -57,7 +57,7 @@ def _collect_flat_jobs(
         _assert_required_keys(prepared, ("focal_batches",), f"prepared env_idx={env_idx}")
         for focal_batch in prepared["focal_batches"]:
             _assert_required_keys(focal_batch, ("focal_id", "motion_data_np"), "prepared focal_batch")
-            flat_jobs.append(
+            focal_jobs.append(
                 {
                     "env_idx": env_idx,
                     "prepared": prepared,
@@ -65,7 +65,7 @@ def _collect_flat_jobs(
                 }
             )
 
-    return flat_jobs
+    return focal_jobs
 
 
 def _fill_empty_ok_env_results(
@@ -130,23 +130,24 @@ class ExternalTeacher:
 
         self._collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]] = {}
 
-    def batched_forward(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
+    def run_batched_forward(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
         """
-        跨 env 批量推理。
-        Run batched inference across environments.
+        跨 env 聚合 prepared 输入，并执行批量推理与结果回收。
+        Aggregate prepared inputs across environments, run batched inference pipeline,
+        and scatter outputs back per environment.
         """
         decoded_prepared = self._decode_prepared_batch(per_env_prepared)
         try:
             results: List[Optional[Dict[str, Any]]] = [None] * len(decoded_prepared)
-            flat_jobs = self._collect_flat_jobs(decoded_prepared, results)
+            focal_jobs = self._collect_focal_jobs(decoded_prepared, results)
 
-            if not flat_jobs:
+            if not focal_jobs:
                 self._fill_empty_ok_env_results(decoded_prepared, results)
                 return self._pack_outputs(results)
 
-            all_per_focal = self._forward_job_batch(flat_jobs)
-            per_env_outputs = self._scatter_batch_results(all_per_focal, decoded_prepared, results)
-            return self._pack_outputs(per_env_outputs)
+            job_outputs = self._forward_job_batch(focal_jobs)
+            env_outputs = self._aggregate_job_outputs_by_env(job_outputs, decoded_prepared, results)
+            return self._pack_outputs(env_outputs)
         finally:
             for prepared in decoded_prepared:
                 release_prepared_payload(prepared)
@@ -204,12 +205,12 @@ class ExternalTeacher:
             "dead_ids": prepared["dead_ids"],
         }
 
-    def _collect_flat_jobs(
+    def _collect_focal_jobs(
         self,
         per_env_prepared: List[Optional[Dict[str, Any]]],
         results: List[Optional[Dict[str, Any]]],
     ) -> List[Dict[str, Any]]:
-        return _collect_flat_jobs(
+        return _collect_focal_jobs(
             per_env_prepared=per_env_prepared,
             results=results,
             build_empty_env_result=self._build_empty_env_result,
@@ -226,26 +227,35 @@ class ExternalTeacher:
             build_empty_env_result=self._build_empty_env_result,
         )
 
-    def _scatter_batch_results(
+    def _aggregate_job_outputs_by_env(
         self,
-        all_per_focal: List[Dict[str, Any]],
+        job_outputs: List[Dict[str, Any]],
         per_env_prepared: List[Optional[Dict[str, Any]]],
         results: List[Optional[Dict[str, Any]]],
     ) -> List[Optional[Dict[str, Any]]]:
+        """
+        将按 job 粒度的推理结果按 env 聚合，并回填到 per-env 结果列表中。
+        该过程会合并 action / RTG 输出，同时为没有 job 输出但状态为 ok 的 env 补齐空结果。
+
+        Aggregate job-level inference outputs by environment and write them back into the
+        per-env result list.
+        This merges action / RTG outputs and also fills empty results for environments whose
+        status is `ok` but produced no job-level outputs.
+        """
         env_accum: Dict[int, Dict[str, Any]] = {}
-        for per_focal in all_per_focal:
-            env_idx = int(per_focal["env_idx"])
+        for job_output in job_outputs:
+            env_idx = int(job_output["env_idx"])
             if env_idx not in env_accum:
                 env_accum[env_idx] = self._build_empty_env_result(
-                    prepared=per_focal["prepared"],
+                    prepared=job_output["prepared"],
                     env_idx=env_idx,
                     status="ok",
                 )
 
             env_accum_item = env_accum[env_idx]
-            env_accum_item["action_results"].update(per_focal["action_results"])
-            env_accum_item["rtg_results"].update(per_focal["rtg_results"])
-            env_accum_item["processed_rtg_veh_ids"].extend(per_focal["processed_rtg_veh_ids"])
+            env_accum_item["action_results"].update(job_output["action_results"])
+            env_accum_item["rtg_results"].update(job_output["rtg_results"])
+            env_accum_item["processed_rtg_veh_ids"].extend(job_output["processed_rtg_veh_ids"])
 
         for env_idx, env_output in env_accum.items():
             results[env_idx] = env_output

@@ -1035,7 +1035,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
             model_output = None
         else:
             teacher = self.runtime.get_single_env_teacher()
-            model_output = teacher.batched_forward([prepared])[0]
+            model_output = teacher.run_batched_forward([prepared])[0]
         return self.step_complete(model_output)
 
     def _get_single_env_teacher(self):

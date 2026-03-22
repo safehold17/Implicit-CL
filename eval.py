@@ -517,14 +517,14 @@ class Evaluator(object):
 								item.get('opponent') if isinstance(item, dict) else None
 								for item in per_env_prepared
 							]
-							ego_results = external_teacher.batched_forward(ego_prepared)
-							opp_results = external_teacher.batched_forward(opp_prepared)
+							ego_results = external_teacher.run_batched_forward(ego_prepared)
+							opp_results = external_teacher.run_batched_forward(opp_prepared)
 							model_outputs = [
 								{'ego': ego_output, 'opponent': opp_output}
 								for ego_output, opp_output in zip(ego_results, opp_results)
 							]
 						else:
-							model_outputs = external_teacher.batched_forward(per_env_prepared)
+							model_outputs = external_teacher.run_batched_forward(per_env_prepared)
 						obs, reward, done, infos = venv.step_complete(model_outputs, reset_random=True)
 					else:
 						obs, reward, done, infos = venv.step(action)

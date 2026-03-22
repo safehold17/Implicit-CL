@@ -20,6 +20,13 @@ def get_or_create_collate_buffers(
     cache_key: Tuple[Any, ...],
     specs: Dict[str, Tuple[Tuple[int, ...], np.dtype, Any]],
 ) -> Dict[str, np.ndarray]:
+    """
+    按给定 layout 规格获取可复用的 numpy 缓冲区；若缓存不存在则创建新缓冲区。
+    对已存在的缓冲区，会按字段默认填充值原地重置，供下一次 collate 复用。
+
+    Get reusable numpy buffers for the given layout specification, creating them on cache miss.
+    Existing buffers are reset in place with each field's default fill value before reuse.
+    """
     buffers = collate_numpy_buffers.get(cache_key)
     if buffers is None:
         buffers = {}
@@ -37,6 +44,13 @@ def get_or_create_collate_buffers(
 
 
 def infer_job_batch_layout(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    扫描这批 jobs，推断批量化所需的最大尺寸和各字段 dtype。
+    返回的 layout 用于后续分配统一 shape 的 padding 缓冲区。
+
+    Scan the jobs to infer maximum batch dimensions and per-field dtypes.
+    The returned layout is used to allocate uniformly padded collate buffers.
+    """
     first_motion = jobs[0]["focal_batch"]["motion_data_np"]
     first_prepared = jobs[0]["prepared"]
     first_shared_timesteps = np.asarray(first_prepared["shared_timesteps"])
@@ -83,6 +97,13 @@ def infer_job_batch_layout(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def build_collate_specs(layout: Dict[str, Any]) -> Dict[str, Tuple[Tuple[int, ...], np.dtype, Any]]:
+    """
+    根据 layout 生成各个批量缓冲区的 shape、dtype 和默认填充值定义。
+    这些规格决定了不同变长字段在 batch 中如何进行 padding。
+
+    Build shape, dtype, and default fill-value specs for each batched buffer from the layout.
+    These specs define how variable-length fields are padded inside the batch.
+    """
     batch_size = layout["batch_size"]
     max_agents = layout["max_agents"]
     max_seq_len = layout["max_seq_len"]
@@ -138,6 +159,12 @@ def build_collate_specs(layout: Dict[str, Any]) -> Dict[str, Tuple[Tuple[int, ..
 
 
 def build_collate_cache_key(layout: Dict[str, Any]) -> Tuple[Any, ...]:
+    """
+    将 layout 编码成可哈希的缓存键，用于复用同尺寸同 dtype 的 collate 缓冲区。
+
+    Encode the layout into a hashable cache key so collate buffers can be reused
+    when batch dimensions and dtypes match.
+    """
     dtypes = layout["dtypes"]
     return (
         layout["batch_size"],
@@ -159,6 +186,14 @@ def build_collate_cache_key(layout: Dict[str, Any]) -> Tuple[Any, ...]:
 
 
 def fill_collate_buffers(jobs: List[Dict[str, Any]], buffers: Dict[str, np.ndarray]) -> None:
+    """
+    将每个 job 的 numpy 数据拷贝到批量缓冲区对应位置，并保留其余区域为 padding 值。
+    同时解析并记录每个 job 在后续解码阶段要使用的 token index。
+
+    Copy each job's numpy payload into the corresponding slice of the batched buffers,
+    leaving the remaining region padded with default values.
+    Also resolves and stores the token index used later during decoding.
+    """
     for batch_idx, job in enumerate(jobs):
         prepared = job["prepared"]
         motion_data_np = job["focal_batch"]["motion_data_np"]
@@ -194,6 +229,13 @@ def _resolve_idx_in_model(
     veh_id_to_idx: Dict[int, int],
     new_agent_idx_dict: Dict[int, int],
 ) -> int | None:
+    """
+    将外部 veh_id 映射到当前 focal batch 中模型张量使用的 agent 索引。
+    若该车辆不在当前模型上下文中，则返回 None。
+
+    Map an external veh_id to the agent index used by the model tensors in the current focal batch.
+    Returns None when the vehicle is not present in the current model context.
+    """
     agent_key = veh_id_to_idx.get(int(veh_id))
     if agent_key is None:
         return None
@@ -223,6 +265,15 @@ def build_decode_metadata(
     jobs: List[Dict[str, Any]],
     token_index_per_job: np.ndarray,
 ) -> Dict[str, Dict[str, np.ndarray]]:
+    """
+    为 action 和 RTG 解码阶段构建按 job 展平的元数据索引。
+    返回结果描述了每条解码记录对应的 job、车辆、token 位置以及采样参数，
+    供模型输出在解码后映射回原始 job / env 使用。
+
+    Build flattened per-job metadata for action and RTG decoding.
+    The result records, for each decode entry, the source job, vehicle, token position,
+    and sampling parameters so model outputs can be mapped back to the original jobs and environments.
+    """
     action_job_idx: List[int] = []
     action_idx_in_model: List[int] = []
     action_token_index: List[int] = []
@@ -342,6 +393,11 @@ def build_motion_data_from_buffers(
     buffers: Dict[str, np.ndarray],
     device: str,
 ) -> MotionData:
+    """
+    将已填充完成的 numpy 缓冲区组装成 `MotionData`，并搬运到目标设备。
+
+    Assemble the populated numpy buffers into a `MotionData` object and move it to the target device.
+    """
     batched_np = {
         "agent": {
             "agent_states": buffers["agent_states_b"],
@@ -365,6 +421,13 @@ def attach_decode_meta_tensors(
     decode_meta: Dict[str, Dict[str, np.ndarray]],
     device: str,
 ) -> None:
+    """
+    将解码元数据中的关键 numpy 字段转换为目标设备上的 torch tensor。
+    这些张量会在 batched action / RTG 解码时直接参与索引和采样计算。
+
+    Convert key numpy fields in the decode metadata into torch tensors on the target device.
+    These tensors are used directly during batched action / RTG decoding for indexing and sampling.
+    """
     action_meta = decode_meta["action"]
     action_meta["job_idx_t"] = torch.as_tensor(action_meta["job_idx"], dtype=torch.long, device=device)
     action_meta["idx_in_model_t"] = torch.as_tensor(action_meta["idx_in_model"], dtype=torch.long, device=device)
@@ -387,6 +450,13 @@ def collate_jobs_with_padding(
     device: str,
     collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]],
 ) -> Tuple[MotionData, Dict[str, Any]]:
+    """
+    将多个 focal job 整理成统一 shape 的批量模型输入，并补齐 padding。
+    同时构建 action / RTG 解码阶段所需的 metadata，供后续结果拆分与回填使用。
+
+    Collate multiple focal jobs into a single padded batch with uniform tensor shapes.
+    Also builds action / RTG decoding metadata used to map model outputs back to each job.
+    """
     if not jobs:
         raise ValueError("jobs must not be empty")
 

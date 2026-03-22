@@ -292,8 +292,8 @@ class CtrlSimEgoWrapper:
     def step(self, _action):
         prepared = self.step_prepare(_action)
         teacher = self._get_single_env_teacher()
-        ego_outputs = teacher.batched_forward([prepared["ego"]])[0]
-        opp_outputs = teacher.batched_forward([prepared["opponent"]])[0]
+        ego_outputs = teacher.run_batched_forward([prepared["ego"]])[0]
+        opp_outputs = teacher.run_batched_forward([prepared["opponent"]])[0]
         return self.step_complete({"ego": ego_outputs, "opponent": opp_outputs})
 
     def _get_single_env_teacher(self):
@@ -633,8 +633,8 @@ def evaluate_with_metrics(
             per_env_prepared = venv.step_prepare(action)
             ego_prepared = [p.get("ego") if p else None for p in per_env_prepared]
             opp_prepared = [p.get("opponent") if p else None for p in per_env_prepared]
-            ego_results = external_teacher.batched_forward(ego_prepared)
-            opp_results = external_teacher.batched_forward(opp_prepared)
+            ego_results = external_teacher.run_batched_forward(ego_prepared)
+            opp_results = external_teacher.run_batched_forward(opp_prepared)
             combined = [
                 {"ego": e, "opponent": o}
                 for e, o in zip(ego_results, opp_results)

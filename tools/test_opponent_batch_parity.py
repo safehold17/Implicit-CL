@@ -144,8 +144,8 @@ def _step_batch_and_capture_opponent(
     teacher: ExternalTeacher,
 ) -> Dict[int, Tuple[float, float]]:
     prepared = wrapper.step_prepare(None)
-    ego_outputs = teacher.batched_forward([prepared["ego"]])[0]
-    opponent_outputs = teacher.batched_forward([prepared["opponent"]])[0]
+    ego_outputs = teacher.run_batched_forward([prepared["ego"]])[0]
+    opponent_outputs = teacher.run_batched_forward([prepared["opponent"]])[0]
 
     ego_actions = wrapper.ego_adapter.apply_predictions(ego_outputs)
     if wrapper.ego_id is not None and wrapper.ego_id in ego_actions:

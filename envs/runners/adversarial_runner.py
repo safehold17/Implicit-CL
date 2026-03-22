@@ -839,7 +839,7 @@ class AdversarialRunner(object):
                 else:
                     if self.external_teacher is None:
                         raise RuntimeError("Nocturne training requires an ExternalTeacher.")
-                    model_outputs = self.external_teacher.batched_forward(prepared)
+                    model_outputs = self.external_teacher.run_batched_forward(prepared)
                 obs, reward, done, infos = self.venv.step_complete(
                     model_outputs, reset_random=reset_random,
                 )
