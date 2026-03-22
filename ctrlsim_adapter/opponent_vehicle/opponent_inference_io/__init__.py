@@ -2,7 +2,7 @@
 
 from .apply_outputs import apply_predictions
 from .focal_input import build_focal_batch, build_focal_batches
-from .prepare_inference_payload import prepare_step
+from .prepare_inference_payload import prepare_step, prepare_step_pack
 from .sampling_rng import capture_sampling_seed, initialize_episode_sampling_seed
 
 _build_focal_batch = build_focal_batch
@@ -13,5 +13,6 @@ __all__ = [
     "capture_sampling_seed",
     "initialize_episode_sampling_seed",
     "prepare_step",
+    "prepare_step_pack",
     "_build_focal_batch",
 ]

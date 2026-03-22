@@ -244,12 +244,8 @@ def _make_env(args):
             'remove_background_vehicles': getattr(args, 'remove_background_vehicles', True),
             'student_num_neighbors': getattr(args, 'student_num_neighbors', 16),
             'student_top_k_road': getattr(args, 'student_top_k_road', 64),
-            'student_accel_discretization': getattr(
-                args, 'student_accel_discretization', 7
-            ),
-            'student_steer_discretization': getattr(
-                args, 'student_steer_discretization', 13
-            ),
+            'student_accel_discretization': args.student_accel_discretization,
+            'student_steer_discretization': args.student_steer_discretization,
             'action_repeat_interval': getattr(
                 args, 'action_repeat_interval', 2
             ),

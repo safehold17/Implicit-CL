@@ -114,8 +114,8 @@ def apply_student_action(env, action: np.ndarray) -> None:
     if env.ego_vehicle is None:
         return
 
-    accel_bins = int(getattr(env, "student_accel_discretization", 7))
-    steer_bins = int(getattr(env, "student_steer_discretization", 13))
+    accel_bins = int(env.student_accel_discretization)
+    steer_bins = int(env.student_steer_discretization)
     num_actions = int(accel_bins * steer_bins)
 
     action_id = int(np.asarray(action).reshape(-1)[0])

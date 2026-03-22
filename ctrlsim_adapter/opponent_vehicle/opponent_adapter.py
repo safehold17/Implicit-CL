@@ -293,6 +293,20 @@ class CtrlSimOpponentAdapter:
         self._ensure_services()
         return self._state_service.prepare_step(t, vehicles)
 
+    def prepare_step_pack(
+        self,
+        t: int,
+        vehicles: List,
+        ego_id: Optional[int] = None,
+    ):
+        """代理双路 prepared pack 构建。 / Delegate prepared-pack construction."""
+        self._ensure_services()
+        return self._state_service.prepare_step_pack(
+            t,
+            vehicles,
+            ego_id=ego_id,
+        )
+
     def update_policy_state(self, t: int):
         self._ensure_services()
         return self._state_service.update_policy_state(t)

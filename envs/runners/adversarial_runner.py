@@ -23,6 +23,8 @@ from teachDeepRL.teachers.teacher_controller import TeacherController
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
+from envs.nocturne_ctrlsim.runtime import split_prepared_pack_batch
+
 
 class AdversarialRunner(object):
     """
@@ -735,6 +737,62 @@ class AdversarialRunner(object):
     def _sample_replay_decision(self):
         return self._default_level_sampler.sample_replay_decision()
 
+    def _run_nocturne_batched_step(self, action, reset_random=False):
+        """执行 Nocturne 双路 batched step。 / Run the Nocturne batched step with opponent and ego_ctrlsim paths."""
+        prepared_batch = self.venv.step_prepare(action)
+        opponent_prepared, ego_ctrlsim_prepared = split_prepared_pack_batch(
+            prepared_batch
+        )
+
+        if all(item is None for item in opponent_prepared):
+            model_outputs = [None] * len(opponent_prepared)
+        else:
+            if self.external_teacher is None:
+                raise RuntimeError("Nocturne training requires an ExternalTeacher.")
+            model_outputs = self.external_teacher.run_batched_forward(
+                opponent_prepared
+            )
+
+        obs, reward, done, infos = self.venv.step_complete(
+            model_outputs,
+            reset_random=reset_random,
+        )
+
+        ego_ctrlsim_logits = [None] * len(ego_ctrlsim_prepared)
+        if not all(item is None for item in ego_ctrlsim_prepared):
+            if self.external_teacher is None:
+                raise RuntimeError("Nocturne training requires an ExternalTeacher.")
+            forward_logits = getattr(
+                self.external_teacher,
+                "run_batched_forward_action_logits",
+                None,
+            )
+            if forward_logits is not None:
+                ego_ctrlsim_logits = forward_logits(ego_ctrlsim_prepared)
+
+        for info, logits in zip(infos, ego_ctrlsim_logits):
+            info["ego_ctrlsim_action_logits"] = logits
+
+        return obs, reward, done, infos
+
+    def _collect_ego_ctrlsim_action_logits(self, infos):
+        """聚合当前 step 的 ego_ctrlsim logits。 / Collect ego_ctrlsim logits for the current step."""
+        logits_list = [
+            info.get("ego_ctrlsim_action_logits")
+            for info in infos
+        ]
+        if not logits_list or all(logits is None for logits in logits_list):
+            return None
+
+        first_non_none = next(logits for logits in logits_list if logits is not None)
+        action_dim = int(np.asarray(first_non_none).shape[0])
+        batch = np.zeros((len(logits_list), action_dim), dtype=np.float32)
+        for idx, logits in enumerate(logits_list):
+            if logits is None:
+                continue
+            batch[idx] = np.asarray(logits, dtype=np.float32)
+        return torch.tensor(batch, dtype=torch.float32)
+
     def agent_rollout(self, 
                       agent, 
                       num_steps, 
@@ -832,16 +890,9 @@ class AdversarialRunner(object):
             if is_env:
                 obs, reward, done, infos = self.ued_venv.step_adversary(_action)
             elif args.env_name.startswith('Nocturne'):
-                # Three-phase step: prepare → batched GPU inference → complete
-                prepared = self.venv.step_prepare(_action)
-                if all(item is None for item in prepared):
-                    model_outputs = [None] * len(prepared)
-                else:
-                    if self.external_teacher is None:
-                        raise RuntimeError("Nocturne training requires an ExternalTeacher.")
-                    model_outputs = self.external_teacher.run_batched_forward(prepared)
-                obs, reward, done, infos = self.venv.step_complete(
-                    model_outputs, reset_random=reset_random,
+                obs, reward, done, infos = self._run_nocturne_batched_step(
+                    _action,
+                    reset_random=reset_random,
                 )
                 if args.clip_reward:
                     reward = torch.clamp(reward, -args.clip_reward, args.clip_reward)
@@ -941,13 +992,17 @@ class AdversarialRunner(object):
             current_level_seeds = None
             if (not is_env) and level_sampler:
                 current_level_seeds = torch.tensor(self.current_level_seeds, dtype=torch.int).view(-1, 1)
+            ego_ctrlsim_action_logits = None
+            if is_nocturne_rollout:
+                ego_ctrlsim_action_logits = self._collect_ego_ctrlsim_action_logits(infos)
 
             agent.insert(
                 obs, recurrent_hidden_states, 
                 action, action_log_prob, action_log_dist, 
                 value, reward, masks, bad_masks, 
                 level_seeds=current_level_seeds,
-                cliffhanger_masks=cliffhanger_masks)
+                cliffhanger_masks=cliffhanger_masks,
+                ego_ctrlsim_action_logits=ego_ctrlsim_action_logits)
 
             if level_sampler and level_replay:
                 self.current_level_seeds = next_level_seeds
@@ -999,6 +1054,9 @@ class AdversarialRunner(object):
                 if 'kl_loss' in info.keys():
                     kl_loss = info.pop('kl_loss')
                     rollout_info.update({'kl_loss': kl_loss})
+                if 'ego_ctrlsim_kl_loss' in info.keys():
+                    ego_ctrlsim_kl_loss = info.pop('ego_ctrlsim_kl_loss')
+                    rollout_info.update({'ego_ctrlsim_kl_loss': ego_ctrlsim_kl_loss})
 
                 rollout_info.update({
                     'value_loss': value_loss,
@@ -1041,6 +1099,9 @@ class AdversarialRunner(object):
         if 'kl_loss' in info.keys():
             kl_loss = info.pop('kl_loss')
             rollout_info.update({'kl_loss': kl_loss})
+        if 'ego_ctrlsim_kl_loss' in info.keys():
+            ego_ctrlsim_kl_loss = info.pop('ego_ctrlsim_kl_loss')
+            rollout_info.update({'ego_ctrlsim_kl_loss': ego_ctrlsim_kl_loss})
 
         # Compute LZ complexity of action trajectories
         if self.args.log_action_complexity:
@@ -1470,9 +1531,7 @@ class AdversarialRunner(object):
             'adversary_value_loss': adversary_agent_info['value_loss'],
             'adversary_pg_loss': adversary_agent_info['action_loss'],
             'adversary_dist_entropy': adversary_agent_info['dist_entropy'],
-            
-            'kl_loss_advagent_agent': agent_info.get('kl_loss', None),
-            'kl_loss_agent_advagent': adversary_agent_info.get('kl_loss', None)
+            'ego_ctrlsim_kl_loss': agent_info.get('ego_ctrlsim_kl_loss', None),
         })
 
         if args.log_grad_norm:

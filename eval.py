@@ -31,6 +31,7 @@ from envs.registration import make as gym_make
 from envs.box2d import *
 from envs.bipedalwalker import *
 from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim  env
+from envs.nocturne_ctrlsim.runtime import split_prepared_pack_batch
 from envs.wrappers import VecMonitor, VecPreprocessImageWrapper, ParallelAdversarialVecEnv, \
 	MultiGridFullyObsWrapper, VecFrameStack, CarRacingWrapper
 from util import DotDict, str2bool, make_agent, create_parallel_env, is_discrete_actions, save_images
@@ -201,18 +202,20 @@ class Evaluator(object):
 			# make Nocturne env
 			from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 			allowed_nocturne_keys = {
-				'scenario_index_path',
-				'opponent_checkpoint',
-				'scenario_data_dir',
-				'preprocess_dir',
-				'vehicle_map_path',
-				'max_episode_steps',
-				'done_on_position_reached_only',
-				'device',
-				'student_num_neighbors',
-				'student_top_k_road',
-				'tilting_mode',
-				'tilt_range',
+					'scenario_index_path',
+					'opponent_checkpoint',
+					'scenario_data_dir',
+					'preprocess_dir',
+					'vehicle_map_path',
+					'max_episode_steps',
+					'done_on_position_reached_only',
+					'device',
+					'student_num_neighbors',
+					'student_top_k_road',
+					'student_accel_discretization',
+					'student_steer_discretization',
+					'tilting_mode',
+					'tilt_range',
 				'show_tilting_params',
 				'show_vehicle_ids',
 				'show_ego_vehicle_selection',
@@ -231,11 +234,11 @@ class Evaluator(object):
 				'shaped_goal_distance_scaling',
 				'approaching_goal_scaling',
 				'use_veh_veh_shaped',
-				'use_veh_edge_shaped',
-				'max_veh_veh_distance',
-				'veh_edge_reward_distance_clip',
-				'remove_background_vehicles',
-			}
+					'use_veh_edge_shaped',
+					'max_veh_veh_distance',
+					'veh_edge_reward_distance_clip',
+					'remove_background_vehicles',
+				}
 			nocturne_kwargs = {
 				k: v for k, v in kwargs.items() if k in allowed_nocturne_keys
 			}
@@ -498,34 +501,13 @@ class Evaluator(object):
 					action = action.cpu().numpy()
 					if not self.is_discrete_actions:
 						action = agent.process_action(action)
-					if env_name.startswith('Nocturne'):
-						if external_teacher is None:
-							raise RuntimeError("Nocturne evaluation requires an ExternalTeacher.")
-						per_env_prepared = venv.step_prepare(action)
-						first_prepared = next(
-							(item for item in per_env_prepared if item is not None),
-							None,
-						)
-						if isinstance(first_prepared, dict) and (
-							'ego' in first_prepared or 'opponent' in first_prepared
-						):
-							ego_prepared = [
-								item.get('ego') if isinstance(item, dict) else None
-								for item in per_env_prepared
-							]
-							opp_prepared = [
-								item.get('opponent') if isinstance(item, dict) else None
-								for item in per_env_prepared
-							]
-							ego_results = external_teacher.run_batched_forward(ego_prepared)
-							opp_results = external_teacher.run_batched_forward(opp_prepared)
-							model_outputs = [
-								{'ego': ego_output, 'opponent': opp_output}
-								for ego_output, opp_output in zip(ego_results, opp_results)
-							]
-						else:
-							model_outputs = external_teacher.run_batched_forward(per_env_prepared)
-						obs, reward, done, infos = venv.step_complete(model_outputs, reset_random=True)
+						if env_name.startswith('Nocturne'):
+							if external_teacher is None:
+								raise RuntimeError("Nocturne evaluation requires an ExternalTeacher.")
+							per_env_prepared = venv.step_prepare(action)
+							opponent_prepared, _ = split_prepared_pack_batch(per_env_prepared)
+							model_outputs = external_teacher.run_batched_forward(opponent_prepared)
+							obs, reward, done, infos = venv.step_complete(model_outputs, reset_random=True)
 					else:
 						obs, reward, done, infos = venv.step(action)
 

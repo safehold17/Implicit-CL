@@ -358,6 +358,7 @@ def make_agent(name, env, args, device='cpu'):
             value_loss_coef=args.value_loss_coef,
             entropy_coef=entropy_coef,
             kl_loss_coef=args.kl_loss_coef,
+            use_ego_ctrlsim_kl_loss=args.use_ego_ctrlsim_kl_loss,
             lr=args.lr,
             eps=args.eps,
             max_grad_norm=max_grad_norm,

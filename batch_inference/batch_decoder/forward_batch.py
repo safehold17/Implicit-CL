@@ -49,10 +49,12 @@ def forward_job_batch_impl(
             for idx, job in enumerate(jobs)
         ]
 
+    # first stage forward for RTG prediction
     with teacher.model_forward_context():
         preds = teacher.model(batched_data, eval=True)
     rtg_logits = preds["rtg_preds"].float()
 
+    # RTG decode to get RTG-aware prepared meta for the second stage forward 
     batch_jobs: List[Dict[str, Any]] = batch_meta["jobs"]
     rtg_results_by_job, processed_rtg_veh_ids_by_job = decode_rtg_jobs_batched_fn(
         teacher=teacher,
@@ -61,6 +63,7 @@ def forward_job_batch_impl(
         decode_meta=batch_meta["decode_meta"]["rtg"],
     )
 
+    # second stage decode with RTG-aware prepared meta
     action_results_by_job = teacher._decode_action_stage_batched(
         batched_data=batched_data,
         batch_meta=batch_meta,

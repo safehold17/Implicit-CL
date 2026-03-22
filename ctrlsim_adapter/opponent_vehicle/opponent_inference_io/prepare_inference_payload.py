@@ -7,7 +7,7 @@ Also manages sparse-action caches and next-step RTG fields as the adapter-to-wor
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -143,9 +143,19 @@ def prepare_step(
     t: int,
     vehicles: List[Any],
 ) -> Optional[Dict[str, Any]]:
+    prepared_pack = prepare_step_pack(adapter, t, vehicles, ego_id=None)
+    return prepared_pack["opponent_prepared"]
+
+
+def _prepare_step_state(
+    adapter: Any,
+    t: int,
+    vehicles: List[Any],
+) -> bool:
+    """同步当前步的 adapter 状态。 / Refresh adapter state for the current step."""
     if adapter._policy is None or len(vehicles) == 0:
         clear_pending_sparse_actions(adapter)
-        return None
+        return False
 
     adapter._last_vehicles = vehicles
     adapter._last_vehicle_by_id = {veh.getID(): veh for veh in vehicles}
@@ -156,7 +166,14 @@ def prepare_step(
         adapter._vehicle_data_dict,
     )
     adapter.update_policy_state(t)
+    return True
 
+
+def _should_skip_opponent_inference(
+    adapter: Any,
+    t: int,
+) -> bool:
+    """判断当前步是否跳过 opponent 推理。 / Decide whether to skip opponent inference this step."""
     if t < adapter.history_steps - 1:
         warmup_actions = build_warmup_gt_actions(adapter, t)
         set_pending_sparse_actions(adapter, step_t=t, actions=warmup_actions)
@@ -168,12 +185,32 @@ def prepare_step(
     if is_sparse_step and adapter.sparse_inference_action_repeat:
         actions = build_sparse_repeat_actions(adapter, t)
         set_pending_sparse_actions(adapter, step_t=t, actions=actions)
-        return None
+        return True
 
     clear_pending_sparse_actions(adapter)
+    return False
+
+
+def _build_prepared_payload(
+    adapter: Any,
+    t: int,
+    focal_vehicle_ids: List[int],
+    predict_rtgs: bool,
+    default_tilt: Tuple[int, int, int],
+    tilt_by_veh_id: Dict[int, Tuple[int, int, int]],
+) -> Optional[Dict[str, Any]]:
+    """为给定 focal 车辆列表打包 prepared payload。 / Pack a prepared payload for the given focal vehicles."""
+    if not focal_vehicle_ids:
+        return None
+
     from .focal_input import build_focal_batches
 
-    focal_batches, dead_ids, shared_timesteps = build_focal_batches(adapter, t)
+    focal_batches, dead_ids, shared_timesteps = build_focal_batches(
+        adapter,
+        t,
+        focal_vehicle_ids=focal_vehicle_ids,
+        predict_rtgs=predict_rtgs,
+    )
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1
     sampling_seed = resolve_sampling_seed(adapter)
     if not focal_batches and not dead_ids:
@@ -187,9 +224,6 @@ def prepare_step(
             }
         )
 
-    tilt_by_veh_id: Dict[int, tuple[int, int, int]] = (
-        dict(adapter.per_vehicle_tilting) if adapter.per_vehicle_tilting else {}
-    )
     prepared_dict = {
         "status": "ok",
         "step_t": t,
@@ -201,14 +235,72 @@ def prepare_step(
             "nucleus_sampling": adapter.nucleus_sampling,
             "nucleus_threshold": adapter.nucleus_threshold,
         },
-        "default_tilt": (
-            adapter.current_tilt.goal_tilt,
-            adapter.current_tilt.veh_veh_tilt,
-            adapter.current_tilt.veh_edge_tilt,
-        ),
+        "default_tilt": default_tilt,
         "tilt_by_veh_id": tilt_by_veh_id,
         "veh_id_to_idx": dict(adapter._policy.veh_id_to_idx),
         "shared_timesteps": shared_timesteps,
         "focal_batches": focal_batches,
     }
     return pack_prepared(prepared_dict)
+
+
+def prepare_step_pack(
+    adapter: Any,
+    t: int,
+    vehicles: List[Any],
+    ego_id: Optional[int],
+) -> Dict[str, Optional[Dict[str, Any]]]:
+    """
+    为当前仿真步构建推理输入 pack，按需分别产出对手车辆和 ego 的 prepared payload。
+    Build the inference-input pack for the current simulation step, optionally
+    producing separate prepared payloads for opponent vehicles and the ego vehicle.
+
+    The function first refreshes runtime state for the current step. If opponent
+    inference should be skipped, such as during warmup or a sparse-repeat step,
+    `opponent_prepared` is set to None. When a valid `ego_id` is provided, it
+    also builds `ego_ctrlsim_prepared` for ego ctrl-sim inference.
+
+    Returns:
+        包含 `opponent_prepared` 和 `ego_ctrlsim_prepared` 的字典。
+        A dictionary containing `opponent_prepared` and `ego_ctrlsim_prepared`.
+    """
+    if not _prepare_step_state(adapter, t, vehicles):
+        return {
+            "opponent_prepared": None,
+            "ego_ctrlsim_prepared": None,
+        }
+
+    opponent_prepared = None
+    if not _should_skip_opponent_inference(adapter, t):
+        opponent_prepared = _build_prepared_payload(
+            adapter,
+            t,
+            focal_vehicle_ids=get_control_vehicle_queue(adapter),
+            predict_rtgs=bool(adapter._policy.predict_rtgs),
+            default_tilt=(
+                adapter.current_tilt.goal_tilt,
+                adapter.current_tilt.veh_veh_tilt,
+                adapter.current_tilt.veh_edge_tilt,
+            ),
+            tilt_by_veh_id=(
+                dict(adapter.per_vehicle_tilting)
+                if adapter.per_vehicle_tilting
+                else {}
+            ),
+        )
+
+    ego_ctrlsim_prepared = None
+    if ego_id is not None and ego_id in adapter._policy.veh_id_to_idx:
+        ego_ctrlsim_prepared = _build_prepared_payload(
+            adapter,
+            t,
+            focal_vehicle_ids=[int(ego_id)],
+            predict_rtgs=True,
+            default_tilt=(0, 0, 0),
+            tilt_by_veh_id={},
+        )
+
+    return {
+        "opponent_prepared": opponent_prepared,
+        "ego_ctrlsim_prepared": ego_ctrlsim_prepared,
+    }

@@ -109,12 +109,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
         show_ego_vehicle_selection = kwargs.get('show_ego_vehicle_selection', True)
         remove_background_vehicles = kwargs.get('remove_background_vehicles', True)
         requested_obs_dim = kwargs.get('obs_dim')
-        student_accel_discretization = int(
-            kwargs.get('student_accel_discretization', 7)
-        )
-        student_steer_discretization = int(
-            kwargs.get('student_steer_discretization', 13)
-        )
+        student_accel_discretization = int(kwargs['student_accel_discretization'])
+        student_steer_discretization = int(kwargs['student_steer_discretization'])
         if student_accel_discretization < 2:
             raise ValueError(
                 "student_accel_discretization must be >= 2, "
@@ -1019,6 +1015,15 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     # ========== Batch inference two-phase step ==========
 
+    @staticmethod
+    def _extract_opponent_prepared(prepared: Optional[Dict]) -> Optional[Dict]:
+        """从 prepared pack 中取 opponent prepared。 / Extract the opponent prepared payload from a prepared pack."""
+        if prepared is None:
+            return None
+        if "opponent_prepared" in prepared or "ego_ctrlsim_prepared" in prepared:
+            return prepared.get("opponent_prepared")
+        return prepared
+
     def step_prepare(self, action: np.ndarray) -> Optional[Dict]:
         """Phase 1 delegated to runtime."""
         return self.runtime.step_prepare(action)
@@ -1031,11 +1036,12 @@ class NocturneCtrlSimAdversarial(gym.Env):
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
         prepared = self.step_prepare(action)
-        if prepared is None:
+        opponent_prepared = self._extract_opponent_prepared(prepared)
+        if opponent_prepared is None:
             model_output = None
         else:
             teacher = self.runtime.get_single_env_teacher()
-            model_output = teacher.run_batched_forward([prepared])[0]
+            model_output = teacher.run_batched_forward([opponent_prepared])[0]
         return self.step_complete(model_output)
 
     def _get_single_env_teacher(self):

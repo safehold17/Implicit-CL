@@ -227,6 +227,7 @@ class FileWriter:
             "train/agent_value_loss": "agent_value_loss",
             "train/agent_pg_loss": "agent_pg_loss",
             "train/agent_dist_entropy": "agent_dist_entropy",
+            "train/ego_ctrlsim_kl_loss": "ego_ctrlsim_kl_loss",
             "train/update_reward": "update_reward",
             "train/plr_update_reward": "plr_update_reward",
         }

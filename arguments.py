@@ -357,8 +357,12 @@ parser.add_argument(
 parser.add_argument(
     '--kl_loss_coef',
     type=float,
-    default=0.0,
+    default=0.2,
     help='KL divergence loss coefficient for behavioural cloning (default: 0.1)')
+parser.add_argument(
+    '--use_ego_ctrlsim_kl_loss',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Whether to enable the ego_ctrlsim teacher-vs-student KL loss')
 parser.add_argument(
     '--use_kl_only_agent',
     type=str2bool, nargs='?', const=True, default=False,

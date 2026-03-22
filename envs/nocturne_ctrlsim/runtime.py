@@ -22,6 +22,26 @@ from .student_env_policy import apply_student_action
 from .student_reward import compute_student_reward
 
 
+def split_prepared_pack_batch(
+    prepared_batch: list[Optional[Dict[str, Any]]],
+) -> tuple[list[Optional[Dict[str, Any]]], list[Optional[Dict[str, Any]]]]:
+    """拆分 batch prepared pack 为 opponent/ego_ctrlsim 两路。 / Split a batch prepared pack into opponent and ego_ctrlsim streams."""
+    opponent_prepared: list[Optional[Dict[str, Any]]] = []
+    ego_ctrlsim_prepared: list[Optional[Dict[str, Any]]] = []
+    for item in prepared_batch:
+        if item is None:
+            opponent_prepared.append(None)
+            ego_ctrlsim_prepared.append(None)
+            continue
+        if "opponent_prepared" in item or "ego_ctrlsim_prepared" in item:
+            opponent_prepared.append(item.get("opponent_prepared"))
+            ego_ctrlsim_prepared.append(item.get("ego_ctrlsim_prepared"))
+            continue
+        opponent_prepared.append(item)
+        ego_ctrlsim_prepared.append(None)
+    return opponent_prepared, ego_ctrlsim_prepared
+
+
 class NocturneCtrlSimRuntime:
     """Owns episode runtime setup and per-step execution."""
 
@@ -182,15 +202,23 @@ class NocturneCtrlSimRuntime:
         )
         env._road_graph_cache = env.data_bridge.get_road_data(env.scenario)
 
-    def step_prepare(self, action: np.ndarray) -> Optional[Dict]:
+    def step_prepare(self, action: np.ndarray) -> Dict[str, Optional[Dict]]:
         env = self.env
         env.current_step += 1
         apply_student_action(env, action)
 
-        runtime_mode = getattr(env, "opponent_runtime_mode", "normal")
-        if runtime_mode == "normal" and len(env.opponent_vehicle_ids) > 0:
-            return env.opponent.prepare_step(env.current_step - 1, env.vehicles)
-        return None
+        if getattr(env, "opponent", None) is None:
+            return {
+                "opponent_prepared": None,
+                "ego_ctrlsim_prepared": None,
+            }
+
+        ego_id = env.ego_vehicle.getID() if getattr(env, "ego_vehicle", None) else None
+        return env.opponent.prepare_step_pack(
+            env.current_step - 1,
+            env.vehicles,
+            ego_id=ego_id,
+        )
 
     def step_complete(
         self,
@@ -216,6 +244,10 @@ class NocturneCtrlSimRuntime:
             checkpoint_path=env.opponent_checkpoint,
             device=env.device,
             inference_precision=env.inference_precision,
+        )
+        teacher.validate_student_action_space(
+            student_accel_discretization=env.student_accel_discretization,
+            student_steer_discretization=env.student_steer_discretization,
         )
         env._single_env_teacher = teacher
         return teacher

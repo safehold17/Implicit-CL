@@ -90,11 +90,16 @@ def init_clearml(args):
 def _build_external_teacher(args, device):
     """Create an ExternalTeacher for batched ctrl-sim inference."""
     from batch_inference import ExternalTeacher
-    return ExternalTeacher(
+    teacher = ExternalTeacher(
         checkpoint_path=args.opponent_checkpoint,
         device=device,
         inference_precision=getattr(args, 'inference_precision', 'fp32'),
     )
+    teacher.validate_student_action_space(
+        student_accel_discretization=args.student_accel_discretization,
+        student_steer_discretization=args.student_steer_discretization,
+    )
+    return teacher
 
 
 if __name__ == '__main__':
@@ -341,6 +346,8 @@ if __name__ == '__main__':
                 device=device,
                 scenario_index_path=args.scenario_index_path,
                 opponent_checkpoint=args.opponent_checkpoint,
+                student_accel_discretization=args.student_accel_discretization,
+                student_steer_discretization=args.student_steer_discretization,
                 opponent_vehicle_number=args.opponent_vehicle_number,
                 action_repeat_interval=args.action_repeat_interval,
                 sparse_inference_action_repeat=args.sparse_inference_action_repeat,

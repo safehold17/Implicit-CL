@@ -127,6 +127,52 @@ def decode_action_jobs_batched_impl(
     return action_results_by_job
 
 
+def export_action_logits_by_job_impl(
+    action_logits: torch.Tensor,
+    decode_meta: Dict[str, np.ndarray],
+) -> List[torch.Tensor]:
+    """按 job 导出 raw action logits。 / Export raw action logits grouped by job."""
+    job_count = int(decode_meta["job_count"][0])
+    if job_count == 0:
+        return []
+
+    device = action_logits.device
+    row_batch_idx = decode_meta.get("job_idx_t")
+    row_idx_in_model = decode_meta.get("idx_in_model_t")
+    row_token_index = decode_meta.get("token_index_t")
+    if row_batch_idx is None or row_idx_in_model is None or row_token_index is None:
+        row_batch_idx = torch.as_tensor(
+            decode_meta["job_idx"],
+            dtype=torch.long,
+            device=device,
+        )
+        row_idx_in_model = torch.as_tensor(
+            decode_meta["idx_in_model"],
+            dtype=torch.long,
+            device=device,
+        )
+        row_token_index = torch.as_tensor(
+            decode_meta["token_index"],
+            dtype=torch.long,
+            device=device,
+        )
+
+    flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index]
+    job_offsets = decode_meta["job_offsets"]
+
+    logits_by_job: List[torch.Tensor] = []
+    for start, end in zip(job_offsets[:-1], job_offsets[1:]):
+        if int(end) - int(start) != 1:
+            raise ValueError(
+                "ego_ctrlsim action-logit export expects exactly one action row per job."
+            )
+        logits_by_job.append(flat_logits[int(start)].detach().clone())
+
+    if len(logits_by_job) != job_count:
+        raise ValueError("Action-logit export job/result count mismatch.")
+    return logits_by_job
+
+
 def decode_action_for_job_impl(
     teacher: Any,
     action_logits: torch.Tensor,

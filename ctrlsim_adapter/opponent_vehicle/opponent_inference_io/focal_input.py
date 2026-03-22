@@ -243,6 +243,7 @@ def build_focal_batch(
     moving_agent_mask: np.ndarray,
     road_points_src: np.ndarray,
     road_types_src: np.ndarray,
+    predict_rtgs: Optional[bool] = None,
 ) -> Tuple[Optional[Dict[str, Any]], List[int], bool]:
     policy = adapter._policy
     dset = adapter.dataset
@@ -326,12 +327,20 @@ def build_focal_batch(
         "new_agent_idx_dict": {int(k): int(v) for k, v in new_agent_idx_dict.items()},
         "data_veh_ids": cur_data_veh_ids,
         "veh_ids_in_context": veh_ids_in_context,
-        "predict_rtgs": bool(policy.predict_rtgs),
+        "predict_rtgs": bool(
+            policy.predict_rtgs if predict_rtgs is None else predict_rtgs
+        ),
     }
     return focal_batch, additionally_accounted, False
 
 
-def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], List[int], np.ndarray]:
+def build_focal_batches(
+    adapter: Any,
+    t: int,
+    focal_vehicle_ids: Optional[List[int]] = None,
+    predict_rtgs: Optional[bool] = None,
+) -> Tuple[List[Dict[str, Any]], List[int], np.ndarray]:
+    """为指定 focal 车辆构建 batch 输入。 / Build batched focal inputs for the specified vehicles."""
     policy = adapter._policy
     moving_agent_mask = adapter._moving_agent_mask_cache
     if moving_agent_mask is None:
@@ -408,7 +417,10 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
 
     dead_ids: List[int] = []
     focal_batches: List[Dict[str, Any]] = []
-    unaccounted_veh_ids = get_control_vehicle_queue(adapter)
+    if focal_vehicle_ids is None:
+        unaccounted_veh_ids = get_control_vehicle_queue(adapter)
+    else:
+        unaccounted_veh_ids = list(focal_vehicle_ids)
     unaccounted_veh_id_set = set(unaccounted_veh_ids)
     while unaccounted_veh_ids and unaccounted_veh_id_set:
         focal_id = unaccounted_veh_ids.pop(0)
@@ -430,6 +442,7 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
             moving_agent_mask=moving_agent_mask,
             road_points_src=road_points_src,
             road_types_src=road_types_src,
+            predict_rtgs=predict_rtgs,
         )
         if is_dead:
             dead_ids.append(focal_id)

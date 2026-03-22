@@ -90,6 +90,13 @@ class RolloutStorage(object):
         self.actions = torch.zeros(num_steps, num_processes, action_shape)
         if action_space.__class__.__name__ == 'Discrete':
             self.actions = self.actions.long()
+            self.ego_ctrlsim_action_logits = torch.zeros(
+                num_steps,
+                num_processes,
+                action_space.n,
+            )
+        else:
+            self.ego_ctrlsim_action_logits = None
 
         self.masks = torch.ones(num_steps + 1, num_processes, 1)
 
@@ -130,6 +137,8 @@ class RolloutStorage(object):
         self.bad_masks = self.bad_masks.to(device)
         self.cliffhanger_masks = self.cliffhanger_masks.to(device)
         self.level_seeds = self.level_seeds.to(device)
+        if self.ego_ctrlsim_action_logits is not None:
+            self.ego_ctrlsim_action_logits = self.ego_ctrlsim_action_logits.to(device)
 
         if self.use_proper_time_limits:
             if self.is_dict_obs:
@@ -153,7 +162,8 @@ class RolloutStorage(object):
             self.obs[index].copy_(obs)
 
     def insert(self, obs, recurrent_hidden_states, actions, action_log_probs, action_log_dist,
-               value_preds, rewards, masks, bad_masks, level_seeds=None, cliffhanger_masks=None):
+               value_preds, rewards, masks, bad_masks, level_seeds=None, cliffhanger_masks=None,
+               ego_ctrlsim_action_logits=None):
         if len(rewards.shape) == 3: rewards = rewards.squeeze(2)
 
         if self.is_dict_obs:
@@ -182,6 +192,11 @@ class RolloutStorage(object):
 
         if level_seeds is not None:
             self.level_seeds[self.step].copy_(level_seeds)
+        if (
+            self.ego_ctrlsim_action_logits is not None
+            and ego_ctrlsim_action_logits is not None
+        ):
+            self.ego_ctrlsim_action_logits[self.step].copy_(ego_ctrlsim_action_logits)
 
         self.step = (self.step + 1) % self.num_steps
 
@@ -436,6 +451,12 @@ class RolloutStorage(object):
                 adv_targ = None
             else:
                 adv_targ = advantages.view(-1, 1)[indices]
+            ego_ctrlsim_action_logits_batch = None
+            if self.ego_ctrlsim_action_logits is not None:
+                ego_ctrlsim_action_logits_batch = self.ego_ctrlsim_action_logits.view(
+                    -1,
+                    self.ego_ctrlsim_action_logits.size(-1),
+                )[indices]
 
             if self.is_lstm: 
                 # Split into (hxs, cxs) for LSTM
@@ -443,7 +464,8 @@ class RolloutStorage(object):
                     self._split_batched_lstm_recurrent_hidden_states(recurrent_hidden_states_batch)
 
             yield obs_batch, recurrent_hidden_states_batch, actions_batch, \
-                value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ
+                value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ, \
+                ego_ctrlsim_action_logits_batch
 
     def recurrent_generator(self, advantages, num_mini_batch):
         num_processes = self.rewards.size(1)

@@ -20,7 +20,10 @@ ctrlsim_path()
 from models.ctrl_sim import CtRLSim
 
 from .external_teacher_batch_collator import collate_jobs_with_padding
-from .batch_decoder.action import decode_action_stage_batched_impl
+from .batch_decoder.action import (
+    decode_action_stage_batched_impl,
+    export_action_logits_by_job_impl,
+)
 from .batch_decoder.forward_batch import batch_predict_rtgs_mode as _batch_predict_rtgs_mode
 from .batch_decoder.forward_batch import forward_job_batch_impl
 from .batch_decoder import rtg as rtg_impl
@@ -130,6 +133,21 @@ class ExternalTeacher:
 
         self._collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]] = {}
 
+    def validate_student_action_space(
+        self,
+        student_accel_discretization: int,
+        student_steer_discretization: int,
+    ) -> None:
+        if (
+            self.accel_discretization != student_accel_discretization
+            or self.steer_discretization != student_steer_discretization
+        ):
+            raise ValueError(
+                "Student and teacher action discretization mismatch: "
+                f"student=({student_accel_discretization}, {student_steer_discretization}), "
+                f"teacher=({self.accel_discretization}, {self.steer_discretization})."
+            )
+
     def run_batched_forward(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
         """
         跨 env 聚合 prepared 输入，并执行批量推理与结果回收。
@@ -148,6 +166,71 @@ class ExternalTeacher:
             job_outputs = self._forward_job_batch(focal_jobs)
             env_outputs = self._aggregate_job_outputs_by_env(job_outputs, decoded_prepared, results)
             return self._pack_outputs(env_outputs)
+        finally:
+            for prepared in decoded_prepared:
+                release_prepared_payload(prepared)
+
+    def run_batched_forward_action_logits(
+        self,
+        per_env_prepared: List[Optional[Dict[str, Any]]],
+    ) -> List[Optional[np.ndarray]]:
+        """按 env 导出 raw action logits / Export raw action logits aligned by environment."""
+        decoded_prepared = self._decode_prepared_batch(per_env_prepared)
+        try:
+            logits_by_env: List[Optional[np.ndarray]] = [None] * len(decoded_prepared)
+            focal_jobs: List[Dict[str, Any]] = []
+            for env_idx, prepared in enumerate(decoded_prepared):
+                if prepared is None:
+                    continue
+
+                _assert_required_keys(
+                    prepared,
+                    ("status", "focal_batches"),
+                    f"prepared env_idx={env_idx}",
+                )
+                status = prepared["status"]
+                if status == "skip":
+                    continue
+                if status != "ok":
+                    raise ValueError(
+                        f"prepared env_idx={env_idx} has invalid status={status!r}"
+                    )
+
+                focal_batches = prepared["focal_batches"]
+                if len(focal_batches) > 1:
+                    raise ValueError(
+                        "ego_ctrlsim action-logit export expects at most one focal batch per env."
+                    )
+                for focal_batch in focal_batches:
+                    _assert_required_keys(
+                        focal_batch,
+                        ("focal_id", "motion_data_np"),
+                        "prepared focal_batch",
+                    )
+                    focal_jobs.append(
+                        {
+                            "env_idx": env_idx,
+                            "prepared": prepared,
+                            "focal_batch": focal_batch,
+                        }
+                    )
+
+            if not focal_jobs:
+                return logits_by_env
+
+            logits_by_job = self._forward_action_logits_job_batch(focal_jobs)
+            if len(logits_by_job) != len(focal_jobs):
+                raise ValueError("Action-logit export job/result count mismatch.")
+
+            for job, logits in zip(focal_jobs, logits_by_job):
+                env_idx = int(job["env_idx"])
+                if logits_by_env[env_idx] is not None:
+                    raise ValueError(
+                        "ego_ctrlsim action-logit export expects at most one job per env."
+                    )
+                logits_by_env[env_idx] = logits
+
+            return logits_by_env
         finally:
             for prepared in decoded_prepared:
                 release_prepared_payload(prepared)
@@ -294,6 +377,33 @@ class ExternalTeacher:
             batched_data=batched_data,
             batch_meta=batch_meta,
         )
+
+    @torch.no_grad()
+    def _forward_action_logits_job_batch(
+        self,
+        jobs: List[Dict[str, Any]],
+    ) -> List[np.ndarray]:
+        """导出每个 job 的 raw action logits。 / Export raw action logits for each job."""
+        if not jobs:
+            return []
+
+        batched_data, batch_meta = self._collate_jobs_with_padding(jobs)
+        if _batch_predict_rtgs_mode(jobs):
+            batched_data, _, _ = self._decode_rtg_stage_batched(
+                batched_data=batched_data,
+                batch_meta=batch_meta,
+                decode_rtg_jobs_batched_fn=rtg_impl.decode_rtg_jobs_batched_impl,
+            )
+
+        with self.model_forward_context():
+            preds = self.model(batched_data, eval=True)
+        action_logits = preds["action_preds"].float()
+
+        logits_by_job = export_action_logits_by_job_impl(
+            action_logits=action_logits,
+            decode_meta=batch_meta["decode_meta"]["action"],
+        )
+        return [logits.cpu().numpy() for logits in logits_by_job]
 
     def _forward_job_batch(self, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return forward_job_batch_impl(
