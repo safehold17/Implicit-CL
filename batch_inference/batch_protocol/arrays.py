@@ -115,6 +115,50 @@ def packed_motion_nbytes(name: str, array: Any) -> int:
     return int(np_arr.size) * packed_motion_dtype_for_array(name, np_arr).itemsize
 
 
+def pack_motion_array_list(
+    name: str,
+    arrays: Sequence[Any],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    packed_arrays = [pack_motion_array(name, array) for array in arrays]
+    offsets = np.zeros((len(packed_arrays) + 1,), dtype=np.int32)
+    if not packed_arrays:
+        return np.zeros((0,), dtype=packed_motion_dtype_for_array(name, np.asarray([], dtype=np.float32))), offsets, np.zeros((0, 0), dtype=np.int32)
+
+    shapes = as_int32_array([list(array.shape) for array in packed_arrays])
+    flat_parts: List[np.ndarray] = []
+    cursor = 0
+    for index, array in enumerate(packed_arrays):
+        flat_array = array.reshape((-1,))
+        flat_parts.append(flat_array)
+        cursor += int(flat_array.size)
+        offsets[index + 1] = cursor
+
+    flat = np.concatenate(flat_parts, axis=0)
+    return flat, offsets, shapes
+
+
+def unpack_motion_array_list(
+    name: str,
+    flat: np.ndarray,
+    offsets: np.ndarray,
+    shapes: np.ndarray,
+) -> List[np.ndarray]:
+    if offsets.shape[0] == 0:
+        raise ValueError("packed motion offsets must contain at least one element.")
+    row_count = int(offsets.shape[0]) - 1
+    if shapes.shape[0] != row_count:
+        raise ValueError("packed motion shapes row count mismatch.")
+
+    unpacked: List[np.ndarray] = []
+    flat_array = np.asarray(flat)
+    for index in range(row_count):
+        left = int(offsets[index])
+        right = int(offsets[index + 1])
+        shape = tuple(int(dim) for dim in shapes[index].tolist())
+        unpacked.append(unpack_motion_array(name, flat_array[left:right].reshape(shape)))
+    return unpacked
+
+
 def unpack_motion_array(name: str, array: np.ndarray) -> np.ndarray:
     if name in ("actions", "rtgs", "timesteps"):
         return np.asarray(array, dtype=np.int64)

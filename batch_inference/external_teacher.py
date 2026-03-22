@@ -261,11 +261,11 @@ class ExternalTeacher:
         )
 
     @torch.no_grad()
-    def _decode_rtg_stage_batched(self, batched_data, batch_meta):
+    def _decode_rtg_stage_batched(self, batched_data, batch_meta, decode_rtg_jobs_batched_fn):
         with self.model_forward_context():
             preds = self.model(batched_data, eval=True)
         rtg_logits = preds["rtg_preds"].float()
-        rtg_results_by_job, processed_rtg_veh_ids_by_job = rtg_impl.decode_rtg_jobs_batched_impl(
+        rtg_results_by_job, processed_rtg_veh_ids_by_job = decode_rtg_jobs_batched_fn(
             teacher=self,
             batched_data=batched_data,
             rtg_logits=rtg_logits,

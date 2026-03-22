@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple, TypedDict
 
 import numpy as np
 
-PREPARED_IPC_FORMAT = "prepared_v1"
+PREPARED_IPC_FORMAT = "prepared_v3"
 MODEL_OUTPUTS_IPC_FORMAT = "model_outputs_v1"
 VALID_STATUS_VALUES = {"ok", "skip"}
 INLINE_MOTION_STORAGE = "inline"
@@ -22,7 +22,6 @@ MOTION_FIELD_NAMES = (
     "goals",
     "actions",
     "rtgs",
-    "timesteps",
     "moving_agent_mask",
     "road_points",
     "road_types",
@@ -54,6 +53,7 @@ class PreparedPayload(TypedDict):
     default_tilt: Tuple[int, int, int]
     tilt_by_veh_id: Dict[int, Tuple[int, int, int]]
     veh_id_to_idx: Dict[int, int]
+    shared_timesteps: Any
     focal_batches: List[FocalBatchPayload]
 
 

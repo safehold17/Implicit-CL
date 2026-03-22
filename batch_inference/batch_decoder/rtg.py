@@ -72,13 +72,22 @@ def _build_flat_tilt_logits(
     dtype: torch.dtype,
     device: torch.device,
 ) -> torch.Tensor:
-    tilt_scale = torch.linspace(
-        0.0,
-        1.0,
-        int(teacher.rtg_discretization),
-        dtype=dtype,
-        device=device,
-    ).unsqueeze(0)
+    cached_tilt_scale = getattr(teacher, "_cached_tilt_scale", None)
+    if (
+        cached_tilt_scale is None
+        or cached_tilt_scale.dtype != dtype
+        or cached_tilt_scale.device != device
+        or cached_tilt_scale.shape != (1, int(teacher.rtg_discretization))
+    ):
+        cached_tilt_scale = torch.linspace(
+            0.0,
+            1.0,
+            int(teacher.rtg_discretization),
+            dtype=dtype,
+            device=device,
+        ).unsqueeze(0)
+        teacher._cached_tilt_scale = cached_tilt_scale
+    tilt_scale = cached_tilt_scale
     goal = torch.as_tensor(goal_tilt, dtype=dtype, device=device).unsqueeze(-1) * tilt_scale
     veh = torch.as_tensor(veh_tilt, dtype=dtype, device=device).unsqueeze(-1) * tilt_scale
     road = torch.as_tensor(road_tilt, dtype=dtype, device=device).unsqueeze(-1) * tilt_scale
@@ -110,11 +119,13 @@ def _sample_rtg_indices(
         base_seed=sampling_seed,
         row_keys=row_keys,
         draws_per_row=3,
+        as_tensor=True,
+        device=flat_rtg_logits.device,
+        dtype=flat_rtg_logits.dtype,
     )
-    uniforms_t = torch.as_tensor(uniforms, dtype=flat_rtg_logits.dtype, device=flat_rtg_logits.device)
     return sample_categorical_from_uniform(
         probs.reshape(-1, probs.shape[-1]),
-        uniforms_t.reshape(-1),
+        uniforms.reshape(-1),
     ).reshape(-1, teacher.num_reward_components)
 
 
@@ -130,17 +141,28 @@ def decode_rtg_jobs_batched_impl(
         return [{} for _ in range(job_count)], [[] for _ in range(job_count)]
 
     device = rtg_logits.device
-    env_idx = decode_meta["env_idx"]
-    veh_id = decode_meta["veh_id"]
+    env_idx = np.asarray(decode_meta["env_idx"], dtype=np.int64)
+    veh_id = np.asarray(decode_meta["veh_id"], dtype=np.int64)
     key_scale = max(1, int(veh_id.max(initial=0)) + 1)
-    cache_keys = env_idx * key_scale + veh_id
-    _, unique_row_indices, inverse = np.unique(
-        cache_keys,
-        return_index=True,
+    cache_keys_t = torch.as_tensor(
+        env_idx * key_scale + veh_id,
+        dtype=torch.long,
+        device=device,
+    )
+    unique_cache_keys, inverse_t = torch.unique(
+        cache_keys_t,
+        sorted=True,
         return_inverse=True,
     )
-    unique_row_indices = np.asarray(unique_row_indices, dtype=np.int64)
-    inverse = np.asarray(inverse, dtype=np.int64)
+    unique_row_indices_t = torch.empty(
+        (unique_cache_keys.shape[0],),
+        dtype=torch.long,
+        device=device,
+    )
+    for row_idx in range(int(cache_keys_t.shape[0]) - 1, -1, -1):
+        unique_row_indices_t[inverse_t[row_idx]] = row_idx
+    unique_row_indices = unique_row_indices_t.detach().cpu().numpy()
+    inverse = inverse_t.detach().cpu().numpy()
 
     unique_job_idx = decode_meta.get("job_idx_t")
     unique_idx_in_model = decode_meta.get("idx_in_model_t")
@@ -149,9 +171,9 @@ def decode_rtg_jobs_batched_impl(
         unique_job_idx = torch.as_tensor(decode_meta["job_idx"], dtype=torch.long, device=device)
         unique_idx_in_model = torch.as_tensor(decode_meta["idx_in_model"], dtype=torch.long, device=device)
         unique_token_index = torch.as_tensor(decode_meta["token_index"], dtype=torch.long, device=device)
-    unique_job_idx = unique_job_idx[torch.as_tensor(unique_row_indices, dtype=torch.long, device=device)]
-    unique_idx_in_model = unique_idx_in_model[torch.as_tensor(unique_row_indices, dtype=torch.long, device=device)]
-    unique_token_index = unique_token_index[torch.as_tensor(unique_row_indices, dtype=torch.long, device=device)]
+    unique_job_idx = unique_job_idx[unique_row_indices_t]
+    unique_idx_in_model = unique_idx_in_model[unique_row_indices_t]
+    unique_token_index = unique_token_index[unique_row_indices_t]
     flat_rtg_logits = rtg_logits[unique_job_idx, unique_idx_in_model, unique_token_index].reshape(
         -1,
         teacher.rtg_discretization,
@@ -178,7 +200,7 @@ def decode_rtg_jobs_batched_impl(
         discrete_idx=discrete_unique,
     )
 
-    discrete_all = discrete_unique[torch.as_tensor(inverse, dtype=torch.long, device=device)]
+    discrete_all = discrete_unique[inverse_t]
     write_batch_idx = decode_meta.get("job_idx_t")
     if write_batch_idx is None:
         write_batch_idx = torch.as_tensor(decode_meta["job_idx"], dtype=torch.long, device=device)

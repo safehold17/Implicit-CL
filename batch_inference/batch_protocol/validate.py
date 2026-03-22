@@ -63,6 +63,7 @@ def validate_prepared_payload(prepared: Dict[str, Any]) -> None:
             "default_tilt",
             "tilt_by_veh_id",
             "veh_id_to_idx",
+            "shared_timesteps",
             "focal_batches",
         ),
         "prepared",

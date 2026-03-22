@@ -60,9 +60,11 @@ def _sample_action_indices(
         base_seed=sampling_seed,
         row_keys=row_keys,
         draws_per_row=1,
+        as_tensor=True,
+        device=flat_logits.device,
+        dtype=flat_logits.dtype,
     ).reshape((-1,))
-    uniforms_t = torch.as_tensor(uniforms, dtype=flat_logits.dtype, device=flat_logits.device)
-    return sample_categorical_from_uniform(action_probs, uniforms_t)
+    return sample_categorical_from_uniform(action_probs, uniforms)
 
 
 def decode_action_jobs_batched_impl(

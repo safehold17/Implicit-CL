@@ -240,7 +240,6 @@ def build_focal_batch(
     actions_values: np.ndarray,
     rtgs_values: np.ndarray,
     goals_step: np.ndarray,
-    rel_timesteps_template: np.ndarray,
     moving_agent_mask: np.ndarray,
     road_points_src: np.ndarray,
     road_types_src: np.ndarray,
@@ -316,7 +315,6 @@ def build_focal_batch(
         "goals": rel_goals,
         "actions": rel_actions,
         "rtgs": rel_rtgs,
-        "timesteps": rel_timesteps_template,
         "moving_agent_mask": rel_moving_agent_mask,
         "road_points": rel_road_points,
         "road_types": rel_road_types,
@@ -333,7 +331,7 @@ def build_focal_batch(
     return focal_batch, additionally_accounted, False
 
 
-def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], List[int]]:
+def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], List[int], np.ndarray]:
     policy = adapter._policy
     moving_agent_mask = adapter._moving_agent_mask_cache
     if moving_agent_mask is None:
@@ -429,7 +427,6 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
             actions_values=actions_values,
             rtgs_values=rtgs_values,
             goals_step=goals_step,
-            rel_timesteps_template=rel_timesteps_template,
             moving_agent_mask=moving_agent_mask,
             road_points_src=road_points_src,
             road_types_src=road_types_src,
@@ -442,4 +439,4 @@ def build_focal_batches(adapter: Any, t: int) -> Tuple[List[Dict[str, Any]], Lis
             unaccounted_veh_id_set.discard(veh_id)
         focal_batches.append(focal_batch)
 
-    return focal_batches, dead_ids
+    return focal_batches, dead_ids, rel_timesteps_template

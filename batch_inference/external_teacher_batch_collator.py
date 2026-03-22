@@ -38,18 +38,22 @@ def get_or_create_collate_buffers(
 
 def infer_job_batch_layout(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
     first_motion = jobs[0]["focal_batch"]["motion_data_np"]
+    first_prepared = jobs[0]["prepared"]
+    first_shared_timesteps = np.asarray(first_prepared["shared_timesteps"])
     max_agents = 1
     max_seq_len = 1
     max_roads = 1
     max_road_pts = 1
     max_timestep_feat_dim = 1
     for job in jobs:
+        prepared = job["prepared"]
         motion_data_np = job["focal_batch"]["motion_data_np"]
+        shared_timesteps = np.asarray(prepared["shared_timesteps"])
         max_agents = max(max_agents, int(motion_data_np["agent_states"].shape[0]))
         max_seq_len = max(max_seq_len, int(motion_data_np["agent_states"].shape[1]))
         max_roads = max(max_roads, int(motion_data_np["road_points"].shape[0]))
         max_road_pts = max(max_road_pts, int(motion_data_np["road_points"].shape[1]))
-        max_timestep_feat_dim = max(max_timestep_feat_dim, int(motion_data_np["timesteps"].shape[2]))
+        max_timestep_feat_dim = max(max_timestep_feat_dim, int(shared_timesteps.shape[2]))
 
     return {
         "batch_size": len(jobs),
@@ -70,7 +74,7 @@ def infer_job_batch_layout(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
             "goals": np.dtype(first_motion["goals"].dtype),
             "actions": np.dtype(first_motion["actions"].dtype),
             "rtgs": np.dtype(first_motion["rtgs"].dtype),
-            "timesteps": np.dtype(first_motion["timesteps"].dtype),
+            "timesteps": np.dtype(first_shared_timesteps.dtype),
             "moving_agent_mask": np.dtype(first_motion["moving_agent_mask"].dtype),
             "road_points": np.dtype(first_motion["road_points"].dtype),
             "road_types": np.dtype(first_motion["road_types"].dtype),
@@ -169,7 +173,7 @@ def fill_collate_buffers(jobs: List[Dict[str, Any]], buffers: Dict[str, np.ndarr
         buffers["actions_b"][batch_idx, :n_agents, :seq_len] = motion_data_np["actions"]
         buffers["rtgs_b"][batch_idx, :n_agents, :seq_len] = motion_data_np["rtgs"]
 
-        timesteps = motion_data_np["timesteps"]
+        timesteps = np.asarray(prepared["shared_timesteps"])
         t_feat_dim = int(timesteps.shape[2])
         buffers["timesteps_b"][batch_idx, :n_agents, :seq_len, :t_feat_dim] = timesteps
         buffers["moving_agent_mask_b"][batch_idx, :n_agents] = motion_data_np["moving_agent_mask"]

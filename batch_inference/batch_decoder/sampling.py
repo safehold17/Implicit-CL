@@ -34,7 +34,10 @@ def build_stateless_uniforms(
     base_seed: int | np.ndarray,
     row_keys: np.ndarray,
     draws_per_row: int,
-) -> np.ndarray:
+    as_tensor: bool = False,
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None,
+) -> np.ndarray | torch.Tensor:
     row_keys_u64 = np.asarray(row_keys, dtype=np.uint64).reshape((-1, 1))
     base_seed_u64 = np.asarray(base_seed, dtype=np.uint64).reshape((-1, 1))
     if base_seed_u64.shape[0] == 1:
@@ -43,7 +46,11 @@ def build_stateless_uniforms(
         raise ValueError("base_seed must be scalar or have one entry per row_key.")
     draw_offsets = _DRAW_OFFSET * np.arange(draws_per_row, dtype=np.uint64).reshape((1, -1))
     mixed = _splitmix64(row_keys_u64 ^ base_seed_u64 ^ draw_offsets)
-    return ((mixed >> np.uint64(11)).astype(np.float64)) / float(1 << 53)
+    uniforms = ((mixed >> np.uint64(11)).astype(np.float64)) / float(1 << 53)
+    if not as_tensor:
+        return uniforms
+    target_dtype = torch.float64 if dtype is None else dtype
+    return torch.as_tensor(uniforms, dtype=target_dtype, device=device)
 
 
 def build_row_keys(

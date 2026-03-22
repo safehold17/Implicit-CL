@@ -173,7 +173,7 @@ def prepare_step(
     clear_pending_sparse_actions(adapter)
     from .focal_input import build_focal_batches
 
-    focal_batches, dead_ids = build_focal_batches(adapter, t)
+    focal_batches, dead_ids, shared_timesteps = build_focal_batches(adapter, t)
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1
     sampling_seed = resolve_sampling_seed(adapter)
     if not focal_batches and not dead_ids:
@@ -208,6 +208,7 @@ def prepare_step(
         ),
         "tilt_by_veh_id": tilt_by_veh_id,
         "veh_id_to_idx": dict(adapter._policy.veh_id_to_idx),
+        "shared_timesteps": shared_timesteps,
         "focal_batches": focal_batches,
     }
     return pack_prepared(prepared_dict)

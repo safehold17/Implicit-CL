@@ -18,10 +18,12 @@ from .arrays import (
     as_int_list,
     pack_dict_int32,
     pack_motion_array,
+    pack_motion_array_list,
     pack_ragged_int_lists,
     packed_motion_nbytes,
     unpack_dict_int32,
     unpack_motion_array,
+    unpack_motion_array_list,
     unpack_ragged_int_lists,
 )
 from .schema import (
@@ -62,6 +64,7 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         return packed
 
     sampling = prepared_typed["sampling"]
+    packed["shared_timesteps"] = pack_motion_array("timesteps", prepared_typed["shared_timesteps"])
     packed["sampling_values"] = as_float32_array(
         [
             float(sampling["action_temperature"]),
@@ -134,13 +137,13 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
             pack_motion_array(field_name, fb["motion_data_np"][field_name])
             for fb in focal_batches
         ]
+        flat_values, flat_offsets, flat_shapes = pack_motion_array_list(field_name, packed_values)
+        packed[f"motion_{field_name}_offsets"] = flat_offsets
+        packed[f"motion_{field_name}_shapes"] = flat_shapes
         if motion_storage == SHM_MOTION_STORAGE:
-            packed[f"motion_{field_name}"] = [
-                pack_motion_array_to_shared_memory(value)
-                for value in packed_values
-            ]
+            packed[f"motion_{field_name}_flat"] = pack_motion_array_to_shared_memory(flat_values)
             continue
-        packed[f"motion_{field_name}"] = packed_values
+        packed[f"motion_{field_name}_flat"] = flat_values
     return packed
 
 
@@ -166,6 +169,7 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     require_keys(
         packed,
         (
+            "shared_timesteps",
             "sampling_values",
             "sampling_flags",
             "default_tilt",
@@ -190,6 +194,10 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     sampling_flags = np.asarray(packed["sampling_flags"], dtype=np.int32)
     if sampling_values.shape[0] != 2 or sampling_flags.shape[0] != 1:
         raise ValueError("packed prepared payload has invalid sampling array shapes.")
+    prepared["shared_timesteps"] = unpack_motion_array(
+        "timesteps",
+        np.asarray(packed["shared_timesteps"]),
+    )
     prepared["sampling"] = {
         "action_temperature": float(sampling_values[0]),
         "nucleus_sampling": bool(int(sampling_flags[0])),
@@ -252,18 +260,37 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         raise ValueError("packed prepared payload ragged row counts mismatch.")
 
     motion_storage = str(packed.get("motion_storage", INLINE_MOTION_STORAGE))
-    motion_arrays: Dict[str, List[Any]] = {}
+    motion_arrays: Dict[str, List[np.ndarray]] = {}
     for field_name in MOTION_FIELD_NAMES:
-        key = f"motion_{field_name}"
-        if key not in packed:
-            raise ValueError(f"packed prepared payload missing required key '{key}'.")
-        values = list(packed[key])
-        if len(values) != row_count:
-            raise ValueError(f"packed prepared payload '{key}' row count mismatch.")
-        motion_arrays[field_name] = values
+        flat_key = f"motion_{field_name}_flat"
+        offsets_key = f"motion_{field_name}_offsets"
+        shapes_key = f"motion_{field_name}_shapes"
+        require_keys(
+            packed,
+            (flat_key, offsets_key, shapes_key),
+            "packed prepared payload",
+        )
 
     shm_handles: List[shared_memory.SharedMemory] = []
     try:
+        for field_name in MOTION_FIELD_NAMES:
+            flat_key = f"motion_{field_name}_flat"
+            if motion_storage == SHM_MOTION_STORAGE:
+                flat_array, shm_handle = unpack_motion_array_from_shared_memory(packed[flat_key])
+                shm_handles.append(shm_handle)
+            else:
+                flat_array = np.asarray(packed[flat_key])
+            motion_arrays[field_name] = unpack_motion_array_list(
+                field_name,
+                flat=flat_array,
+                offsets=np.asarray(packed[f"motion_{field_name}_offsets"], dtype=np.int32),
+                shapes=np.asarray(packed[f"motion_{field_name}_shapes"], dtype=np.int32),
+            )
+            if len(motion_arrays[field_name]) != row_count:
+                raise ValueError(
+                    f"packed prepared payload 'motion_{field_name}' row count mismatch."
+                )
+
         focal_batches: List[Dict[str, Any]] = []
         for i, focal_id in enumerate(focal_ids.tolist()):
             keys_row = new_agent_keys_rows[i]
@@ -272,13 +299,7 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
 
             motion_data_np: Dict[str, np.ndarray] = {}
             for field_name in MOTION_FIELD_NAMES:
-                raw_value = motion_arrays[field_name][i]
-                if motion_storage == SHM_MOTION_STORAGE:
-                    unpacked_array, shm_handle = unpack_motion_array_from_shared_memory(raw_value)
-                    shm_handles.append(shm_handle)
-                else:
-                    unpacked_array = np.asarray(raw_value)
-                motion_data_np[field_name] = unpack_motion_array(field_name, unpacked_array)
+                motion_data_np[field_name] = motion_arrays[field_name][i]
 
             focal_batches.append(
                 {
