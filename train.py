@@ -18,6 +18,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from stable_baselines3.common.logger import HumanOutputFormat
 from tqdm import tqdm
+from clearml.logger import  Logger as clearml_logger
 
 display = None
 
@@ -55,6 +56,9 @@ def init_clearml(args):
     task = Task.init(
         project_name=args.clearml_project,
         task_name=args.clearml_task,
+        reuse_last_task_id=False,
+        tags=['test run'],
+        output_uri="s3://tks-zx.fzi.de:9000/ri928"
     )
 
     # Download ClearML dataset and remap paths.
@@ -72,16 +76,18 @@ def init_clearml(args):
 
     # An example of configuration of Docker environment for remote execution
     task.set_base_docker(
-        "nvcr.io/nvidia/pytorch:21.07-py3",
+        "tks-zx.fzi.de/hu778/dcd-nocturne",
         docker_setup_bash_script=[
             "apt-get install -y libgl1 ffmpeg imagemagick",
-            "pip install numpy==1.19.5",
-            "pip install tensorflow==2.4.1",
-            "git clone https://github.com/openai/baselines.git",
-            "cd baselines && pip install -e .",
         ],
         docker_arguments="-e NVIDIA_DRIVER_CAPABILITIES=all --network=host",
     )
+    # add task destination to the logger
+    clearml_logger.current_logger().set_default_upload_destination(
+        task.get_output_destination()
+    )
+    # execute on a remote GPU cluster
+    task.execute_remotely('default', clone=False, exit_process=True)
 
     print('Using ClearML')
     return task

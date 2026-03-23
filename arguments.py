@@ -834,7 +834,7 @@ parser.add_argument(
 parser.add_argument(
     '--clearml_project',
     type=str,
-    default='dcd-ctrlsim',
+    default='abouelazm/dcd-ctrlsim',
     help='ClearML project name.')
 parser.add_argument(
     '--clearml_task',
@@ -844,10 +844,10 @@ parser.add_argument(
 parser.add_argument(
     '--clearml_dataset_project',
     type=str,
-    default='',
+    default='ctrlsim_dataset',
     help='ClearML dataset project name for downloading training data.')
 parser.add_argument(
     '--clearml_dataset_name',
     type=str,
-    default='',
+    default='ctrlsim_dataset',
     help='ClearML dataset name for downloading training data.')
