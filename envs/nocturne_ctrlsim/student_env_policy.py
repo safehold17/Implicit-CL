@@ -104,15 +104,18 @@ def split_student_observation(obs_flat, config: StudentObservationConfig):
     return ego_state, road_objects, road_graph
 
 
-def apply_student_action(env, action: np.ndarray) -> None:
+def apply_student_action(env, action: np.ndarray):
     """
     Apply student action to ego vehicle.
 
     Args:
         action: Discrete student action id.
+
+    Returns:
+        The decoded continuous `(accel, steer)` action, or `None` when ego is absent.
     """
     if env.ego_vehicle is None:
-        return
+        return None
 
     accel_bins = int(env.student_accel_discretization)
     steer_bins = int(env.student_steer_discretization)
@@ -136,6 +139,7 @@ def apply_student_action(env, action: np.ndarray) -> None:
     else:
         env.ego_vehicle.brake(abs(accel))
     env.ego_vehicle.steering = steer
+    return float(accel), float(steer)
 
 
 def _build_road_feature(

@@ -205,7 +205,7 @@ class NocturneCtrlSimRuntime:
     def step_prepare(self, action: np.ndarray) -> Dict[str, Optional[Dict]]:
         env = self.env
         env.current_step += 1
-        apply_student_action(env, action)
+        env._last_ego_student_action = apply_student_action(env, action)
 
         if getattr(env, "opponent", None) is None:
             return {
@@ -267,8 +267,12 @@ class NocturneCtrlSimRuntime:
 
         ego_id = env.ego_vehicle.getID() if env.ego_vehicle else None
         controlled_ids = set(opponent_actions.keys())
+        controlled_actions_for_history = dict(opponent_actions)
         if ego_id is not None:
             controlled_ids.add(ego_id)
+            ego_action = getattr(env, "_last_ego_student_action", None)
+            if ego_action is not None:
+                controlled_actions_for_history[ego_id] = ego_action
 
         for veh in env.vehicles:
             veh_id = veh.getID()
@@ -281,7 +285,7 @@ class NocturneCtrlSimRuntime:
         env.opponent.record_all_actions(
             env.current_step - 1,
             env.vehicles,
-            opponent_actions,
+            controlled_actions_for_history,
         )
 
         if hasattr(env.opponent, "cache_last_valid_positions"):

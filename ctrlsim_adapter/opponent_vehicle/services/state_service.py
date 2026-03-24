@@ -9,10 +9,6 @@ import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-
-from ctrlsim_adapter.opponent_vehicle._opponent_state.existence import (
-    sim_position_exists,
-)
 from ctrlsim_adapter.opponent_vehicle._opponent_state.gt_helpers import (
     build_gt_action_target_cache,
     compute_goal_dist_normalizer,
@@ -203,6 +199,8 @@ class OpponentStateService:
             veh_id = veh.getID()
             if veh_id in controlled_actions:
                 action = controlled_actions[veh_id]
+            elif veh_id == self.adapter._ego_id:
+                continue
             else:
                 action = self._get_gt_action(veh_id, t, veh)
             self.record_action(veh_id, action)
@@ -228,15 +226,8 @@ class OpponentStateService:
             self.adapter._gt_action_target_cache = gt_action_target_cache
 
         is_controlled = veh_id in self.adapter._vehicles_to_control_set
-        is_protected = (veh_id == self.adapter._ego_id) or is_controlled
-        if is_protected:
-            if is_controlled:
-                veh_exists = 1 if self.get_opponent_vehicle_exists(veh_id) else 0
-            elif veh is None:
-                veh_exists = 0
-            else:
-                pos = veh.getPosition()
-                veh_exists = 1 if sim_position_exists(pos.x, pos.y) else 0
+        if is_controlled:
+            veh_exists = 1 if self.get_opponent_vehicle_exists(veh_id) else 0
         else:
             veh_exists = gt_traj[t, 4] and gt_traj[t + 1, 4]
         exists_history = self.adapter._vehicle_data_dict.get(veh_id, {}).get("existence")
@@ -246,7 +237,7 @@ class OpponentStateService:
         if not veh_exists:
             if (
                 veh is not None
-                and not is_protected
+                and not is_controlled
                 and self.adapter.allow_set_position_for_noncontrolled
             ):
                 veh.setPosition(-1000000, -1000000)
