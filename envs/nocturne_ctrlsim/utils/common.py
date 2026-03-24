@@ -9,7 +9,6 @@ import numpy as np
 
 
 _INVALID_POSITION_MARKERS = {
-    (-10000.0, -10000.0),
     (-1000000.0, -1000000.0),
 }
 

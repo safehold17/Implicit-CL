@@ -755,7 +755,7 @@ parser.add_argument(
 parser.add_argument(
     '--warmup_opponent_disable_ratio',
     type=float,
-    default=0,
+    default=0.0,
     help='Warmup ratio for opponent-disable stage (fraction of num_env_steps).')
 parser.add_argument(
     '--warmup_opponent_replay_ratio',

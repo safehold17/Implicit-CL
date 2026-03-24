@@ -19,7 +19,7 @@ def sim_position_exists(x: float, y: float) -> bool:
         return False
     if not (math.isfinite(xf) and math.isfinite(yf)):
         return False
-    return not (xf == -10000.0 and yf == -10000.0)
+    return not (xf == -1000000.0 and yf == -1000000.0)
 
 
 def _compute_goal_hold_until(

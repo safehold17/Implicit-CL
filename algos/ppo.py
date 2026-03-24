@@ -102,12 +102,8 @@ class PPO():
 
             for sample in data_generator:
                 if self.actor_critic.is_recurrent:
-                    obs_batch, recurrent_hidden_states_batch, actions_batch, \
-                    obs_batch, recurrent_hidden_states_batch, actions_batch, \
-                            value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \
-                            adv_targ = sample
-                    ego_ctrlsim_action_logits_batch = None
-                    ego_ctrlsim_valid_batch = None
+                    # if using a recurrent policy
+                    raise NotImplementedError("recurrent PPO update currently unsupported")
                 else:
                     obs_batch, recurrent_hidden_states_batch, actions_batch, \
                     value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \
