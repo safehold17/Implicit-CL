@@ -92,7 +92,7 @@ def main():
     # with open("./requirements.txt", "r") as f:
     #     requires = f.read().splitlines()
     setup(
-        ext_modules=[CMakeExtension("nocturne", "./nocturne")],
+        ext_modules=[CMakeExtension("nocturne.nocturne_cpp", "./nocturne")],
         cmdclass=dict(build_ext=CMakeBuild),
     )
 
