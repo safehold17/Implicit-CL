@@ -32,13 +32,19 @@ def forward_job_batch_impl(
         return []
 
     batched_data, batch_meta = teacher._collate_jobs_with_padding(jobs)
-    need_action_logits = any(bool(job.get("return_action_logits", False)) for job in jobs)
+    logits_job_indices = [
+        idx
+        for idx, job in enumerate(jobs)
+        if bool(job.get("return_action_logits", False))
+    ]
+    need_action_logits = bool(logits_job_indices)
 
     if not batch_predict_rtgs_mode_fn(jobs):
         action_decode_outputs = teacher._decode_action_stage_batched(
             batched_data=batched_data,
             batch_meta=batch_meta,
             return_logits=need_action_logits,
+            logits_job_indices=logits_job_indices,
         )
         if need_action_logits:
             action_results_by_job, action_logits_by_job = action_decode_outputs
@@ -81,6 +87,7 @@ def forward_job_batch_impl(
         batched_data=batched_data,
         batch_meta=batch_meta,
         return_logits=need_action_logits,
+        logits_job_indices=logits_job_indices,
     )
     if need_action_logits:
         action_results_by_job, action_logits_by_job = action_decode_outputs

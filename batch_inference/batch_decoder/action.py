@@ -7,7 +7,7 @@ Converts action-head outputs into continuous actions while using stateless sampl
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -127,15 +127,16 @@ def decode_action_jobs_batched_impl(
     return action_results_by_job
 
 
-def export_action_logits_by_job_impl(
+def export_selected_action_logits_by_job_impl(
     action_logits: torch.Tensor,
     decode_meta: Dict[str, np.ndarray],
-) -> List[torch.Tensor]:
-    """按 job 导出 raw action logits。 / Export raw action logits grouped by job."""
-    job_count = int(decode_meta["job_count"][0])
-    if job_count == 0:
-        return []
+    selected_job_indices: Sequence[int],
+) -> Dict[int, torch.Tensor]:
+    """按选中的 job 导出 raw action logits。 / Export raw action logits for selected jobs only."""
+    if not selected_job_indices:
+        return {}
 
+    job_count = int(decode_meta["job_count"][0])
     device = action_logits.device
     row_batch_idx = decode_meta.get("job_idx_t")
     row_idx_in_model = decode_meta.get("idx_in_model_t")
@@ -160,16 +161,21 @@ def export_action_logits_by_job_impl(
     flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index]
     job_offsets = decode_meta["job_offsets"]
 
-    logits_by_job: List[torch.Tensor] = []
-    for start, end in zip(job_offsets[:-1], job_offsets[1:]):
-        if int(end) - int(start) != 1:
+    logits_by_job: Dict[int, torch.Tensor] = {}
+    for job_idx in selected_job_indices:
+        job_idx_int = int(job_idx)
+        if job_idx_int < 0 or job_idx_int >= job_count:
+            raise ValueError("Selected action-logit job index out of range.")
+        start = int(job_offsets[job_idx_int])
+        end = int(job_offsets[job_idx_int + 1])
+        if end - start != 1:
             raise ValueError(
-                "ego_ctrlsim action-logit export expects exactly one action row per job."
+                "ego_ctrlsim action-logit export expects exactly one action row per selected job."
             )
-        logits_by_job.append(flat_logits[int(start)].detach().clone())
+        logits_by_job[job_idx_int] = flat_logits[start].detach().clone()
 
-    if len(logits_by_job) != job_count:
-        raise ValueError("Action-logit export job/result count mismatch.")
+    if len(logits_by_job) != len(selected_job_indices):
+        raise ValueError("Selected action-logit export job/result count mismatch.")
     return logits_by_job
 
 
@@ -226,6 +232,7 @@ def decode_action_stage_batched_impl(
     batched_data: Any,
     batch_meta: Dict[str, Any],
     return_logits: bool = False,
+    logits_job_indices: Sequence[int] = (),
 ):
     with teacher.model_forward_context():
         preds = teacher.model(batched_data, eval=True)
@@ -237,15 +244,21 @@ def decode_action_stage_batched_impl(
         action_logits=action_logits,
         decode_meta=batch_meta["decode_meta"]["action"],
     )
-    if len(action_results_by_job) != len(jobs):
+    job_count = len(jobs)
+    if len(action_results_by_job) != job_count:
         raise ValueError("Action stage job/result count mismatch.")
     if not return_logits:
         return action_results_by_job
 
-    action_logits_by_job = export_action_logits_by_job_impl(
+    selected_logits_by_job = export_selected_action_logits_by_job_impl(
         action_logits=action_logits,
         decode_meta=batch_meta["decode_meta"]["action"],
+        selected_job_indices=logits_job_indices,
     )
-    if len(action_logits_by_job) != len(jobs):
+    action_logits_by_job = [None] * job_count
+    for job_idx, logits in selected_logits_by_job.items():
+        action_logits_by_job[job_idx] = logits
+
+    if len(action_logits_by_job) != job_count:
         raise ValueError("Action-logit export job/result count mismatch.")
     return action_results_by_job, action_logits_by_job
