@@ -7,7 +7,12 @@ import heapq
 import math
 import numpy as np
 
-from .utils.common import angle_of_rotation, angle_sub, to_local
+from .utils.common import (
+    angle_of_rotation,
+    angle_sub,
+    is_valid_world_position,
+    to_local,
+)
 
 EGO_FEAT_DIM = 6
 PARTNER_FEAT_DIM = 6
@@ -140,6 +145,30 @@ def apply_student_action(env, action: np.ndarray):
         env.ego_vehicle.brake(abs(accel))
     env.ego_vehicle.steering = steer
     return float(accel), float(steer)
+
+
+def _select_partner_vehicles(env, ego_pos, max_neighbors: int) -> List:
+    """Select nearest valid partner vehicles around ego."""
+    ego_vehicle = env.ego_vehicle
+    candidate_vehicles = []
+
+    for veh in getattr(env, "vehicles", []):
+        if veh is ego_vehicle:
+            continue
+        if getattr(veh, "physics_simulated", True) is False:
+            continue
+
+        veh_pos = veh.getPosition()
+        if not is_valid_world_position(veh_pos.x, veh_pos.y):
+            continue
+
+        dx = veh_pos.x - ego_pos.x
+        dy = veh_pos.y - ego_pos.y
+        dist = math.hypot(dx, dy)
+        candidate_vehicles.append((dist, veh))
+
+    candidate_vehicles.sort(key=lambda item: item[0])
+    return [veh for _, veh in candidate_vehicles[:max_neighbors]]
 
 
 def _build_road_feature(
@@ -318,11 +347,10 @@ def get_student_observation(env) -> np.ndarray:
     max_neighbors = getattr(env, "_max_observable_agents", 16)
     partner_states = []
 
-    # Select nearest K neighboring vehicles
-    num_neighbors = min(len(env.opponent_vehicles), max_neighbors)
+    # Select nearest K neighboring vehicles from all valid scene vehicles.
+    selected_vehicles = _select_partner_vehicles(env, ego_pos, max_neighbors)
 
-    for i in range(num_neighbors):
-        veh = env.opponent_vehicles[i]
+    for veh in selected_vehicles:
         veh_pos = veh.getPosition()
 
         # Relative position to ego
@@ -349,7 +377,7 @@ def get_student_observation(env) -> np.ndarray:
         partner_states.append(partner_state)
 
     # Fill missing neighbors with zero vector
-    for _ in range(max_neighbors - num_neighbors):
+    for _ in range(max_neighbors - len(selected_vehicles)):
         partner_states.append(np.zeros(6, dtype=np.float32))
 
     # ========== Road Graph (R*13 dimensions) ==========
