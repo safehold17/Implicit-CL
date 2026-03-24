@@ -36,6 +36,7 @@ from ctrlsim_adapter.data_bridge import DataBridge
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
 from batch_inference import ExternalTeacher
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
+from envs.nocturne_ctrlsim.gt_helpers import get_gt_action
 
 
 class DiagnosticResults:
@@ -99,6 +100,35 @@ def _predict_opponent_actions_batch(
     return env.opponent.apply_predictions(outputs)
 
 
+def build_history_actions_for_diagnostic(
+    env: NocturneCtrlSimAdversarial,
+    t: int,
+    opponent_actions: Dict[int, Tuple[float, float]],
+    ego_id: Optional[int],
+) -> Dict[int, Tuple[float, float]]:
+    """Build action history for diagnostic rollouts, including ego when available."""
+    history_actions = dict(opponent_actions)
+    if ego_id is None:
+        return history_actions
+
+    ego_vehicle = env._get_vehicle_by_id_impl(env, ego_id)
+    if ego_vehicle is None:
+        return history_actions
+
+    ego_action = get_gt_action(env, ego_id, t, ego_vehicle)
+    if ego_action is not None:
+        history_actions[ego_id] = ego_action
+    return history_actions
+
+
+def should_check_rtg_history(
+    current_step: int,
+    opponent_vehicle_ids: List[int],
+) -> bool:
+    """Return whether diagnostic RTG history checks are meaningful now."""
+    return current_step > 0 and len(opponent_vehicle_ids) > 0
+
+
 def test_1_model_input_output(
     env: NocturneCtrlSimAdversarial,
     teacher: ExternalTeacher,
@@ -152,12 +182,13 @@ def test_1_model_input_output(
             print(f"  Vehicle length: {vd.get('length', 'N/A')}")
             print(f"  Vehicle type: {vd.get('type', 'N/A')}")
             
-            # 检查 RTG 初始值
-            if 'rtgs' in vd and len(vd['rtgs']) > 0:
-                print(f"  Initial RTG: {vd['rtgs'][0]}")
+            rtg_list = vd.get('rtgs', [])
+            if rtg_list:
+                print(f"  Initial RTG: {rtg_list[0]}")
             else:
-                print(f"  Initial RTG: NOT SET")
-                results.add_issue(f"Vehicle {veh_id} 没有初始化 RTG 值")
+                print("  Initial RTG: PENDING")
+    if not should_check_rtg_history(env.current_step, env.opponent_vehicle_ids):
+        print("  RTG history check deferred until at least one step runs with active opponents.")
     else:
         results.add_issue("opponent._vehicle_data_dict 为空或未初始化")
     
@@ -176,6 +207,7 @@ def test_1_model_input_output(
         t = env.current_step
         is_warmup = t < history_steps - 1
         phase = "WARMUP (GT)" if is_warmup else "MODEL"
+        ego_id = env.ego_vehicle.getID() if env.ego_vehicle else None
         
         print(f"\n--- Step {step} (t={t}, {phase}) ---")
         
@@ -186,7 +218,16 @@ def test_1_model_input_output(
         
         # ✅ 记录动作到 vehicle_data_dict（必须在下一次 step 之前调用）
         if hasattr(opponent, 'record_all_actions'):
-            opponent.record_all_actions(t, env.vehicles, opponent_actions)
+            opponent.record_all_actions(
+                t,
+                env.vehicles,
+                build_history_actions_for_diagnostic(
+                    env,
+                    t,
+                    opponent_actions,
+                    ego_id=ego_id,
+                ),
+            )
         
         print(f"对手动作数: {len(opponent_actions)}")
         
@@ -323,17 +364,27 @@ def test_2_gt_action_comparison(
     
     for step in range(num_steps):
         t = env.current_step
+        ego_id = env.ego_vehicle.getID() if env.ego_vehicle else None
         
         model_actions = _predict_opponent_actions_batch(env, teacher)
         
         # ✅ 记录动作到 vehicle_data_dict（必须在下一次 step 之前调用）
         if hasattr(opponent, 'record_all_actions'):
-            opponent.record_all_actions(t, env.vehicles, model_actions)
+            opponent.record_all_actions(
+                t,
+                env.vehicles,
+                build_history_actions_for_diagnostic(
+                    env,
+                    t,
+                    model_actions,
+                    ego_id=ego_id,
+                ),
+            )
         
         # 获取GT动作
         gt_actions = {}
         for veh_id in env.opponent_vehicle_ids:
-            veh = env._get_vehicle_by_id(veh_id)
+            veh = env._get_vehicle_by_id_impl(env, veh_id)
             if veh is not None:
                 gt_action = opponent._get_gt_action(veh_id, t, veh)
                 gt_actions[veh_id] = gt_action
@@ -361,7 +412,7 @@ def test_2_gt_action_comparison(
         
         # 应用GT动作并步进（测试GT模式）
         for veh_id, (g_accel, g_steer) in gt_actions.items():
-            veh = env._get_vehicle_by_id(veh_id)
+            veh = env._get_vehicle_by_id_impl(env, veh_id)
             if veh is not None:
                 opponent.apply_action(veh, (g_accel, g_steer))
         
@@ -582,17 +633,20 @@ def test_3_preprocessed_data(
     # 检查 _update_vehicle_data_dict 中 RTG 初始化逻辑
     print(f"\n=== Vehicle Data Dict RTG 初始化检查 ===")
     if hasattr(opponent, '_vehicle_data_dict') and opponent._vehicle_data_dict:
-        for veh_id in list(opponent._vehicle_data_dict.keys())[:3]:
-            vd = opponent._vehicle_data_dict[veh_id]
-            rtg_list = vd.get('rtgs', [])
-            if rtg_list:
-                print(f"Vehicle {veh_id} RTG history length: {len(rtg_list)}")
-                print(f"  First RTG: {rtg_list[0]}")
-                if len(rtg_list) > 1:
-                    print(f"  Last RTG: {rtg_list[-1]}")
-            else:
-                print(f"Vehicle {veh_id}: NO RTG history")
-                results.add_warning(f"Vehicle {veh_id} 的 RTG 历史为空")
+        if should_check_rtg_history(env.current_step, env.opponent_vehicle_ids):
+            for veh_id in list(opponent._vehicle_data_dict.keys())[:3]:
+                vd = opponent._vehicle_data_dict[veh_id]
+                rtg_list = vd.get('rtgs', [])
+                if rtg_list:
+                    print(f"Vehicle {veh_id} RTG history length: {len(rtg_list)}")
+                    print(f"  First RTG: {rtg_list[0]}")
+                    if len(rtg_list) > 1:
+                        print(f"  Last RTG: {rtg_list[-1]}")
+                else:
+                    print(f"Vehicle {veh_id}: NO RTG history")
+                    results.add_warning(f"Vehicle {veh_id} 的 RTG 历史为空")
+        else:
+            print("Skip RTG history check: no opponent-controlled rollout has started yet.")
     
     # Road points 检查
     print(f"\n=== Road Data ===")
@@ -931,6 +985,18 @@ def parse_args():
     parser.add_argument("--vehicle_map_path", type=str, default="data/vehicle_map_valid.json")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--student_accel_discretization",
+        type=int,
+        default=20,
+        help="Student acceleration discretization used by Nocturne-CtrlSim env.",
+    )
+    parser.add_argument(
+        "--student_steer_discretization",
+        type=int,
+        default=50,
+        help="Student steering discretization used by Nocturne-CtrlSim env.",
+    )
     parser.add_argument("--num_steps", type=int, default=20, 
                         help="每个测试的步数（需要 > history_steps=10 才能看到模型动作）")
     return parser.parse_args()
@@ -980,6 +1046,8 @@ def main():
             device=args.device,
             seed=args.seed,
             tilting_mode='global',  # 使用 global 模式简化测试
+            student_accel_discretization=args.student_accel_discretization,
+            student_steer_discretization=args.student_steer_discretization,
         )
         print("环境创建成功")
     except Exception as e:

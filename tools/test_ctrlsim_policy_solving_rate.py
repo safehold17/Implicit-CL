@@ -49,6 +49,8 @@ class CtrlSimEgoWrapper:
         inference_precision: str = "fp32",
         action_repeat_KL_loss_interval: int = 2,
         sparse_inference_action_repeat: bool = False,
+        student_accel_discretization: int = 20,
+        student_steer_discretization: int = 50,
         **_kwargs,
     ):
         self.env = NocturneCtrlSimAdversarial(
@@ -66,6 +68,8 @@ class CtrlSimEgoWrapper:
             inference_precision=inference_precision,
             action_repeat_KL_loss_interval=action_repeat_KL_loss_interval,
             sparse_inference_action_repeat=sparse_inference_action_repeat,
+            student_accel_discretization=student_accel_discretization,
+            student_steer_discretization=student_steer_discretization,
         )
         self.tilting_mode = tilting_mode
         self.device = device
@@ -280,6 +284,7 @@ class CtrlSimEgoWrapper:
 
     def _step_with_ego_action(self, accel: float, steer: float, opponent_actions):
         self.env.current_step += 1
+        self.env._last_ego_student_action = (float(accel), float(steer))
         self._apply_ego_action(accel, steer)
         obs, reward, done, info = self.env._step_post_actions(opponent_actions)
         self.ego_adapter.record_all_actions(
@@ -427,6 +432,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint_path", type=str, required=True)
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument(
+        "--student_accel_discretization",
+        type=int,
+        default=20,
+        help="Student acceleration discretization used by Nocturne-CtrlSim env.",
+    )
+    parser.add_argument(
+        "--student_steer_discretization",
+        type=int,
+        default=50,
+        help="Student steering discretization used by Nocturne-CtrlSim env.",
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -772,6 +789,8 @@ def main() -> None:
         inference_precision=args.inference_precision,
         action_repeat_KL_loss_interval=args.action_repeat_KL_loss_interval,
         sparse_inference_action_repeat=args.sparse_inference_action_repeat,
+        student_accel_discretization=args.student_accel_discretization,
+        student_steer_discretization=args.student_steer_discretization,
     )
 
     from batch_inference import ExternalTeacher

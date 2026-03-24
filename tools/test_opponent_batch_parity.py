@@ -114,6 +114,8 @@ def _wrapper_kwargs(resources: Dict[str, str]) -> Dict[str, Any]:
         "inference_precision": "fp32",
         "action_repeat_KL_loss_interval": 2,
         "sparse_inference_action_repeat": False,
+        "student_accel_discretization": 20,
+        "student_steer_discretization": 50,
     }
 
 
