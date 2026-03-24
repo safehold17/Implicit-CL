@@ -225,7 +225,8 @@ def decode_action_stage_batched_impl(
     teacher: Any,
     batched_data: Any,
     batch_meta: Dict[str, Any],
-) -> List[Dict[int, Tuple[float, float]]]:
+    return_logits: bool = False,
+):
     with teacher.model_forward_context():
         preds = teacher.model(batched_data, eval=True)
     action_logits = preds["action_preds"].float()
@@ -238,4 +239,13 @@ def decode_action_stage_batched_impl(
     )
     if len(action_results_by_job) != len(jobs):
         raise ValueError("Action stage job/result count mismatch.")
-    return action_results_by_job
+    if not return_logits:
+        return action_results_by_job
+
+    action_logits_by_job = export_action_logits_by_job_impl(
+        action_logits=action_logits,
+        decode_meta=batch_meta["decode_meta"]["action"],
+    )
+    if len(action_logits_by_job) != len(jobs):
+        raise ValueError("Action-logit export job/result count mismatch.")
+    return action_results_by_job, action_logits_by_job

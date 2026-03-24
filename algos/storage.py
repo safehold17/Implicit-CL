@@ -45,6 +45,7 @@ class RolloutStorage(object):
                  recurrent_hidden_state_size, recurrent_arch='rnn', 
                  use_proper_time_limits=False, 
                  use_popart=False,
+                 use_ego_ctrlsim_action_logits=False,
                  device='cpu'):
 
         self.device = device
@@ -88,7 +89,10 @@ class RolloutStorage(object):
             self.action_log_dist = torch.zeros(num_steps, num_processes, 1)
 
         self.actions = torch.zeros(num_steps, num_processes, action_shape)
-        if action_space.__class__.__name__ == 'Discrete':
+        if (
+            action_space.__class__.__name__ == 'Discrete'
+            and use_ego_ctrlsim_action_logits
+        ):
             self.actions = self.actions.long()
             self.ego_ctrlsim_action_logits = torch.zeros(
                 num_steps,
@@ -96,6 +100,8 @@ class RolloutStorage(object):
                 action_space.n,
             )
         else:
+            if action_space.__class__.__name__ == 'Discrete':
+                self.actions = self.actions.long()
             self.ego_ctrlsim_action_logits = None
 
         self.masks = torch.ones(num_steps + 1, num_processes, 1)

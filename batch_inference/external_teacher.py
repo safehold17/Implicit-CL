@@ -39,6 +39,8 @@ def _collect_focal_jobs(
     per_env_prepared: List[Optional[Dict[str, Any]]],
     results: List[Optional[Dict[str, Any]]],
     build_empty_env_result,
+    job_type: str = "opponent",
+    return_action_logits: bool = False,
 ) -> List[Dict[str, Any]]:
     focal_jobs: List[Dict[str, Any]] = []
     for env_idx, prepared in enumerate(per_env_prepared):
@@ -65,6 +67,8 @@ def _collect_focal_jobs(
                     "env_idx": env_idx,
                     "prepared": prepared,
                     "focal_batch": focal_batch,
+                    "job_type": job_type,
+                    "return_action_logits": return_action_logits,
                 }
             )
 
@@ -292,11 +296,15 @@ class ExternalTeacher:
         self,
         per_env_prepared: List[Optional[Dict[str, Any]]],
         results: List[Optional[Dict[str, Any]]],
+        job_type: str = "opponent",
+        return_action_logits: bool = False,
     ) -> List[Dict[str, Any]]:
         return _collect_focal_jobs(
             per_env_prepared=per_env_prepared,
             results=results,
             build_empty_env_result=self._build_empty_env_result,
+            job_type=job_type,
+            return_action_logits=return_action_logits,
         )
 
     def _fill_empty_ok_env_results(
@@ -371,11 +379,13 @@ class ExternalTeacher:
         self,
         batched_data,
         batch_meta,
+        return_logits: bool = False,
     ):
         return decode_action_stage_batched_impl(
             teacher=self,
             batched_data=batched_data,
             batch_meta=batch_meta,
+            return_logits=return_logits,
         )
 
     @torch.no_grad()
@@ -412,3 +422,73 @@ class ExternalTeacher:
             batch_predict_rtgs_mode_fn=_batch_predict_rtgs_mode,
             decode_rtg_jobs_batched_fn=rtg_impl.decode_rtg_jobs_batched_impl,
         )
+
+    def run_batched_forward_with_ego_logits(
+        self,
+        opponent_prepared_batch: List[Optional[Dict[str, Any]]],
+        ego_prepared_batch: List[Optional[Dict[str, Any]]],
+    ) -> Tuple[List[Optional[Dict[str, Any]]], List[Optional[np.ndarray]]]:
+        decoded_opponent = self._decode_prepared_batch(opponent_prepared_batch)
+        decoded_ego = self._decode_prepared_batch(ego_prepared_batch)
+        try:
+            opponent_results: List[Optional[Dict[str, Any]]] = [None] * len(decoded_opponent)
+            ego_logits_by_env: List[Optional[np.ndarray]] = [None] * len(decoded_ego)
+
+            opponent_jobs = self._collect_focal_jobs(
+                decoded_opponent,
+                opponent_results,
+                job_type="opponent",
+                return_action_logits=False,
+            )
+            ego_jobs = self._collect_focal_jobs(
+                decoded_ego,
+                [None] * len(decoded_ego),
+                job_type="ego_ctrlsim",
+                return_action_logits=True,
+            )
+            combined_jobs = opponent_jobs + ego_jobs
+            if combined_jobs:
+                for predict_rtgs_mode in (False, True):
+                    bucket_jobs = [
+                        job
+                        for job in combined_jobs
+                        if bool(job["focal_batch"].get("predict_rtgs", True))
+                        == predict_rtgs_mode
+                    ]
+                    if not bucket_jobs:
+                        continue
+                    for job_output in self._forward_job_batch(bucket_jobs):
+                        job_type = str(job_output.get("job_type", "opponent"))
+                        env_idx = int(job_output["env_idx"])
+                        if job_type == "ego_ctrlsim":
+                            action_logits = job_output.get("action_logits")
+                            ego_logits_by_env[env_idx] = (
+                                action_logits.cpu().numpy()
+                                if action_logits is not None
+                                else None
+                            )
+                            continue
+
+                        if opponent_results[env_idx] is None:
+                            opponent_results[env_idx] = self._build_empty_env_result(
+                                prepared=job_output["prepared"],
+                                env_idx=env_idx,
+                                status="ok",
+                            )
+                        opponent_results[env_idx]["action_results"].update(
+                            job_output["action_results"]
+                        )
+                        opponent_results[env_idx]["rtg_results"].update(
+                            job_output["rtg_results"]
+                        )
+                        opponent_results[env_idx]["processed_rtg_veh_ids"].extend(
+                            job_output["processed_rtg_veh_ids"]
+                        )
+
+            self._fill_empty_ok_env_results(decoded_opponent, opponent_results)
+            return self._pack_outputs(opponent_results), ego_logits_by_env
+        finally:
+            for prepared in decoded_opponent:
+                release_prepared_payload(prepared)
+            for prepared in decoded_ego:
+                release_prepared_payload(prepared)

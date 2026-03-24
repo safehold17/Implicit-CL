@@ -32,17 +32,30 @@ def forward_job_batch_impl(
         return []
 
     batched_data, batch_meta = teacher._collate_jobs_with_padding(jobs)
+    need_action_logits = any(bool(job.get("return_action_logits", False)) for job in jobs)
 
     if not batch_predict_rtgs_mode_fn(jobs):
-        action_results_by_job = teacher._decode_action_stage_batched(
+        action_decode_outputs = teacher._decode_action_stage_batched(
             batched_data=batched_data,
             batch_meta=batch_meta,
+            return_logits=need_action_logits,
         )
+        if need_action_logits:
+            action_results_by_job, action_logits_by_job = action_decode_outputs
+        else:
+            action_results_by_job = action_decode_outputs
+            action_logits_by_job = [None] * len(jobs)
         return [
             {
                 "env_idx": job["env_idx"],
                 "prepared": job["prepared"],
+                "job_type": job.get("job_type", "opponent"),
                 "action_results": action_results_by_job[idx],
+                "action_logits": (
+                    action_logits_by_job[idx]
+                    if bool(job.get("return_action_logits", False))
+                    else None
+                ),
                 "rtg_results": {},
                 "processed_rtg_veh_ids": [],
             }
@@ -64,15 +77,27 @@ def forward_job_batch_impl(
     )
 
     # second stage decode with RTG-aware prepared meta
-    action_results_by_job = teacher._decode_action_stage_batched(
+    action_decode_outputs = teacher._decode_action_stage_batched(
         batched_data=batched_data,
         batch_meta=batch_meta,
+        return_logits=need_action_logits,
     )
+    if need_action_logits:
+        action_results_by_job, action_logits_by_job = action_decode_outputs
+    else:
+        action_results_by_job = action_decode_outputs
+        action_logits_by_job = [None] * len(batch_jobs)
     return [
         {
             "env_idx": job["env_idx"],
             "prepared": job["prepared"],
+            "job_type": job.get("job_type", "opponent"),
             "action_results": action_results_by_job[idx],
+            "action_logits": (
+                action_logits_by_job[idx]
+                if bool(job.get("return_action_logits", False))
+                else None
+            ),
             "rtg_results": rtg_results_by_job[idx],
             "processed_rtg_veh_ids": processed_rtg_veh_ids_by_job[idx],
         }

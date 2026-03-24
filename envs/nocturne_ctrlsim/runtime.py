@@ -218,6 +218,9 @@ class NocturneCtrlSimRuntime:
             env.current_step - 1,
             env.vehicles,
             ego_id=ego_id,
+            include_ego_ctrlsim_prepared=bool(
+                getattr(env, "use_ego_ctrlsim_kl_loss", False)
+            ),
         )
 
     def step_complete(

@@ -376,7 +376,8 @@ def make_agent(name, env, args, device='cpu'):
             recurrent_hidden_state_size=args.recurrent_hidden_size,
             recurrent_arch=args.recurrent_arch,
             use_proper_time_limits=use_proper_time_limits,
-            use_popart=use_popart
+            use_popart=use_popart,
+            use_ego_ctrlsim_action_logits=args.use_ego_ctrlsim_kl_loss,
         )
 
         agent = ACAgent(algo=algo, storage=storage).to(device)

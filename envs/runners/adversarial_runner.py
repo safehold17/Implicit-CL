@@ -743,8 +743,21 @@ class AdversarialRunner(object):
         opponent_prepared, ego_ctrlsim_prepared = split_prepared_pack_batch(
             prepared_batch
         )
+        use_ego_ctrlsim_kl_loss = bool(
+            getattr(self.args, "use_ego_ctrlsim_kl_loss", False)
+        )
 
-        if all(item is None for item in opponent_prepared):
+        ego_ctrlsim_logits = [None] * len(ego_ctrlsim_prepared)
+        if use_ego_ctrlsim_kl_loss:
+            if self.external_teacher is None:
+                raise RuntimeError("Nocturne training requires an ExternalTeacher.")
+            model_outputs, ego_ctrlsim_logits = (
+                self.external_teacher.run_batched_forward_with_ego_logits(
+                    opponent_prepared,
+                    ego_ctrlsim_prepared,
+                )
+            )
+        elif all(item is None for item in opponent_prepared):
             model_outputs = [None] * len(opponent_prepared)
         else:
             if self.external_teacher is None:
@@ -757,18 +770,6 @@ class AdversarialRunner(object):
             model_outputs,
             reset_random=reset_random,
         )
-
-        ego_ctrlsim_logits = [None] * len(ego_ctrlsim_prepared)
-        if not all(item is None for item in ego_ctrlsim_prepared):
-            if self.external_teacher is None:
-                raise RuntimeError("Nocturne training requires an ExternalTeacher.")
-            forward_logits = getattr(
-                self.external_teacher,
-                "run_batched_forward_action_logits",
-                None,
-            )
-            if forward_logits is not None:
-                ego_ctrlsim_logits = forward_logits(ego_ctrlsim_prepared)
 
         for info, logits in zip(infos, ego_ctrlsim_logits):
             info["ego_ctrlsim_action_logits"] = logits

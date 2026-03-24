@@ -249,6 +249,7 @@ def prepare_step_pack(
     t: int,
     vehicles: List[Any],
     ego_id: Optional[int],
+    include_ego_ctrlsim_prepared: bool = True,
 ) -> Dict[str, Optional[Dict[str, Any]]]:
     """
     为当前仿真步构建推理输入 pack，按需分别产出对手车辆和 ego 的 prepared payload。
@@ -290,7 +291,11 @@ def prepare_step_pack(
         )
 
     ego_ctrlsim_prepared = None
-    if ego_id is not None and ego_id in adapter._policy.veh_id_to_idx:
+    if (
+        include_ego_ctrlsim_prepared
+        and ego_id is not None
+        and ego_id in adapter._policy.veh_id_to_idx
+    ):
         ego_ctrlsim_prepared = _build_prepared_payload(
             adapter,
             t,

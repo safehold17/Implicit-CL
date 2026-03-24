@@ -142,6 +142,9 @@ class NocturneCtrlSimAdversarial(gym.Env):
         sparse_inference_action_repeat = bool(
             kwargs.get("sparse_inference_action_repeat", False)
         )
+        self.use_ego_ctrlsim_kl_loss = bool(
+            kwargs.get("use_ego_ctrlsim_kl_loss", False)
+        )
 
         self.fixed_environment = fixed_environment
         self._set_process_seed(seed)

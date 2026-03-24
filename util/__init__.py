@@ -252,6 +252,9 @@ def _make_env(args):
             'sparse_inference_action_repeat': getattr(
                 args, 'sparse_inference_action_repeat', False
             ),
+            'use_ego_ctrlsim_kl_loss': getattr(
+                args, 'use_ego_ctrlsim_kl_loss', False
+            ),
         }
         env_kwargs.update(nocturne_kwargs)
         return gym_make(args.env_name, **env_kwargs)

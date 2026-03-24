@@ -298,6 +298,7 @@ class CtrlSimOpponentAdapter:
         t: int,
         vehicles: List,
         ego_id: Optional[int] = None,
+        include_ego_ctrlsim_prepared: bool = True,
     ):
         """代理双路 prepared pack 构建。 / Delegate prepared-pack construction."""
         self._ensure_services()
@@ -305,6 +306,7 @@ class CtrlSimOpponentAdapter:
             t,
             vehicles,
             ego_id=ego_id,
+            include_ego_ctrlsim_prepared=include_ego_ctrlsim_prepared,
         )
 
     def update_policy_state(self, t: int):
