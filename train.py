@@ -357,7 +357,7 @@ if __name__ == '__main__':
                 student_accel_discretization=args.student_accel_discretization,
                 student_steer_discretization=args.student_steer_discretization,
                 opponent_vehicle_number=args.opponent_vehicle_number,
-                action_repeat_interval=args.action_repeat_interval,
+                action_repeat_KL_loss_interval=args.action_repeat_KL_loss_interval,
                 sparse_inference_action_repeat=args.sparse_inference_action_repeat,
                 scenario_data_dir=args.scenario_data_dir,
                 preprocess_dir=args.preprocess_dir,

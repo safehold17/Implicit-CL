@@ -341,6 +341,21 @@ def build_focal_batches(
     predict_rtgs: Optional[bool] = None,
 ) -> Tuple[List[Dict[str, Any]], List[int], np.ndarray]:
     """为指定 focal 车辆构建 batch 输入。 / Build batched focal inputs for the specified vehicles."""
+    shared_context = build_step_shared_context(adapter, t)
+    return build_focal_batches_from_shared_context(
+        adapter,
+        t,
+        shared_context,
+        focal_vehicle_ids=focal_vehicle_ids,
+        predict_rtgs=predict_rtgs,
+    )
+
+
+def build_step_shared_context(
+    adapter: Any,
+    t: int,
+) -> Dict[str, Any]:
+    """构建单个 step 共享的预处理上下文。 / Build the shared per-step preprocessing context."""
     policy = adapter._policy
     moving_agent_mask = adapter._moving_agent_mask_cache
     if moving_agent_mask is None:
@@ -415,6 +430,37 @@ def build_focal_batches(
         road_types_src = np.zeros((0, 1), dtype=np.float32)
     goals_step = goals[:, 0]
 
+    return {
+        "ag_states": ag_states,
+        "ag_types": ag_types,
+        "actions_values": actions_values,
+        "rtgs_values": rtgs_values,
+        "goals_step": goals_step,
+        "moving_agent_mask": moving_agent_mask,
+        "road_points_src": road_points_src,
+        "road_types_src": road_types_src,
+        "shared_timesteps": rel_timesteps_template,
+    }
+
+
+def build_focal_batches_from_shared_context(
+    adapter: Any,
+    t: int,
+    shared_context: Dict[str, Any],
+    focal_vehicle_ids: Optional[List[int]] = None,
+    predict_rtgs: Optional[bool] = None,
+) -> Tuple[List[Dict[str, Any]], List[int], np.ndarray]:
+    """基于共享上下文构建 focal batches。 / Build focal batches from a shared step context."""
+    ag_states = shared_context["ag_states"]
+    ag_types = shared_context["ag_types"]
+    actions_values = shared_context["actions_values"]
+    rtgs_values = shared_context["rtgs_values"]
+    goals_step = shared_context["goals_step"]
+    moving_agent_mask = shared_context["moving_agent_mask"]
+    road_points_src = shared_context["road_points_src"]
+    road_types_src = shared_context["road_types_src"]
+    shared_timesteps = shared_context["shared_timesteps"]
+
     dead_ids: List[int] = []
     focal_batches: List[Dict[str, Any]] = []
     if focal_vehicle_ids is None:
@@ -452,4 +498,4 @@ def build_focal_batches(
             unaccounted_veh_id_set.discard(veh_id)
         focal_batches.append(focal_batch)
 
-    return focal_batches, dead_ids, rel_timesteps_template
+    return focal_batches, dead_ids, shared_timesteps

@@ -191,6 +191,24 @@ def _should_skip_opponent_inference(
     return False
 
 
+def should_collect_ego_ctrlsim_kl_step(
+    t: int,
+    history_steps: int,
+    interval: int,
+) -> bool:
+    """判断当前步是否需要采样 ego KL teacher。 / Decide whether this step should collect ego KL teacher logits."""
+    if interval < 1:
+        raise ValueError(
+            f"action_repeat_KL_loss_interval must be >= 1, got {interval}"
+        )
+
+    anchor_t = int(history_steps) - 1
+    if t < anchor_t:
+        return False
+    phase = (int(t) - anchor_t) % int(interval)
+    return phase == int(interval) - 1
+
+
 def _build_prepared_payload(
     adapter: Any,
     t: int,
@@ -198,18 +216,22 @@ def _build_prepared_payload(
     predict_rtgs: bool,
     default_tilt: Tuple[int, int, int],
     tilt_by_veh_id: Dict[int, Tuple[int, int, int]],
+    shared_context: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
     """为给定 focal 车辆列表打包 prepared payload。 / Pack a prepared payload for the given focal vehicles."""
     if not focal_vehicle_ids:
         return None
 
-    from .focal_input import build_focal_batches
+    from .focal_input import build_focal_batches_from_shared_context
 
-    focal_batches, dead_ids, shared_timesteps = build_focal_batches(
-        adapter,
-        t,
-        focal_vehicle_ids=focal_vehicle_ids,
-        predict_rtgs=predict_rtgs,
+    focal_batches, dead_ids, shared_timesteps = (
+        build_focal_batches_from_shared_context(
+            adapter,
+            t,
+            shared_context,
+            focal_vehicle_ids=focal_vehicle_ids,
+            predict_rtgs=predict_rtgs,
+        )
     )
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1
     sampling_seed = resolve_sampling_seed(adapter)
@@ -271,8 +293,26 @@ def prepare_step_pack(
             "ego_ctrlsim_prepared": None,
         }
 
+    opponent_needs_prepare = not _should_skip_opponent_inference(adapter, t)
+    ego_needs_prepare = (
+        include_ego_ctrlsim_prepared
+        and ego_id is not None
+        and ego_id in adapter._policy.veh_id_to_idx
+        and should_collect_ego_ctrlsim_kl_step(
+            t=t,
+            history_steps=adapter.history_steps,
+            interval=adapter.action_repeat_KL_loss_interval,
+        )
+    )
+
+    shared_context = None
+    if opponent_needs_prepare or ego_needs_prepare:
+        from .focal_input import build_step_shared_context
+
+        shared_context = build_step_shared_context(adapter, t)
+
     opponent_prepared = None
-    if not _should_skip_opponent_inference(adapter, t):
+    if opponent_needs_prepare:
         opponent_prepared = _build_prepared_payload(
             adapter,
             t,
@@ -288,14 +328,11 @@ def prepare_step_pack(
                 if adapter.per_vehicle_tilting
                 else {}
             ),
+            shared_context=shared_context,
         )
 
     ego_ctrlsim_prepared = None
-    if (
-        include_ego_ctrlsim_prepared
-        and ego_id is not None
-        and ego_id in adapter._policy.veh_id_to_idx
-    ):
+    if ego_needs_prepare:
         ego_ctrlsim_prepared = _build_prepared_payload(
             adapter,
             t,
@@ -303,6 +340,7 @@ def prepare_step_pack(
             predict_rtgs=True,
             default_tilt=(0, 0, 0),
             tilt_by_veh_id={},
+            shared_context=shared_context,
         )
 
     return {

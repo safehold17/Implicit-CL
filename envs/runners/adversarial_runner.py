@@ -777,22 +777,27 @@ class AdversarialRunner(object):
         return obs, reward, done, infos
 
     def _collect_ego_ctrlsim_action_logits(self, infos):
-        """聚合当前 step 的 ego_ctrlsim logits。 / Collect ego_ctrlsim logits for the current step."""
+        """聚合当前 step 的 ego logits 与有效标记。 / Collect ego logits and validity flags for the current step."""
         logits_list = [
             info.get("ego_ctrlsim_action_logits")
             for info in infos
         ]
         if not logits_list or all(logits is None for logits in logits_list):
-            return None
+            return None, None
 
         first_non_none = next(logits for logits in logits_list if logits is not None)
         action_dim = int(np.asarray(first_non_none).shape[0])
         batch = np.zeros((len(logits_list), action_dim), dtype=np.float32)
+        valid = np.zeros((len(logits_list), 1), dtype=np.bool_)
         for idx, logits in enumerate(logits_list):
             if logits is None:
                 continue
             batch[idx] = np.asarray(logits, dtype=np.float32)
-        return torch.tensor(batch, dtype=torch.float32)
+            valid[idx, 0] = True
+        return (
+            torch.tensor(batch, dtype=torch.float32),
+            torch.tensor(valid, dtype=torch.bool),
+        )
 
     def agent_rollout(self, 
                       agent, 
@@ -994,8 +999,11 @@ class AdversarialRunner(object):
             if (not is_env) and level_sampler:
                 current_level_seeds = torch.tensor(self.current_level_seeds, dtype=torch.int).view(-1, 1)
             ego_ctrlsim_action_logits = None
+            ego_ctrlsim_valid = None
             if is_nocturne_rollout:
-                ego_ctrlsim_action_logits = self._collect_ego_ctrlsim_action_logits(infos)
+                ego_ctrlsim_action_logits, ego_ctrlsim_valid = (
+                    self._collect_ego_ctrlsim_action_logits(infos)
+                )
 
             agent.insert(
                 obs, recurrent_hidden_states, 
@@ -1003,7 +1011,8 @@ class AdversarialRunner(object):
                 value, reward, masks, bad_masks, 
                 level_seeds=current_level_seeds,
                 cliffhanger_masks=cliffhanger_masks,
-                ego_ctrlsim_action_logits=ego_ctrlsim_action_logits)
+                ego_ctrlsim_action_logits=ego_ctrlsim_action_logits,
+                ego_ctrlsim_valid=ego_ctrlsim_valid)
 
             if level_sampler and level_replay:
                 self.current_level_seeds = next_level_seeds

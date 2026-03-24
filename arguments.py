@@ -821,10 +821,10 @@ parser.add_argument(
     type=str2bool, nargs='?', const=True, default=False,
     help='Enable action repeat on the last step in each action-repeat cycle.')
 parser.add_argument(
-    '--action_repeat_interval',
+    '--action_repeat_KL_loss_interval',
     type=int,
     default=2,
-    help='Action repeat cycle length N (within each N model steps, the last step repeats the previous action).')
+    help='Shared cycle length N for action repeat and ego KL loss (the last step in each N-step block is active).')
 
 # ============== ClearML ==============
 parser.add_argument(

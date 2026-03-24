@@ -47,7 +47,7 @@ class CtrlSimEgoWrapper:
         device: str = "cuda",
         seed: int = 0,
         inference_precision: str = "fp32",
-        action_repeat_interval: int = 2,
+        action_repeat_KL_loss_interval: int = 2,
         sparse_inference_action_repeat: bool = False,
         **_kwargs,
     ):
@@ -64,7 +64,7 @@ class CtrlSimEgoWrapper:
             tilting_mode=tilting_mode,
             tilt_range=tilt_range,
             inference_precision=inference_precision,
-            action_repeat_interval=action_repeat_interval,
+            action_repeat_KL_loss_interval=action_repeat_KL_loss_interval,
             sparse_inference_action_repeat=sparse_inference_action_repeat,
         )
         self.tilting_mode = tilting_mode
@@ -465,10 +465,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--xpid", type=str, required=True)
     parser.add_argument(
-        "--action_repeat_interval",
+        "--action_repeat_KL_loss_interval",
         type=int,
         default=2,
-        help="Action repeat cycle length N (the last step in each cycle repeats the previous action).",
+        help="Shared cycle length N for action repeat and ego KL loss.",
     )
     parser.add_argument(
         "--sparse_inference_action_repeat",
@@ -770,7 +770,7 @@ def main() -> None:
         xpid=args.xpid,
         video_dir=video_dir,
         inference_precision=args.inference_precision,
-        action_repeat_interval=args.action_repeat_interval,
+        action_repeat_KL_loss_interval=args.action_repeat_KL_loss_interval,
         sparse_inference_action_repeat=args.sparse_inference_action_repeat,
     )
 

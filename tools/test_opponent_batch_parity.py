@@ -112,7 +112,7 @@ def _wrapper_kwargs(resources: Dict[str, str]) -> Dict[str, Any]:
         "device": "cuda",
         "seed": BASE_SEED,
         "inference_precision": "fp32",
-        "action_repeat_interval": 2,
+        "action_repeat_KL_loss_interval": 2,
         "sparse_inference_action_repeat": False,
     }
 

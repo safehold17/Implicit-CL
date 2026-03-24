@@ -57,7 +57,7 @@ class CtrlSimOpponentAdapter:
         action_temperature: float = 1.0,
         nucleus_sampling: bool = False,
         nucleus_threshold: float = 0.8,
-        action_repeat_interval: int = 2,
+        action_repeat_KL_loss_interval: int = 2,
         sparse_inference_action_repeat: bool = False,
         load_on_init: bool = True,
     ):
@@ -75,8 +75,8 @@ class CtrlSimOpponentAdapter:
         nucleus_sampling: whether to use nucleus sampling.
         nucleus_threshold: nucleus sampling 阈值
         nucleus_threshold: threshold for nucleus sampling.
-        action_repeat_interval: 动作复用周期 N（每 N 步中最后一步复用上一仿真步动作）
-        action_repeat_interval: action reuse interval N, where the last simulation step in every N steps reuses the previous action.
+        action_repeat_KL_loss_interval: 共享周期 N，用于动作复用与 ego KL loss 节奏
+        action_repeat_KL_loss_interval: shared interval N for action repeat and ego KL cadence.
         sparse_inference_action_repeat: 是否启用动作复用节奏
         sparse_inference_action_repeat: whether to enable the action-reuse cadence.
         load_on_init: 是否在初始化时立即加载模型/数据集
@@ -97,10 +97,11 @@ class CtrlSimOpponentAdapter:
         self.action_temperature = action_temperature
         self.nucleus_sampling = nucleus_sampling
         self.nucleus_threshold = nucleus_threshold
+        self.action_repeat_KL_loss_interval = int(action_repeat_KL_loss_interval)
         self.sparse_inference_action_repeat = bool(sparse_inference_action_repeat)
         self.sparse_inference_cfg = SparseInferenceConfig(
             enabled=self.sparse_inference_action_repeat,
-            interval=int(action_repeat_interval),
+            interval=self.action_repeat_KL_loss_interval,
         )
         self.sparse_inference = SparseInferenceController(self.sparse_inference_cfg)
 

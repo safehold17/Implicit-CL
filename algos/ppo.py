@@ -101,17 +101,23 @@ class PPO():
                     advantages, self.num_mini_batch)
 
             for sample in data_generator:
-                # 兼容旧 rollout sample 和新增的 ego_ctrlsim logits sample
-                # Support both old rollout samples and the new ego_ctrlsim-logit sample format.
-                if len(sample) == 9:
+                if self.actor_critic.is_recurrent:
                     obs_batch, recurrent_hidden_states_batch, actions_batch, \
-                    value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \
-                            adv_targ, ego_ctrlsim_action_logits_batch = sample
+                    obs_batch, recurrent_hidden_states_batch, actions_batch, \
+                            value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \
+                            adv_targ = sample
+                    ego_ctrlsim_action_logits_batch = None
+                    ego_ctrlsim_valid_batch = None
                 else:
                     obs_batch, recurrent_hidden_states_batch, actions_batch, \
                     value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \
-                            adv_targ = sample
-                    ego_ctrlsim_action_logits_batch = None
+                            adv_targ, ego_ctrlsim_action_logits_batch, ego_ctrlsim_valid_batch = sample
+
+                has_valid_ego_ctrlsim_teacher = (
+                    ego_ctrlsim_action_logits_batch is not None
+                    and ego_ctrlsim_valid_batch is not None
+                    and bool(ego_ctrlsim_valid_batch.any().item())
+                )
 
                 # ego_ctrlsim teacher logits come from rollout storage; enable this path only when the sample carries them.
                 # Teacher logits are fixed from rollout storage; the student distribution
@@ -119,7 +125,7 @@ class PPO():
                 use_ego_ctrlsim_kl_loss = (
                     self.use_ego_ctrlsim_kl_loss
                     and
-                    (ego_ctrlsim_action_logits_batch is not None)
+                    has_valid_ego_ctrlsim_teacher
                     and (self.kl_loss_coef > 0.0)
                     and (discard_grad is False)
                 )
@@ -178,12 +184,21 @@ class PPO():
                     # Build the fixed teacher distribution from teacher logits cached during rollout.
                     # Compute KL(teacher || student) with fixed rollout teacher logits
                     # and the current student distribution from this update step.
+                    ego_ctrlsim_valid_mask = ego_ctrlsim_valid_batch.squeeze(-1).bool()
+                    # 仅对 rollout 中真正做过 ego teacher 推理的 timestep 计算 KL。
+                    # 稀疏 KL 下，无效 timestep 只是“没有 teacher 样本”，不能把它们
+                    # 当成全零 logits；否则会把缺失监督误解释为一个伪造的 teacher 分布。
                     dist_ego_ctrlsim_teacher = torch.distributions.Categorical(
-                        logits=ego_ctrlsim_action_logits_batch,
+                        logits=ego_ctrlsim_action_logits_batch[ego_ctrlsim_valid_mask],
+                    )
+                    # student 分布也必须对齐到同一批有效样本，否则 teacher/student
+                    # 的 KL 会混入未采样 timestep，破坏当前稀疏 KL cadence 的语义。
+                    dist_ego_ctrlsim_student = torch.distributions.Categorical(
+                        logits=dist_protagonist.logits[ego_ctrlsim_valid_mask],
                     )
                     ego_ctrlsim_kl_div = torch.distributions.kl.kl_divergence(
                         dist_ego_ctrlsim_teacher,
-                        dist_protagonist,
+                        dist_ego_ctrlsim_student,
                     )
                     ego_ctrlsim_kl_loss = ego_ctrlsim_kl_div.mean()
 
