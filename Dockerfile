@@ -28,6 +28,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1-mesa-dev \
         libegl1-mesa-dev \
         libgles2-mesa-dev \
+        # X11 extension headers required by GLFW during Nocturne build
+        libxrandr-dev \
+        libxinerama-dev \
+        libxcursor-dev \
+        libxi-dev \
         # X virtual framebuffer (needed by SFML in headless mode)
         xvfb \
         # misc utilities
