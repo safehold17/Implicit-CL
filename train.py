@@ -18,7 +18,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from stable_baselines3.common.logger import HumanOutputFormat
 from tqdm import tqdm
-from clearml.logger import  Logger as clearml_logger
 from util import ignore_warning
 ignore_warning.configure_subprocess_env()
 
@@ -53,6 +52,7 @@ def init_clearml(args):
         return None
 
     from clearml import Task
+    from clearml.logger import Logger as clearml_logger
     from util.clearml import download_clearml_dataset
 
     task = Task.init(
