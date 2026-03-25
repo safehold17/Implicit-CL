@@ -352,7 +352,7 @@ parser.add_argument(
 parser.add_argument(
     '--kl_update_step',
     type=float,
-    default=1,
+    default=1.0,
     help='Number of steps after which KL loss should be used')
 parser.add_argument(
     '--kl_loss_coef',

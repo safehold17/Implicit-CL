@@ -74,10 +74,8 @@ RUN pip install --no-cache-dir --no-build-isolation -r /tmp/requirements.txt
 # ---------------------------------------------------------------------------
 RUN pip uninstall -y cmake || true
 
-RUN git clone https://github.com/facebookresearch/nocturne.git /opt/nocturne && \
-    cd /opt/nocturne && \
-    git submodule sync && \
-    git submodule update --init --recursive && \
+RUN git clone https://github.com/montrealrobotics/ctrl-sim.git /opt/ctrl-sim && \
+    cd /opt/ctrl-sim && \
     python setup.py develop
 # ---------------------------------------------------------------------------
 # 5. Environment variables

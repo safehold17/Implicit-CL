@@ -73,6 +73,9 @@
     "preprocess_dir": ["compressed_preprocessed_data/train"],
     "opponent_checkpoint": ["checkpoints/model_fp16.ckpt"],
     "vehicle_map_path": ["preparation_file/vehicle_map_filtered_train.json"],
-    "log_dir": ["~/logs/dcd"]
+    "log_dir": ["~/logs/dcd"],
+
+    "__note10__": ["clearml"],
+    "use_clearml": ["true"]
   }
 }
