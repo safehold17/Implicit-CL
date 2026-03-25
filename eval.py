@@ -36,6 +36,8 @@ from envs.wrappers import VecMonitor, VecPreprocessImageWrapper, ParallelAdversa
 	MultiGridFullyObsWrapper, VecFrameStack, CarRacingWrapper
 from util import DotDict, str2bool, make_agent, create_parallel_env, is_discrete_actions, save_images
 from arguments import parser
+from util import ignore_warning
+ignore_warning.configure_subprocess_env()
 
 """
 Example usage:

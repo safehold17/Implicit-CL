@@ -19,6 +19,8 @@ import matplotlib.pyplot as plt
 from stable_baselines3.common.logger import HumanOutputFormat
 from tqdm import tqdm
 from clearml.logger import  Logger as clearml_logger
+from util import ignore_warning
+ignore_warning.configure_subprocess_env()
 
 display = None
 

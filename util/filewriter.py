@@ -28,6 +28,7 @@ from torch.utils.tensorboard import SummaryWriter
 def gather_metadata() -> Dict:
     date_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
     # Gathering git metadata.
+    git_data = None
     try:
         import git
 
@@ -42,6 +43,10 @@ def gather_metadata() -> Dict:
             )
         except git.InvalidGitRepositoryError:
             git_data = None
+        except Exception as exc:
+            git_data = dict(
+                error=str(exc),
+            )
     except ImportError:
         git_data = None
     # Gathering slurm metadata.

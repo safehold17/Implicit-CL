@@ -7,21 +7,40 @@ Provides a single import-path bootstrap point for adapter and batch-inference mo
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_CTRLSIM_ROOT = _PROJECT_ROOT / "ctrlsim"
+_LOCAL_CTRLSIM_ROOT = _PROJECT_ROOT / "ctrlsim"
+_DEFAULT_INSTALLED_CTRLSIM_ROOT = Path("/opt/ctrl-sim")
+
+
+def _resolve_ctrlsim_root() -> Path:
+    env_root = os.environ.get("CTRLSIM_ROOT")
+    if env_root:
+        candidate = Path(env_root).expanduser().resolve()
+        if candidate.exists():
+            return candidate
+        raise FileNotFoundError(
+            f"CTRLSIM_ROOT is set but path does not exist: {candidate}."
+        )
+
+    if _LOCAL_CTRLSIM_ROOT.exists():
+        return _LOCAL_CTRLSIM_ROOT
+
+    if _DEFAULT_INSTALLED_CTRLSIM_ROOT.exists():
+        return _DEFAULT_INSTALLED_CTRLSIM_ROOT
+
+    raise FileNotFoundError(
+        "ctrl-sim source tree not found. Checked "
+        f"CTRLSIM_ROOT, {_DEFAULT_INSTALLED_CTRLSIM_ROOT}, and {_LOCAL_CTRLSIM_ROOT}."
+    )
 
 
 def get_ctrlsim_root() -> Path:
-    if not _CTRLSIM_ROOT.exists():
-        raise FileNotFoundError(
-            f"ctrl-sim source tree not found at {_CTRLSIM_ROOT}."
-        )
-
-    return _CTRLSIM_ROOT
+    return _resolve_ctrlsim_root()
 
 
 def ctrlsim_path() -> Path:

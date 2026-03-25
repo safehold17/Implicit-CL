@@ -27,6 +27,10 @@ def clear_mpi_env_vars():
 
 
 def worker(remote, parent_remote, env_fn_wrappers):
+    from util.ignore_warning import install as install_ignore_warning
+
+    install_ignore_warning()
+
     def step(env, action):
         ob, reward, done, info = env.step(action)
 
@@ -150,6 +154,10 @@ class SubprocVecEnv(VecEnv):
         self.waiting = False
         self.closed = False
         self.in_series = in_series
+
+        from util.ignore_warning import configure_subprocess_env
+        configure_subprocess_env()
+        
         nenvs = len(env_fns)
         assert nenvs % in_series == 0, "Number of envs must be divisible by number of envs to run in series"
         self.nremotes = nenvs // in_series
