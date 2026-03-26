@@ -45,13 +45,14 @@ class PPO():
         self.value_loss_coef = value_loss_coef
         self.entropy_coef = entropy_coef
         self.kl_loss_coef = kl_loss_coef
-        # Gate the new ego_ctrlsim teacher-vs-student KL path independently
-        # from the legacy online model-vs-model KL path.
+
+        # new ego_ctrlsim policy vs student policy KL
         self.use_ego_ctrlsim_kl_loss = use_ego_ctrlsim_kl_loss
 
         self.max_grad_norm = max_grad_norm
 
         self.optimizer = optim.Adam(actor_critic.parameters(), lr=lr, eps=eps)
+        # `.parameters()` is a method provided by `nn.Module` in PyTorch that returns an iterator over all trainable parameters of a model.
 
         self.log_grad_norm = log_grad_norm
 
@@ -59,19 +60,22 @@ class PPO():
         total_norm = 0
         for p in self.actor_critic.parameters():
             if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
+                param_norm = p.grad.data.norm(2)  #Compute the L2 norm of the gradient of a single parameter.
                 total_norm += param_norm.item() ** 2
         total_norm = total_norm ** (1. / 2)
         return total_norm
 
     def update(self, rollouts, discard_grad=False, kl_dict=None):
-        # keep online model-vs-model KL path
+        # online model-vs-model KL path, not using in this project
         use_model_kl_loss = (
             (kl_dict is not None)
             and (self.kl_loss_coef > 0.0)
             and (discard_grad is False)
         )
         
+        # When `use_popart=True`, the model outputs are in a normalized space; 
+        # therefore, `denorm_value_preds` must be applied to map them back to the true value scale (e.g., reward or return-to-go). 
+        # Otherwise, severe scaling errors will occur.
         if rollouts.use_popart:
             value_preds = rollouts.denorm_value_preds
         else:
@@ -79,13 +83,14 @@ class PPO():
 
         advantages = rollouts.returns[:-1] - value_preds[:-1]
         advantages = (advantages - advantages.mean()) / (
-            advantages.std() + 1e-5)
+            advantages.std() + 1e-5)  # standard normalization of advantages + small constant for numerical stability
 
         value_loss_epoch = 0
         action_loss_epoch = 0
         dist_entropy_epoch = 0
         if use_model_kl_loss:
             kl_loss_epoch = 0
+    
         # Running accumulator for the ego_ctrlsim teacher-vs-student KL term.
         ego_ctrlsim_kl_loss_epoch = 0
 
@@ -93,7 +98,9 @@ class PPO():
             grad_norms = []
 
         for e in range(self.ppo_epoch):
-            if self.actor_critic.is_recurrent:
+        # The `feed_forward_generator` flattens the rollout into independent samples and randomly forms mini-batches for training a feedforward policy.
+        # The `recurrent_generator` samples complete time sequences on a per-environment basis and provides the corresponding initial hidden states for training RNN/LSTM-based policies.
+            if self.actor_critic.is_recurrent:  # not using recurrent policy in this project
                 data_generator = rollouts.recurrent_generator(
                     advantages, self.num_mini_batch)
             else:
@@ -102,7 +109,7 @@ class PPO():
 
             for sample in data_generator:
                 if self.actor_critic.is_recurrent:
-                    # if using a recurrent policy
+                    # not using a recurrent policy
                     raise NotImplementedError("recurrent PPO update currently unsupported")
                 else:
                     obs_batch, recurrent_hidden_states_batch, actions_batch, \
@@ -143,19 +150,22 @@ class PPO():
                     values, action_log_probs, dist_entropy, _ = self.actor_critic.evaluate_actions(
                         obs_batch, recurrent_hidden_states_batch, masks_batch,
                         actions_batch)
-                    
-                ratio = torch.exp(action_log_probs -
-                                  old_action_log_probs_batch)
-                surr1 = ratio * adv_targ
+
+                # ratio for importance sampling, also the basis for PPO clipping and surrogate loss calculation    
+                ratio = torch.exp(action_log_probs - old_action_log_probs_batch) 
+                # action_log_probs comes from the current policy, student model
+                # old_action_log_probs_batch comes from the rollout collection policy, no mini-batch, [num_steps, num_processes, 1]
+
+                surr1 = ratio * adv_targ  #advantage value for the current mini-batch samples, scaled by the importance sampling ratio
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_param,
                                     1.0 + self.clip_param) * adv_targ
                 action_loss = -torch.min(surr1, surr2).mean()
 
-                if rollouts.use_popart:
+                if rollouts.use_popart:  # default is False
                     self.actor_critic.popart.update(return_batch)
                     return_batch = self.actor_critic.popart.normalize(return_batch)
 
-                if self.clip_value_loss:
+                if self.clip_value_loss:  # default is False
                     value_pred_clipped = value_preds_batch + \
                         (values - value_preds_batch).clamp(-self.clip_param, self.clip_param)
                     value_losses = (values - return_batch).pow(2)
@@ -167,14 +177,13 @@ class PPO():
                     value_loss = F.smooth_l1_loss(values, return_batch)
                     
                 if use_model_kl_loss:
-                    # 保持旧的在线 model-vs-model KL 逻辑不变
-                    # Preserve the existing online model-vs-model KL behavior.
-                    # Keep the existing online model-vs-model KL path unchanged.
+                    # keep the existing online model-vs-model KL behavior.
                     kl_div = torch.distributions.kl.kl_divergence(dist_antagonist, dist_protagonist)
                     # protagonist 是 student，antagonist 是固定的 adversary
                     # 计算 KL(teacher || student) 以匹配旧指标，但只反向传播 student
                     bs = kl_div.shape[0]
                     kl_loss = kl_div.sum() / bs
+                
                 if use_ego_ctrlsim_kl_loss:
                     # 使用 rollout 时缓存的 teacher logits 构造固定 teacher 分布
                     # Build the fixed teacher distribution from teacher logits cached during rollout.
@@ -182,8 +191,7 @@ class PPO():
                     # and the current student distribution from this update step.
                     ego_ctrlsim_valid_mask = ego_ctrlsim_valid_batch.squeeze(-1).bool()
                     # 仅对 rollout 中真正做过 ego teacher 推理的 timestep 计算 KL。
-                    # 稀疏 KL 下，无效 timestep 只是“没有 teacher 样本”，不能把它们
-                    # 当成全零 logits；否则会把缺失监督误解释为一个伪造的 teacher 分布。
+                    # 稀疏 KL 下，无效 timestep 只是“没有 teacher 样本”，不能把它们当成全零 logits；否则会把缺失监督误解释为一个伪造的 teacher 分布。
                     dist_ego_ctrlsim_teacher = torch.distributions.Categorical(
                         logits=ego_ctrlsim_action_logits_batch[ego_ctrlsim_valid_mask],
                     )
@@ -196,9 +204,10 @@ class PPO():
                         dist_ego_ctrlsim_teacher,
                         dist_ego_ctrlsim_student,
                     )
-                    ego_ctrlsim_kl_loss = ego_ctrlsim_kl_div.mean()
+                    ego_ctrlsim_kl_loss = ego_ctrlsim_kl_div.mean()  # mean KL loss over the valid subset of the mini-batch
 
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad()  # clear the existing gradients before backpropagation
+
                 # 在标准 PPO loss 上叠加两个互相独立的 KL 正则项
                 # Add the two independent KL regularizers on top of the standard PPO loss.
                 loss = (value_loss*self.value_loss_coef + action_loss - dist_entropy*self.entropy_coef)
@@ -207,7 +216,7 @@ class PPO():
                 if use_ego_ctrlsim_kl_loss:
                     loss += (self.kl_loss_coef * ego_ctrlsim_kl_loss)
 
-                loss.backward()
+                loss.backward()  # compute the gradients of the combined loss with respect to the model parameters
 
                 if self.log_grad_norm:
                     grad_norms.append(self._grad_norm())
@@ -217,9 +226,9 @@ class PPO():
                                             self.max_grad_norm)
                     
                 if not discard_grad:
-                    self.optimizer.step()
+                    self.optimizer.step()  # update the model parameters using the computed gradients
                                 
-                value_loss_epoch += value_loss.item()
+                value_loss_epoch += value_loss.item()  # Convert a tensor containing a single element (a scalar tensor) into a Python scalar (float` or `int`).
                 action_loss_epoch += action_loss.item()
                 dist_entropy_epoch += dist_entropy.item()
                 if use_model_kl_loss:
@@ -234,7 +243,8 @@ class PPO():
         dist_entropy_epoch /= num_updates
         if use_model_kl_loss:
             kl_loss_epoch /= num_updates
-        # 即使某些 batch 没启用 ego_ctrlsim KL，也统一按 num_updates 做 epoch 平均。
+    
+        # 即使某些 batch 没启用 ego_ctrlsim KL，也统一按 num_updates 做 epoch 平均
         # Average ego_ctrlsim KL over the full update count for consistent epoch-level logging.
         ego_ctrlsim_kl_loss_epoch /= num_updates
 

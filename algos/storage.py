@@ -464,8 +464,9 @@ class RolloutStorage(object):
             return_batch = self.returns[:-1].view(-1, 1)[indices]
 
             masks_batch = self.masks[:-1].view(-1, 1)[indices]
-            old_action_log_probs_batch = self.action_log_probs.view(-1,
-                                                                    1)[indices]
+            old_action_log_probs_batch = self.action_log_probs.view(-1, 1)[indices]
+            # The original tensor is flattened into a one-dimensional vector (with length inferred automatically) 
+            # and reshaped into a column vector (with the second dimension equal to 1).
             if advantages is None:
                 adv_targ = None
             else:
