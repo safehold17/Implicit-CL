@@ -136,13 +136,21 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 "tilt_range must satisfy low <= high, "
                 f"got {tilt_range}"
             )
-        action_repeat_kl_loss_interval = int(
-            kwargs.get("action_repeat_KL_loss_interval", 2)
+        action_repeat_frequency = int(
+            kwargs.get("action_repeat_frequency", 2)
         )
-        if action_repeat_kl_loss_interval < 1:
+        if action_repeat_frequency < 1:
             raise ValueError(
-                "action_repeat_KL_loss_interval must be >= 1, "
-                f"got {action_repeat_kl_loss_interval}"
+                "action_repeat_frequency must be >= 1, "
+                f"got {action_repeat_frequency}"
+            )
+        kl_loss_computation_frequency = int(
+            kwargs.get("kl_loss_computation_frequency", 2)
+        )
+        if kl_loss_computation_frequency < 1:
+            raise ValueError(
+                "kl_loss_computation_frequency must be >= 1, "
+                f"got {kl_loss_computation_frequency}"
             )
         sparse_inference_action_repeat = bool(
             kwargs.get("sparse_inference_action_repeat", False)
@@ -150,7 +158,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.use_ego_ctrlsim_kl_loss = bool(
             kwargs.get("use_ego_ctrlsim_kl_loss", False)
         )
-        self.action_repeat_KL_loss_interval = action_repeat_kl_loss_interval
+        self.action_repeat_frequency = action_repeat_frequency
+        self.kl_loss_computation_frequency = kl_loss_computation_frequency
 
         self.fixed_environment = fixed_environment
         self._set_process_seed(seed)
@@ -207,7 +216,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
             cfg=cfg,
             checkpoint_path=opponent_checkpoint,
             device=device,
-            action_repeat_KL_loss_interval=action_repeat_kl_loss_interval,
+            action_repeat_frequency=action_repeat_frequency,
+            kl_loss_computation_frequency=kl_loss_computation_frequency,
             sparse_inference_action_repeat=sparse_inference_action_repeat,
             load_on_init=(opponent_runtime_mode == 'normal'),
         )

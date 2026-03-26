@@ -247,8 +247,11 @@ def _make_env(args):
             'student_top_k_road': getattr(args, 'student_top_k_road', 64),
             'student_accel_discretization': args.student_accel_discretization,
             'student_steer_discretization': args.student_steer_discretization,
-            'action_repeat_KL_loss_interval': getattr(
-                args, 'action_repeat_KL_loss_interval', 2
+            'action_repeat_frequency': getattr(
+                args, 'action_repeat_frequency', 2
+            ),
+            'kl_loss_computation_frequency': getattr(
+                args, 'kl_loss_computation_frequency', 2
             ),
             'sparse_inference_action_repeat': getattr(
                 args, 'sparse_inference_action_repeat', False

@@ -355,15 +355,6 @@ parser.add_argument(
     default=1.0,
     help='Number of steps after which KL loss should be used')
 parser.add_argument(
-    '--kl_loss_coef',
-    type=float,
-    default=0.2,
-    help='KL divergence loss coefficient for behavioural cloning (default: 0.1)')
-parser.add_argument(
-    '--use_ego_ctrlsim_kl_loss',
-    type=str2bool, nargs='?', const=True, default=False,
-    help='Whether to enable the ego_ctrlsim teacher-vs-student KL loss')
-parser.add_argument(
     '--use_kl_only_agent',
     type=str2bool, nargs='?', const=True, default=False,
     help='Use behavioural cloning loss in agent only. Default behaviour is bc in both')
@@ -821,10 +812,28 @@ parser.add_argument(
     type=str2bool, nargs='?', const=True, default=False,
     help='Enable action repeat on the last step in each action-repeat cycle.')
 parser.add_argument(
-    '--action_repeat_KL_loss_interval',
+    '--action_repeat_frequency',
     type=int,
     default=2,
-    help='Shared cycle length N for action repeat and ego KL loss (the last step in each N-step block is active).')
+    help='Cycle length N for opponent action repeat (the last step in each N-step block is active).')
+
+# ============== Ego Ctrlsim Policy KL Loss ==============
+parser.add_argument(
+    '--use_ego_ctrlsim_kl_loss',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Whether to enable the ego_ctrlsim teacher-vs-student KL loss')
+parser.add_argument(
+    '--kl_loss_coef',
+    type=float,
+    default=0.2,
+    help='KL divergence loss coefficient for behavioural cloning (default: 0.1)')
+parser.add_argument(
+    '--kl_loss_computation_frequency',
+    type=int,
+    default=2,
+    help='Cycle length N for ego KL loss computation (the last step in each N-step block is active).')
+
+# ============== Policy Reweighting ==============
 
 # ============== ClearML ==============
 parser.add_argument(

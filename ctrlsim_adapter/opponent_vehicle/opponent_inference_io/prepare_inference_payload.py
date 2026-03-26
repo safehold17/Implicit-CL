@@ -194,19 +194,20 @@ def _should_skip_opponent_inference(
 def should_collect_ego_ctrlsim_kl_step(
     t: int,
     history_steps: int,
-    interval: int,
+    kl_loss_computation_frequency: int,
 ) -> bool:
     """判断当前步是否需要采样 ego KL teacher。 / Decide whether this step should collect ego KL teacher logits."""
-    if interval < 1:
+    if kl_loss_computation_frequency < 1:
         raise ValueError(
-            f"action_repeat_KL_loss_interval must be >= 1, got {interval}"
+            "kl_loss_computation_frequency must be >= 1, "
+            f"got {kl_loss_computation_frequency}"
         )
 
     anchor_t = int(history_steps) - 1
     if t < anchor_t:
         return False
-    phase = (int(t) - anchor_t) % int(interval)
-    return phase == int(interval) - 1
+    phase = (int(t) - anchor_t) % int(kl_loss_computation_frequency)
+    return phase == int(kl_loss_computation_frequency) - 1
 
 
 def _build_prepared_payload(
@@ -301,7 +302,7 @@ def prepare_step_pack(
         and should_collect_ego_ctrlsim_kl_step(
             t=t,
             history_steps=adapter.history_steps,
-            interval=adapter.action_repeat_KL_loss_interval,
+            kl_loss_computation_frequency=adapter.kl_loss_computation_frequency,
         )
     )
 

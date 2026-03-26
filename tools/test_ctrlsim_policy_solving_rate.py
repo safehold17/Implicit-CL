@@ -47,7 +47,8 @@ class CtrlSimEgoWrapper:
         device: str = "cuda",
         seed: int = 0,
         inference_precision: str = "fp32",
-        action_repeat_KL_loss_interval: int = 2,
+        action_repeat_frequency: int = 2,
+        kl_loss_computation_frequency: int = 2,
         sparse_inference_action_repeat: bool = False,
         student_accel_discretization: int = 20,
         student_steer_discretization: int = 50,
@@ -66,7 +67,8 @@ class CtrlSimEgoWrapper:
             tilting_mode=tilting_mode,
             tilt_range=tilt_range,
             inference_precision=inference_precision,
-            action_repeat_KL_loss_interval=action_repeat_KL_loss_interval,
+            action_repeat_frequency=action_repeat_frequency,
+            kl_loss_computation_frequency=kl_loss_computation_frequency,
             sparse_inference_action_repeat=sparse_inference_action_repeat,
             student_accel_discretization=student_accel_discretization,
             student_steer_discretization=student_steer_discretization,
@@ -482,10 +484,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--xpid", type=str, required=True)
     parser.add_argument(
-        "--action_repeat_KL_loss_interval",
+        "--action_repeat_frequency",
         type=int,
         default=2,
-        help="Shared cycle length N for action repeat and ego KL loss.",
+        help="Cycle length N for opponent action repeat.",
+    )
+    parser.add_argument(
+        "--kl_loss_computation_frequency",
+        type=int,
+        default=2,
+        help="Cycle length N for ego KL loss computation.",
     )
     parser.add_argument(
         "--sparse_inference_action_repeat",
@@ -787,7 +795,8 @@ def main() -> None:
         xpid=args.xpid,
         video_dir=video_dir,
         inference_precision=args.inference_precision,
-        action_repeat_KL_loss_interval=args.action_repeat_KL_loss_interval,
+        action_repeat_frequency=args.action_repeat_frequency,
+        kl_loss_computation_frequency=args.kl_loss_computation_frequency,
         sparse_inference_action_repeat=args.sparse_inference_action_repeat,
         student_accel_discretization=args.student_accel_discretization,
         student_steer_discretization=args.student_steer_discretization,
