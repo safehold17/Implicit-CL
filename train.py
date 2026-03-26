@@ -63,8 +63,6 @@ def init_clearml(args):
         output_uri="s3://tks-zx.fzi.de:9000/ri928"
     )
 
-
-
     task.connect(vars(args))
 
     # An example of configuration of Docker environment for remote execution
@@ -87,14 +85,23 @@ def init_clearml(args):
         dataset_dir = download_clearml_dataset(
             args.clearml_dataset_project, args.clearml_dataset_name,
         )
-        for key in ('scenario_index_path', 'scenario_data_dir', 'preprocess_dir',
-                     'opponent_checkpoint', 'vehicle_map_path'):
-            path = getattr(args, key)
-            if path and not os.path.isabs(path):
-                setattr(args, key, os.path.join(dataset_dir, path))
+        _remap_clearml_dataset_paths(args, dataset_dir)
 
     print('Using ClearML')
     return task
+
+def _remap_clearml_dataset_paths(args, dataset_dir):
+    """Resolve relative dataset resource paths inside a ClearML dataset."""
+    for key in (
+        'scenario_index_path',
+        'scenario_data_dir',
+        'preprocess_dir',
+        'opponent_checkpoint',
+        'vehicle_map_path',
+    ):
+        path = getattr(args, key, None)
+        if path and not os.path.isabs(path):
+            setattr(args, key, os.path.join(dataset_dir, path))
 
 
 def _build_external_teacher(args, device):

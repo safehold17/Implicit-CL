@@ -12,11 +12,11 @@ from util import str2bool
 
 
 NOCTURNE_CTRLSIM_DEFAULTS = {
-    'scenario_index_path': '/home/chen/data/scenarios_index_filtered_train.json',
-    'scenario_data_dir': '/home/chen/data/nocturne_waymo/formatted_json_v2_no_tl_train',
-    'vehicle_map_path': '/home/chen/data/vehicle_map_filtered_train.json',
-    'preprocess_dir': '/home/chen/data/preprocess/train',
-    'opponent_checkpoint': '/home/chen/data/checkpoints/model.ckpt',
+    'scenario_index_path': 'preparation_file/scenarios_index_filtered_train.json',
+    'scenario_data_dir': 'scenario_data/formatted_json_v2_no_tl_train',
+    'vehicle_map_path': 'preparation_file/vehicle_map_filtered_train.json',
+    'preprocess_dir': 'compressed_preprocessed_data/train',
+    'opponent_checkpoint': 'checkpoints/model_fp16.ckpt',
 }
 
 
