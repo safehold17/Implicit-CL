@@ -42,18 +42,51 @@ from util import make_agent, FileWriter, safe_checkpoint, create_parallel_env, m
 from eval import Evaluator
 
 
+def _remap_clearml_dataset_paths(args, dataset_dir):
+    """Resolve dataset-backed resource paths on a ClearML worker."""
+    default_paths = {
+        'scenario_index_path': 'preparation_file/scenarios_index_filtered_train.json',
+        'scenario_data_dir': 'scenario_data/formatted_json_v2_no_tl_train',
+        'preprocess_dir': 'compressed_preprocessed_data/train',
+        'opponent_checkpoint': 'checkpoints/model_fp16.ckpt',
+        'vehicle_map_path': 'preparation_file/vehicle_map_filtered_train.json',
+    }
+    for key, default_relative_path in default_paths.items():
+        path = getattr(args, key, None)
+        if not path:
+            continue
+        if os.path.isabs(path):
+            if os.path.exists(path):
+                continue
+            setattr(args, key, os.path.join(dataset_dir, default_relative_path))
+            continue
+        setattr(args, key, os.path.join(dataset_dir, path))
+
+
 def init_clearml(args):
     """Initialize ClearML experiment tracking and resolve dataset paths.
 
     Returns the ClearML Task object, or None when ClearML is disabled.
     """
+    if os.environ.get("CLEARML_TASK_ID"):
+        from util.clearml import download_clearml_dataset
+
+        if args.clearml_dataset_project and args.clearml_dataset_name:
+            dataset_dir = download_clearml_dataset(
+                args.clearml_dataset_project, args.clearml_dataset_name,
+            )
+            _remap_clearml_dataset_paths(args, dataset_dir)
+            print(f'Using ClearML worker dataset: {dataset_dir}')
+        else:
+            print('Running on ClearML worker without dataset remap')
+        return None
+
     if not args.use_clearml:
         print('Running locally (ClearML disabled)')
         return None
 
     from clearml import Task
     from clearml.logger import Logger as clearml_logger
-    from util.clearml import download_clearml_dataset
 
     task = Task.init(
         project_name=args.clearml_project,
@@ -80,28 +113,8 @@ def init_clearml(args):
     # execute on a remote GPU cluster
     task.execute_remotely('default', clone=False, exit_process=True)
 
-    # Download ClearML dataset and remap paths.
-    if args.clearml_dataset_project and args.clearml_dataset_name:
-        dataset_dir = download_clearml_dataset(
-            args.clearml_dataset_project, args.clearml_dataset_name,
-        )
-        _remap_clearml_dataset_paths(args, dataset_dir)
-
     print('Using ClearML')
     return task
-
-def _remap_clearml_dataset_paths(args, dataset_dir):
-    """Resolve relative dataset resource paths inside a ClearML dataset."""
-    for key in (
-        'scenario_index_path',
-        'scenario_data_dir',
-        'preprocess_dir',
-        'opponent_checkpoint',
-        'vehicle_map_path',
-    ):
-        path = getattr(args, key, None)
-        if path and not os.path.isabs(path):
-            setattr(args, key, os.path.join(dataset_dir, path))
 
 
 def _build_external_teacher(args, device):
