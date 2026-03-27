@@ -2,8 +2,8 @@
   "grid": {
     "env_name": ["Nocturne-CtrlSim-v0"],
     "ued_algo": ["domain_randomization"],
-    "num_processes": [4],
-    "num_env_steps": [3600],
+    "num_processes": [2],
+    "num_env_steps": [1800],
     "seed": [123],
 
     "__note1__": ["learning parameters"],
@@ -72,7 +72,7 @@
     "__note9__": ["dataset parameters"],
     "scenario_index_path": ["/home/chen/data/scenarios_index_filtered_train.json"],
     "scenario_data_dir": ["/home/chen/data/nocturne_waymo/formatted_json_v2_no_tl_train"],
-    "preprocess_dir": ["/home/chen/data/preprocess/train"],
+    "preprocess_dir": ["/home/chen/data/preprocess_compressed/train"],
     "opponent_checkpoint": ["/home/chen/data/checkpoints/model_fp16.ckpt"],
     "vehicle_map_path": ["/home/chen/data/vehicle_map_filtered_train.json"],
     "log_dir": ["~/logs/dcd"],

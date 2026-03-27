@@ -11,8 +11,8 @@ from tqdm import tqdm
 
 
 COMPRESSED_FORMAT = "ctrlsim_preprocessed_compressed"
-DEFAULT_INPUT_DATA_DIR = "/home/chen/data/preprocess/train"
-DEFAULT_OUTPUT_DATA_DIR = "/home/chen/data/preprocess_compressed/train"
+DEFAULT_INPUT_DATA_DIR = "/home/chen/data/preprocess/test"
+DEFAULT_OUTPUT_DATA_DIR = "/home/chen/data/preprocess_compressed/test"
 
 
 @dataclass(frozen=True)
