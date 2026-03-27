@@ -223,6 +223,7 @@ class AdversarialRunner(object):
 
     def reset(self):
         self.num_updates = 0
+        self.total_updates = 0
         self.total_num_edits = 0
         self.total_episodes_collected = 0
         self.total_seeds_collected = 0
@@ -1056,7 +1057,12 @@ class AdversarialRunner(object):
                 if plr_runtime_enabled and level_sampler and update_level_sampler:
                     level_sampler.update_with_rollouts(agent.storage)
 
-                value_loss, action_loss, dist_entropy, info = agent.update(discard_grad=discard_grad, kl_dict=kl_dict)
+                value_loss, action_loss, dist_entropy, info = agent.update(
+                    discard_grad=discard_grad,
+                    kl_dict=kl_dict,
+                    current_update=self.num_updates,
+                    total_updates=self.total_updates,
+                )
 
                 if plr_runtime_enabled and level_sampler and update_level_sampler:
                     level_sampler.after_update()
@@ -1094,7 +1100,12 @@ class AdversarialRunner(object):
         if plr_runtime_enabled and level_sampler and update_level_sampler:
             level_sampler.update_with_rollouts(agent.storage, external_scores=external_scores)
 
-        value_loss, action_loss, dist_entropy, info = agent.update(discard_grad=discard_grad, kl_dict=kl_dict)
+        value_loss, action_loss, dist_entropy, info = agent.update(
+            discard_grad=discard_grad,
+            kl_dict=kl_dict,
+            current_update=self.num_updates,
+            total_updates=self.total_updates,
+        )
 
         if plr_runtime_enabled and level_sampler and update_level_sampler:
             level_sampler.after_update()

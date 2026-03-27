@@ -387,6 +387,7 @@ def main(args, clearml_task=None):
         last_checkpoint_idx = getattr(train_runner, args.checkpoint_basis)
         update_start_time = timer()
         num_updates = int(args.num_env_steps) // args.num_steps // args.num_processes
+        train_runner.total_updates = num_updates
         env_steps_per_update = args.num_processes * args.num_steps
         current_opponent_runtime_mode = None
         train_updates = range(initial_update_count, num_updates)

@@ -9,7 +9,7 @@
 # This file is a modified version of:
 # https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/blob/master/a2c_ppo_acktr/algo/ppo.py
 
-
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -29,6 +29,9 @@ class PPO():
                  entropy_coef,
                  kl_loss_coef=0.0,
                  use_ego_ctrlsim_kl_loss=False,
+                 ego_ctrlsim_kl_schedule='constant',
+                 ego_ctrlsim_kl_init_coef=0.5,
+                 ego_ctrlsim_kl_min_coef=0.0,
                  lr=None,
                  eps=None,
                  max_grad_norm=None,
@@ -48,6 +51,9 @@ class PPO():
 
         # new ego_ctrlsim policy vs student policy KL
         self.use_ego_ctrlsim_kl_loss = use_ego_ctrlsim_kl_loss
+        self.ego_ctrlsim_kl_schedule = ego_ctrlsim_kl_schedule
+        self.ego_ctrlsim_kl_init_coef = ego_ctrlsim_kl_init_coef
+        self.ego_ctrlsim_kl_min_coef = ego_ctrlsim_kl_min_coef
 
         self.max_grad_norm = max_grad_norm
 
@@ -65,12 +71,26 @@ class PPO():
         total_norm = total_norm ** (1. / 2)
         return total_norm
 
-    def update(self, rollouts, discard_grad=False, kl_dict=None):
+    def _get_ego_ctrlsim_kl_coef(self, current_update, total_updates):
+        """Return the current ego_ctrlsim KL coefficient."""
+        if self.ego_ctrlsim_kl_schedule == 'constant':
+            return self.kl_loss_coef
+
+        progress = current_update / max(total_updates - 1, 1)
+        return self.ego_ctrlsim_kl_min_coef + 0.5 * (
+            self.ego_ctrlsim_kl_init_coef - self.ego_ctrlsim_kl_min_coef
+        ) * (1.0 + math.cos(math.pi * progress))
+
+    def update(self, rollouts, discard_grad=False, kl_dict=None, current_update=None, total_updates=None):
         # online model-vs-model KL path, not using in this project
         use_model_kl_loss = (
             (kl_dict is not None)
             and (self.kl_loss_coef > 0.0)
             and (discard_grad is False)
+        )
+        ego_ctrlsim_kl_coef = self._get_ego_ctrlsim_kl_coef(
+            current_update=current_update,
+            total_updates=total_updates,
         )
         
         # When `use_popart=True`, the model outputs are in a normalized space; 
@@ -129,7 +149,7 @@ class PPO():
                     self.use_ego_ctrlsim_kl_loss
                     and
                     has_valid_ego_ctrlsim_teacher
-                    and (self.kl_loss_coef > 0.0)
+                    and (ego_ctrlsim_kl_coef > 0.0)
                     and (discard_grad is False)
                 )
 
@@ -214,7 +234,7 @@ class PPO():
                 if use_model_kl_loss:
                     loss += (self.kl_loss_coef*kl_loss)
                 if use_ego_ctrlsim_kl_loss:
-                    loss += (self.kl_loss_coef * ego_ctrlsim_kl_loss)
+                    loss += (ego_ctrlsim_kl_coef * ego_ctrlsim_kl_loss)
 
                 loss.backward()  # compute the gradients of the combined loss with respect to the model parameters
 

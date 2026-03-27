@@ -832,6 +832,22 @@ parser.add_argument(
     type=int,
     default=2,
     help='Cycle length N for ego KL loss computation (the last step in each N-step block is active).')
+parser.add_argument(
+    '--ego_ctrlsim_kl_schedule',
+    type=str,
+    choices=['constant', 'cosine'],
+    default='constant',
+    help='Schedule for ego_ctrlsim KL coefficient.')
+parser.add_argument(
+    '--ego_ctrlsim_kl_init_coef',
+    type=float,
+    default=0.5,
+    help='Initial ego_ctrlsim KL coefficient when cosine schedule is enabled.')
+parser.add_argument(
+    '--ego_ctrlsim_kl_min_coef',
+    type=float,
+    default=0.0,
+    help='Minimum ego_ctrlsim KL coefficient when cosine schedule is enabled.')
 
 # ============== Policy Reweighting ==============
 

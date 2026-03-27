@@ -9,8 +9,14 @@ class ACAgent(object):
         self.algo = algo
         self.storage = storage
 
-    def update(self, discard_grad=False, kl_dict=None):
-        info = self.algo.update(self.storage, discard_grad=discard_grad, kl_dict=kl_dict)
+    def update(self, discard_grad=False, kl_dict=None, current_update=None, total_updates=None):
+        info = self.algo.update(
+            self.storage,
+            discard_grad=discard_grad,
+            kl_dict=kl_dict,
+            current_update=current_update,
+            total_updates=total_updates,
+        )
         self.storage.after_update()
 
         return info

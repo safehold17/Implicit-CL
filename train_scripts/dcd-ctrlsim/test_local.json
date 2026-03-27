@@ -65,9 +65,12 @@
     "action_repeat_frequency": [2],
 
     "__note8__": ["KL loss parameters"],
-    "kl_loss_coef": [0.2],
     "use_ego_ctrlsim_kl_loss": [true],
+    "ego_ctrlsim_kl_schedule": ["constant"],
+    "kl_loss_coef": [0.2],
     "kl_loss_computation_frequency": [2],
+    "ego_ctrlsim_kl_init_coef" : [0.5],
+    "ego_ctrlsim_kl_min_coef": [0.0],
 
     "__note9__": ["dataset parameters"],
     "scenario_index_path": ["/home/chen/data/scenarios_index_filtered_train.json"],
