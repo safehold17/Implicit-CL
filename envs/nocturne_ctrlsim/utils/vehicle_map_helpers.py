@@ -83,3 +83,54 @@ def load_vehicle_ids_for_scenario(
         ego_selection_mode,
         int(opponent_vehicle_num),
     )
+
+
+def is_retryable_vehicle_map_error(error: Exception) -> bool:
+    """Whether a strict vehicle-map metadata error should skip the scenario."""
+    if not isinstance(error, (KeyError, ValueError)):
+        return False
+
+    msg = str(error)
+    return (
+        "ego_vehicle_id is missing" in msg
+        or (
+            "Scenario '" in msg
+            and "not found in vehicle map" in msg
+        )
+        or "opponent_vehicle_num is missing" in msg
+        or (
+            "ego_vehicle_id" in msg
+            and "does not exist in scenario" in msg
+        )
+        or (
+            "opponent_vehicle_ids" in msg
+            and "do not exist in scenario" in msg
+        )
+    )
+
+
+def format_vehicle_map_skip_warning(
+    scenario_id: str,
+    context: str,
+    error: Exception,
+) -> str:
+    """Build a warning for skipping a scenario after a vehicle-map error."""
+    return (
+        f"Warning: skipping scenario '{scenario_id}' {context} "
+        f"due to strict vehicle-map metadata error: {error}. "
+        "Trying the next scenario."
+    )
+
+
+def format_vehicle_map_exhausted_error(
+    num_scenarios: int,
+    context: str,
+    last_scenario_id: Optional[str],
+    last_error: Optional[Exception],
+) -> str:
+    """Build the final error after exhausting fallback scenarios."""
+    return (
+        f"level initialization failed after skipping {num_scenarios} scenario(s) {context} "
+        f"due to strict vehicle-map metadata errors. Last scenario: '{last_scenario_id}'. "
+        f"Last error: {last_error}"
+    )

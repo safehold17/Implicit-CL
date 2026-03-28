@@ -72,6 +72,17 @@ class ScenarioLevel:
             self.per_vehicle_tilting,
         )
 
+    def with_scenario_id(self, scenario_id: str) -> "ScenarioLevel":
+        """Return a copy of the level with a different scenario ID."""
+        return ScenarioLevel(
+            scenario_id=scenario_id,
+            seed=self.seed,
+            goal_tilt=self.goal_tilt,
+            veh_veh_tilt=self.veh_veh_tilt,
+            veh_edge_tilt=self.veh_edge_tilt,
+            per_vehicle_tilting=self.per_vehicle_tilting,
+        )
+
     def to_level_string(self) -> str:
         return str(self.to_tuple())
 
