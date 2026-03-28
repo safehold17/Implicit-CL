@@ -109,11 +109,19 @@ class ExternalTeacher:
         ) = self._resolve_inference_precision()
 
         print(f"[ExternalTeacher] Loading CtRL-Sim model from {checkpoint_path}...")
-        self.model = CtRLSim.load_from_checkpoint(checkpoint_path)
+        self.model = CtRLSim.load_from_checkpoint(
+            checkpoint_path,
+            map_location="cpu",
+        )
+        self._cast_model_for_inference_precision()
         self.model.to(device)
         self.model.eval()
         print("[ExternalTeacher] Model loaded successfully.")
         print(f"[ExternalTeacher] Inference precision: {self.inference_precision}")
+        print(
+            "[ExternalTeacher] Runtime param dtype: "
+            f"{self._get_runtime_param_dtype()}"
+        )
 
         ckpt_cfg = self.model.cfg
         ds = ckpt_cfg.dataset.waymo
@@ -195,6 +203,20 @@ class ExternalTeacher:
         if self.inference_precision == "amp_bf16" and not torch.cuda.is_bf16_supported():
             raise ValueError("amp_bf16 is not supported on this CUDA device.")
         return True, torch.bfloat16
+
+    def _cast_model_for_inference_precision(self) -> None:
+        if self.inference_precision == "amp_fp16":
+            self.model = self.model.half()
+        elif self.inference_precision == "amp_bf16":
+            self.model = self.model.to(dtype=torch.bfloat16)
+        else:
+            self.model = self.model.float()
+
+    def _get_runtime_param_dtype(self) -> torch.dtype:
+        for param in self.model.parameters():
+            if param.is_floating_point():
+                return param.dtype
+        raise RuntimeError("ExternalTeacher model has no floating-point parameters.")
 
     def model_forward_context(self):
         if not self._autocast_enabled:

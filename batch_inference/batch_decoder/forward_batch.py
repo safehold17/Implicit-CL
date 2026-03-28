@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+import torch
+
 
 def batch_predict_rtgs_mode(jobs: List[Dict[str, Any]]) -> bool:
     predict_rtgs_flags = {
@@ -69,8 +71,9 @@ def forward_job_batch_impl(
         ]
 
     # first stage forward for RTG prediction
-    with teacher.model_forward_context():
-        preds = teacher.model(batched_data, eval=True)
+    with torch.no_grad():
+        with teacher.model_forward_context():
+            preds = teacher.model(batched_data, eval=True)
     rtg_logits = preds["rtg_preds"].float()
 
     # RTG decode to get RTG-aware prepared meta for the second stage forward 

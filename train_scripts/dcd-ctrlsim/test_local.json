@@ -2,8 +2,8 @@
   "grid": {
     "env_name": ["Nocturne-CtrlSim-v0"],
     "ued_algo": ["domain_randomization"],
-    "num_processes": [2],
-    "num_env_steps": [1800],
+    "num_processes": [4],
+    "num_env_steps": [3600],
     "seed": [123],
 
     "__note1__": ["learning parameters"],
@@ -65,7 +65,7 @@
     "action_repeat_frequency": [2],
 
     "__note8__": ["KL loss parameters"],
-    "use_ego_ctrlsim_kl_loss": [true],
+    "use_ego_ctrlsim_kl_loss": [false],
     "ego_ctrlsim_kl_schedule": ["constant"],
     "kl_loss_coef": [0.2],
     "kl_loss_computation_frequency": [2],
