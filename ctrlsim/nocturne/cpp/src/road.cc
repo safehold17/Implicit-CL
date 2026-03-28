@@ -43,6 +43,15 @@ void RoadLine::draw(sf::RenderTarget& target, sf::RenderStates states) const {
 }
 
 void RoadLine::InitRoadPoints() {
+  if (geometry_points_.empty()) {
+    return;
+  }
+  if (geometry_points_.size() == 1) {
+    road_points_.emplace_back(geometry_points_.front(), geometry_points_.front(),
+                              road_type_);
+    return;
+  }
+
   const int64_t num_segments = geometry_points_.size() - 1;
   const int64_t num_sampled_points =
       (num_segments + sample_every_n_ - 1) / sample_every_n_ + 1;

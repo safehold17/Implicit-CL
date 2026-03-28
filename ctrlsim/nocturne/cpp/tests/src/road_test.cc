@@ -52,5 +52,25 @@ TEST(RoadLineTest, SampleRoadPointTest) {
   }
 }
 
+TEST(RoadLineTest, EmptyGeometryProducesNoRoadPoints) {
+  const RoadLine road_line(RoadType::kLane, std::vector<geometry::Vector2D>{});
+
+  EXPECT_TRUE(road_line.road_points().empty());
+  EXPECT_TRUE(road_line.geometry_points().empty());
+}
+
+TEST(RoadLineTest, SingleGeometryPointProducesSelfNeighborRoadPoint) {
+  const geometry::Vector2D only_point(3.0f, 4.0f);
+  const RoadLine road_line(RoadType::kLane, std::vector<geometry::Vector2D>{only_point});
+
+  ASSERT_EQ(road_line.road_points().size(), 1U);
+  EXPECT_FLOAT_EQ(road_line.road_points()[0].position().x(), only_point.x());
+  EXPECT_FLOAT_EQ(road_line.road_points()[0].position().y(), only_point.y());
+  EXPECT_FLOAT_EQ(road_line.road_points()[0].neighbor_position().x(),
+                  only_point.x());
+  EXPECT_FLOAT_EQ(road_line.road_points()[0].neighbor_position().y(),
+                  only_point.y());
+}
+
 }  // namespace
 }  // namespace nocturne
