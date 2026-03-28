@@ -47,7 +47,6 @@ def init_clearml(args):
     """
     if os.environ.get("CLEARML_TASK_ID"):
         from clearml import Task
-        from clearml.logger import Logger as clearml_logger
         from util.clearml import download_clearml_dataset
 
         task = Task.current_task()
@@ -62,9 +61,6 @@ def init_clearml(args):
         else:
             print('Running on ClearML worker without dataset remap')
 
-        clearml_logger.current_logger().set_default_upload_destination(
-            task.get_output_destination()
-        )
         return task
 
     if not args.use_clearml:
@@ -72,8 +68,6 @@ def init_clearml(args):
         return None
 
     from clearml import Task
-    from clearml.logger import Logger as clearml_logger
-
     task = Task.init(
         project_name=args.clearml_project,
         task_name=args.clearml_task,
@@ -91,10 +85,6 @@ def init_clearml(args):
             "apt-get install -y libgl1 ffmpeg imagemagick",
         ],
         docker_arguments="-e NVIDIA_DRIVER_CAPABILITIES=all --network=host",
-    )
-    # add task destination to the logger
-    clearml_logger.current_logger().set_default_upload_destination(
-        task.get_output_destination()
     )
     # execute on a remote GPU cluster
     task.execute_remotely('default', clone=False, exit_process=True)
