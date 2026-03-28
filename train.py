@@ -46,8 +46,13 @@ def init_clearml(args):
     Returns the ClearML Task object, or None when ClearML is disabled.
     """
     if os.environ.get("CLEARML_TASK_ID"):
+        from clearml import Task
+        from clearml.logger import Logger as clearml_logger
         from util.clearml import download_clearml_dataset
 
+        task = Task.current_task()
+        if task is None:
+            task = Task.get_task(task_id=os.environ["CLEARML_TASK_ID"])
         if args.clearml_dataset_project and args.clearml_dataset_name:
             dataset_dir = download_clearml_dataset(
                 args.clearml_dataset_project, args.clearml_dataset_name,
@@ -56,7 +61,11 @@ def init_clearml(args):
             print(f'Using ClearML worker dataset: {dataset_dir}')
         else:
             print('Running on ClearML worker without dataset remap')
-        return None
+
+        clearml_logger.current_logger().set_default_upload_destination(
+            task.get_output_destination()
+        )
+        return task
 
     if not args.use_clearml:
         print('Running locally (ClearML disabled)')
