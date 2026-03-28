@@ -50,6 +50,11 @@ def _clearml_parameter_to_tokens(action, raw_value):
     if raw_value is None:
         return []
 
+    # ClearML serializes unset optional scalars as empty strings.
+    # Map those back to "missing" so argparse uses the parser default.
+    if action.nargs in (None, "?") and raw_value == "" and action.default is None:
+        return []
+
     if action.nargs in (None, "?"):
         return [str(raw_value)]
 
