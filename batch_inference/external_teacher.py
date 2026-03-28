@@ -569,15 +569,19 @@ class ExternalTeacher:
                                 if action_logits is not None
                                 else None
                             )
-                            if opponent_results[env_idx] is None:
+                            if (
+                                opponent_results[env_idx] is None
+                                and decoded_opponent[env_idx] is not None
+                            ):
                                 opponent_results[env_idx] = self._build_empty_env_result(
                                     prepared=job_output["prepared"],
                                     env_idx=env_idx,
                                     status="ok",
                                 )
-                            opponent_results[env_idx]["ego_action_scale"] = float(
-                                job_output.get("ego_action_scale", 1.0)
-                            )
+                            if opponent_results[env_idx] is not None:
+                                opponent_results[env_idx]["ego_action_scale"] = float(
+                                    job_output.get("ego_action_scale", 1.0)
+                                )
                             continue
 
                         if opponent_results[env_idx] is None:
