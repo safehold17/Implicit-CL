@@ -92,11 +92,15 @@ def init_clearml(args):
 
 def _build_external_teacher(args, device):
     """Create an ExternalTeacher for batched ctrl-sim inference."""
-    from batch_inference import ExternalTeacher
+    from batch_inference import ExternalTeacher, build_external_teacher_kwargs
+
     teacher = ExternalTeacher(
-        checkpoint_path=args.opponent_checkpoint,
-        device=device,
-        inference_precision=getattr(args, 'inference_precision', 'fp32'),
+        **build_external_teacher_kwargs(
+            checkpoint_path=args.opponent_checkpoint,
+            device=device,
+            inference_precision=getattr(args, 'inference_precision', 'fp32'),
+            config_source=args,
+        )
     )
     teacher.validate_student_action_space(
         student_accel_discretization=args.student_accel_discretization,

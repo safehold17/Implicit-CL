@@ -747,9 +747,12 @@ class AdversarialRunner(object):
         use_ego_ctrlsim_kl_loss = bool(
             getattr(self.args, "use_ego_ctrlsim_kl_loss", False)
         )
+        use_policy_reweighting = bool(
+            getattr(self.args, "opponent_policy_reweighting_enabled", False)
+        )
 
         ego_ctrlsim_logits = [None] * len(ego_ctrlsim_prepared)
-        if use_ego_ctrlsim_kl_loss:
+        if use_ego_ctrlsim_kl_loss or use_policy_reweighting:
             if self.external_teacher is None:
                 raise RuntimeError("Nocturne training requires an ExternalTeacher.")
             model_outputs, ego_ctrlsim_logits = (

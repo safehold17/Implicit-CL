@@ -850,6 +850,41 @@ parser.add_argument(
     help='Minimum ego_ctrlsim KL coefficient when cosine schedule is enabled.')
 
 # ============== Policy Reweighting ==============
+parser.add_argument(
+    '--opponent_policy_reweighting_enabled',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Whether to enable delayed opponent policy reweighting.')
+parser.add_argument(
+    '--policy_reweighting_reward_scale',
+    type=float,
+    default=1.0,
+    help='Scalar multiplier applied to the normalized RTG error signal.')
+parser.add_argument(
+    '--policy_reweighting_epsilon',
+    type=float,
+    default=1e-6,
+    help='Small positive constant used for policy reweighting numerical stability.')
+parser.add_argument(
+    '--policy_reweighting_error_mean',
+    type=float,
+    default=0.0,
+    help='Mean used to normalize the RTG error signal.')
+parser.add_argument(
+    '--policy_reweighting_error_sigma',
+    type=float,
+    default=1.0,
+    help='Standard deviation used to normalize the RTG error signal.')
+parser.add_argument(
+    '--policy_reweighting_target',
+    type=str,
+    choices=['rtg', 'action'],
+    default='rtg',
+    help='Which opponent logits to reweight on the delayed step.')
+parser.add_argument(
+    '--reweighting_frequency',
+    type=int,
+    default=1,
+    help='Apply reweighting every N active ctrl-sim inference steps.')
 
 # ============== ClearML ==============
 parser.add_argument(

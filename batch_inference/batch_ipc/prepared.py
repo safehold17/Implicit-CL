@@ -56,6 +56,16 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "step_t": np.int32(int(prepared_typed["step_t"])),
         "token_index": np.int32(int(prepared_typed["token_index"])),
         "dead_ids": as_int32_array(prepared_typed["dead_ids"]),
+        "ego_id": np.int32(int(prepared_typed.get("ego_id", -1) or -1)),
+        "ego_context_owner_focal_id": np.int32(
+            int(prepared_typed.get("ego_context_owner_focal_id", -1) or -1)
+        ),
+        "ego_reweight_tilt": as_int32_array(
+            prepared_typed.get("ego_reweight_tilt", (0, 0, 0))
+        ),
+        "delayed_ego_action_scale": np.float32(
+            float(prepared_typed.get("delayed_ego_action_scale", 1.0))
+        ),
     }
     sampling_seed = prepared_typed.get("sampling_seed")
     if sampling_seed is not None:
@@ -154,12 +164,30 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         raise ValueError("Unexpected prepared IPC payload format.")
 
     require_keys(packed, ("status", "step_t", "token_index", "dead_ids"), "packed prepared payload")
+    ego_id_value = int(np.int32(packed.get("ego_id", -1)))
+    owner_focal_id_value = int(np.int32(packed.get("ego_context_owner_focal_id", -1)))
+    ego_reweight_tilt_arr = np.asarray(
+        packed.get("ego_reweight_tilt", np.asarray([0, 0, 0], dtype=np.int32)),
+        dtype=np.int32,
+    ).reshape((-1,))
+    if ego_reweight_tilt_arr.shape[0] != 3:
+        raise ValueError("packed prepared payload has invalid ego_reweight_tilt shape.")
     status = require_valid_status(packed["status"], "packed prepared payload")
     prepared: Dict[str, Any] = {
         "status": status,
         "step_t": int(packed["step_t"]),
         "token_index": int(packed["token_index"]),
         "dead_ids": as_int_list(packed["dead_ids"]),
+        "ego_id": None if ego_id_value < 0 else ego_id_value,
+        "ego_context_owner_focal_id": None if owner_focal_id_value < 0 else owner_focal_id_value,
+        "ego_reweight_tilt": (
+            int(ego_reweight_tilt_arr[0]),
+            int(ego_reweight_tilt_arr[1]),
+            int(ego_reweight_tilt_arr[2]),
+        ),
+        "delayed_ego_action_scale": float(
+            np.float32(packed.get("delayed_ego_action_scale", 1.0))
+        ),
     }
     if "sampling_seed" in packed:
         prepared["sampling_seed"] = int(packed["sampling_seed"])

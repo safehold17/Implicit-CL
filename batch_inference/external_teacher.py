@@ -26,12 +26,78 @@ from .batch_decoder.action import (
 from .batch_decoder.forward_batch import batch_predict_rtgs_mode as _batch_predict_rtgs_mode
 from .batch_decoder.forward_batch import forward_job_batch_impl
 from .batch_decoder import rtg as rtg_impl
+from .batch_decoder.rtg import sample_tilted_rtg_side_channel_impl
 from .batch_ipc import pack_model_outputs, release_prepared_payload, unpack_prepared
+from ctrlsim_adapter.policy_reweighting_helpers import (
+    AdversarialRTGConfig,
+    compute_ego_action_scale,
+    recover_current_ego_rtg,
+)
 
 def _assert_required_keys(payload: Dict[str, Any], required: Tuple[str, ...], payload_name: str) -> None:
     missing = [key for key in required if key not in payload]
     if missing:
         raise ValueError(f"{payload_name} missing required keys: {missing}")
+
+
+def _config_get(source: Any, key: str, default: Any) -> Any:
+    """Read a configuration value from either a mapping or an object."""
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        return source.get(key, default)
+    return getattr(source, key, default)
+
+
+def build_external_teacher_kwargs(
+    *,
+    checkpoint_path: str,
+    device: str,
+    inference_precision: str = "fp32",
+    config_source: Any = None,
+) -> Dict[str, Any]:
+    """Build a normalized ExternalTeacher kwargs dict from args/env/config sources."""
+    policy_reweighting_config = _config_get(
+        config_source,
+        "policy_reweighting_config",
+        None,
+    )
+    return {
+        "checkpoint_path": checkpoint_path,
+        "device": device,
+        "inference_precision": inference_precision,
+        "opponent_policy_reweighting_enabled": bool(
+            _config_get(config_source, "opponent_policy_reweighting_enabled", False)
+        ),
+        "policy_reweighting_reward_scale": float(
+            _config_get(
+                policy_reweighting_config,
+                "reward_scale",
+                _config_get(config_source, "policy_reweighting_reward_scale", 1.0),
+            )
+        ),
+        "policy_reweighting_epsilon": float(
+            _config_get(
+                policy_reweighting_config,
+                "epsilon",
+                _config_get(config_source, "policy_reweighting_epsilon", 1e-6),
+            )
+        ),
+        "policy_reweighting_error_mean": float(
+            _config_get(
+                policy_reweighting_config,
+                "error_mean",
+                _config_get(config_source, "policy_reweighting_error_mean", 0.0),
+            )
+        ),
+        "policy_reweighting_error_sigma": float(
+            _config_get(
+                policy_reweighting_config,
+                "error_sigma",
+                _config_get(config_source, "policy_reweighting_error_sigma", 1.0),
+            )
+        ),
+    }
 
 
 def _collect_focal_jobs(
@@ -98,10 +164,22 @@ class ExternalTeacher:
         device: str = "cuda",
         base_seed: int = 1,
         inference_precision: str = "fp32",
+        opponent_policy_reweighting_enabled: bool = False,
+        policy_reweighting_reward_scale: float = 1.0,
+        policy_reweighting_epsilon: float = 1e-6,
+        policy_reweighting_error_mean: float = 0.0,
+        policy_reweighting_error_sigma: float = 1.0,
     ) -> None:
         self.device = device
         self.base_seed = base_seed
         self.inference_precision = inference_precision
+        self.policy_reweighting_config = AdversarialRTGConfig(
+            enabled=bool(opponent_policy_reweighting_enabled),
+            reward_scale=float(policy_reweighting_reward_scale),
+            epsilon=float(policy_reweighting_epsilon),
+            error_mean=float(policy_reweighting_error_mean),
+            error_sigma=float(policy_reweighting_error_sigma),
+        )
 
         (
             self._autocast_enabled,
@@ -242,11 +320,101 @@ class ExternalTeacher:
             "env_idx": env_idx,
             "step_t": prepared["step_t"],
             "token_index": prepared["token_index"],
+            "ego_action_scale": 1.0,
             "action_results": {},
             "rtg_results": {},
             "processed_rtg_veh_ids": [],
             "dead_ids": prepared["dead_ids"],
         }
+
+    def _compute_ego_action_scale_for_job(
+        self,
+        *,
+        job: Dict[str, Any],
+        job_idx: int,
+        rtg_logits: torch.Tensor,
+        decode_meta: Dict[str, np.ndarray],
+        rtg_results: Dict[int, Tuple[float, float, float]],
+    ) -> float:
+        """Compute ego_action_scale for the owner focal of one job."""
+        prepared = job["prepared"]
+        focal_batch = job["focal_batch"]
+        owner_focal_id = prepared.get("ego_context_owner_focal_id")
+        if owner_focal_id is None or int(focal_batch["focal_id"]) != int(owner_focal_id):
+            return 1.0
+
+        ego_id = prepared.get("ego_id")
+        if ego_id is None:
+            return 1.0
+        next_rtg = rtg_results.get(int(ego_id))
+        if next_rtg is None:
+            return 1.0
+
+        row_mask = (
+            (np.asarray(decode_meta["job_idx"], dtype=np.int64) == int(job_idx))
+            & (np.asarray(decode_meta["veh_id"], dtype=np.int64) == int(ego_id))
+        )
+        row_indices = np.nonzero(row_mask)[0]
+        if row_indices.size == 0:
+            return 1.0
+        row_idx = int(row_indices[-1])
+        idx_in_model = int(np.asarray(decode_meta["idx_in_model"], dtype=np.int64)[row_idx])
+        token_index = int(np.asarray(decode_meta["token_index"], dtype=np.int64)[row_idx])
+
+        current_rtg_raw = np.asarray(
+            focal_batch["motion_data_np"]["rtgs"][idx_in_model, token_index]
+        )
+        current_rtg = recover_current_ego_rtg(
+            current_rtg_raw,
+            rtg_discretization=self.rtg_discretization,
+            min_rtg_pos=self.min_rtg_pos,
+            max_rtg_pos=self.max_rtg_pos,
+            min_rtg_veh=self.min_rtg_veh,
+            max_rtg_veh=self.max_rtg_veh,
+            min_rtg_road=self.min_rtg_road,
+            max_rtg_road=self.max_rtg_road,
+        )
+        ego_reweight_tilt = tuple(
+            int(v) for v in prepared.get("ego_reweight_tilt", (0, 0, 0))
+        )
+        tilted_current_rtg = sample_tilted_rtg_side_channel_impl(
+            teacher=self,
+            rtg_logits_row=rtg_logits[job_idx, idx_in_model, token_index],
+            goal_tilt=ego_reweight_tilt[0],
+            veh_tilt=ego_reweight_tilt[1],
+            road_tilt=ego_reweight_tilt[2],
+            sampling_seed=int(np.asarray(decode_meta["sampling_seed"], dtype=np.uint64)[row_idx]),
+            step_t=int(np.asarray(decode_meta["step_t"], dtype=np.int64)[row_idx]),
+            veh_id=int(ego_id),
+            stage_tag=1,
+        )
+        return compute_ego_action_scale(
+            config=self.policy_reweighting_config,
+            current_rtg=current_rtg,
+            next_rtg=np.asarray(next_rtg, dtype=np.float32),
+            tilted_current_rtg=np.asarray(tilted_current_rtg, dtype=np.float32),
+            ego_reweight_tilt=ego_reweight_tilt,
+        )
+
+    def _compute_ego_action_scales_by_job(
+        self,
+        *,
+        jobs: List[Dict[str, Any]],
+        rtg_logits: torch.Tensor,
+        decode_meta: Dict[str, np.ndarray],
+        rtg_results_by_job: List[Dict[int, Tuple[float, float, float]]],
+    ) -> List[float]:
+        """Compute one ego_action_scale per job, owner focal only."""
+        return [
+            self._compute_ego_action_scale_for_job(
+                job=job,
+                job_idx=job_idx,
+                rtg_logits=rtg_logits,
+                decode_meta=decode_meta,
+                rtg_results=rtg_results_by_job[job_idx],
+            )
+            for job_idx, job in enumerate(jobs)
+        ]
 
     def _collect_focal_jobs(
         self,
@@ -303,6 +471,9 @@ class ExternalTeacher:
             env_accum_item["action_results"].update(job_output["action_results"])
             env_accum_item["rtg_results"].update(job_output["rtg_results"])
             env_accum_item["processed_rtg_veh_ids"].extend(job_output["processed_rtg_veh_ids"])
+            scale = float(job_output.get("ego_action_scale", 1.0))
+            if scale != 1.0:
+                env_accum_item["ego_action_scale"] = scale
 
         for env_idx, env_output in env_accum.items():
             results[env_idx] = env_output
@@ -398,6 +569,15 @@ class ExternalTeacher:
                                 if action_logits is not None
                                 else None
                             )
+                            if opponent_results[env_idx] is None:
+                                opponent_results[env_idx] = self._build_empty_env_result(
+                                    prepared=job_output["prepared"],
+                                    env_idx=env_idx,
+                                    status="ok",
+                                )
+                            opponent_results[env_idx]["ego_action_scale"] = float(
+                                job_output.get("ego_action_scale", 1.0)
+                            )
                             continue
 
                         if opponent_results[env_idx] is None:
@@ -415,6 +595,9 @@ class ExternalTeacher:
                         opponent_results[env_idx]["processed_rtg_veh_ids"].extend(
                             job_output["processed_rtg_veh_ids"]
                         )
+                        scale = float(job_output.get("ego_action_scale", 1.0))
+                        if scale != 1.0:
+                            opponent_results[env_idx]["ego_action_scale"] = scale
 
             self._fill_empty_ok_env_results(decoded_opponent, opponent_results)
             return self._pack_outputs(opponent_results), ego_logits_by_env

@@ -17,6 +17,7 @@ from .services.reward_service import OpponentRewardService
 from .services.state_service import OpponentStateService
 from .sparse_inference import SparseInferenceConfig, SparseInferenceController
 from .tilting import TiltConfig
+from ctrlsim_adapter.policy_reweighting_helpers import AdversarialRTGConfig
 
 
 class CtrlSimOpponentAdapter:
@@ -60,6 +61,13 @@ class CtrlSimOpponentAdapter:
         action_repeat_frequency: int = 2,
         kl_loss_computation_frequency: int = 2,
         sparse_inference_action_repeat: bool = False,
+        opponent_policy_reweighting_enabled: bool = False,
+        policy_reweighting_reward_scale: float = 1.0,
+        policy_reweighting_epsilon: float = 1e-6,
+        policy_reweighting_error_mean: float = 0.0,
+        policy_reweighting_error_sigma: float = 1.0,
+        policy_reweighting_target: str = "rtg",
+        reweighting_frequency: int = 1,
         load_on_init: bool = True,
     ):
         """
@@ -82,6 +90,14 @@ class CtrlSimOpponentAdapter:
         kl_loss_computation_frequency: cycle length N for ego KL-loss collection.
         sparse_inference_action_repeat: 是否启用动作复用节奏
         sparse_inference_action_repeat: whether to enable the action-reuse cadence.
+        opponent_policy_reweighting_enabled: 是否启用 opponent policy delayed reweighting
+        opponent_policy_reweighting_enabled: whether to enable delayed opponent policy reweighting.
+        policy_reweighting_reward_scale: policy reweighting scalar multiplier.
+        policy_reweighting_epsilon: numerical-stability term for policy reweighting.
+        policy_reweighting_error_mean: normalization mean for RTG error.
+        policy_reweighting_error_sigma: normalization sigma for RTG error.
+        policy_reweighting_target: delayed reweighting target, either rtg or action.
+        reweighting_frequency: cadence for active policy reweighting steps.
         load_on_init: 是否在初始化时立即加载模型/数据集
         load_on_init: whether to load the model and dataset during initialization.
         """
@@ -103,6 +119,18 @@ class CtrlSimOpponentAdapter:
         self.action_repeat_frequency = int(action_repeat_frequency)
         self.kl_loss_computation_frequency = int(kl_loss_computation_frequency)
         self.sparse_inference_action_repeat = bool(sparse_inference_action_repeat)
+        self.opponent_policy_reweighting_enabled = bool(
+            opponent_policy_reweighting_enabled
+        )
+        self.policy_reweighting_target = str(policy_reweighting_target)
+        self.reweighting_frequency = int(reweighting_frequency)
+        self.policy_reweighting_config = AdversarialRTGConfig(
+            enabled=self.opponent_policy_reweighting_enabled,
+            reward_scale=float(policy_reweighting_reward_scale),
+            epsilon=float(policy_reweighting_epsilon),
+            error_mean=float(policy_reweighting_error_mean),
+            error_sigma=float(policy_reweighting_error_sigma),
+        )
         self.sparse_inference_cfg = SparseInferenceConfig(
             enabled=self.sparse_inference_action_repeat,
             interval=self.action_repeat_frequency,
@@ -154,6 +182,8 @@ class CtrlSimOpponentAdapter:
         self._vehicles_by_id_step: Dict[int, Any] = {}
         self._pending_sparse_actions_step_t: Optional[int] = None
         self._pending_sparse_actions: Dict[int, Tuple[float, float]] = {}
+        self._ego_action_scale: float = 1.0
+        self._ego_reweight_tilt: Tuple[float, float, float] = (0.0, 0.0, 0.0)
         # Whether to move non-controlled vehicles out of the scene when GT is missing.
         self.allow_set_position_for_noncontrolled: bool = False
         # 缓存 vehicles 列表，供 apply_predictions warm-up 使用

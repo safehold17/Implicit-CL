@@ -84,6 +84,12 @@ def forward_job_batch_impl(
         rtg_logits=rtg_logits,
         decode_meta=batch_meta["decode_meta"]["rtg"],
     )
+    ego_action_scales_by_job = teacher._compute_ego_action_scales_by_job(
+        jobs=batch_jobs,
+        rtg_logits=rtg_logits,
+        decode_meta=batch_meta["decode_meta"]["rtg"],
+        rtg_results_by_job=rtg_results_by_job,
+    )
 
     # second stage decode with RTG-aware prepared meta
     action_decode_outputs = teacher._decode_action_stage_batched(
@@ -103,6 +109,7 @@ def forward_job_batch_impl(
             "prepared": job["prepared"],
             "job_type": job.get("job_type", "opponent"),
             "action_results": action_results_by_job[idx],
+            "ego_action_scale": ego_action_scales_by_job[idx],
             "action_logits": (
                 action_logits_by_job[idx]
                 if bool(job.get("return_action_logits", False))

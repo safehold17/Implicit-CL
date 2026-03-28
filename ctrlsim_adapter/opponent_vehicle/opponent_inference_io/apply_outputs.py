@@ -30,6 +30,7 @@ def apply_predictions(
 
     model_outputs = unpack_model_outputs(model_outputs)
     if model_outputs is None:
+        adapter._ego_action_scale = 1.0
         pending_actions = consume_pending_sparse_actions(adapter)
         if pending_actions is not None:
             return pending_actions
@@ -40,10 +41,13 @@ def apply_predictions(
     step_t = int(model_outputs["step_t"])
     status = str(model_outputs["status"])
     if status == "skip":
+        adapter._ego_action_scale = 1.0
         pending_actions = consume_pending_sparse_actions(adapter, step_t=step_t)
         if pending_actions is not None:
             return pending_actions
         return {}
+
+    adapter._ego_action_scale = float(model_outputs.get("ego_action_scale", 1.0))
 
     action_results = model_outputs["action_results"]
     rtg_results = model_outputs["rtg_results"]

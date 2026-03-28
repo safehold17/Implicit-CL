@@ -739,16 +739,19 @@ if __name__ == '__main__':
 
 			external_teacher = None
 			if any(name.startswith("Nocturne") for name in env_names):
-				from batch_inference import ExternalTeacher
+				from batch_inference import ExternalTeacher, build_external_teacher_kwargs
 				opponent_checkpoint = nocturne_required.get("opponent_checkpoint")
 				if opponent_checkpoint is None:
 					raise ValueError(
 						"Nocturne evaluation requires opponent_checkpoint."
 					)
 				external_teacher = ExternalTeacher(
-					checkpoint_path=opponent_checkpoint,
-					device=device,
-					inference_precision=nocturne_required.get("inference_precision", "fp32"),
+					**build_external_teacher_kwargs(
+						checkpoint_path=opponent_checkpoint,
+						device=device,
+						inference_precision=nocturne_required.get("inference_precision", "fp32"),
+						config_source=nocturne_required,
+					)
 				)
 
 			# Evaluate environment batch in increments of chunk size

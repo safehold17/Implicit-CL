@@ -90,6 +90,8 @@ def reset(
     adapter._batch_prepare_cache = {}
     adapter._pending_sparse_actions_step_t = None
     adapter._pending_sparse_actions = {}
+    adapter._ego_action_scale = 1.0
+    adapter._ego_reweight_tilt = (0.0, 0.0, 0.0)
     initialize_episode_sampling_seed(adapter)
     adapter._constant_state_vehicle_ids = set()
     adapter._constant_state_by_id = {}

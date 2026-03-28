@@ -220,6 +220,7 @@ class NocturneCtrlSimRuntime:
             ego_id=ego_id,
             include_ego_ctrlsim_prepared=bool(
                 getattr(env, "use_ego_ctrlsim_kl_loss", False)
+                or getattr(env, "opponent_policy_reweighting_enabled", False)
             ),
         )
 
@@ -241,12 +242,15 @@ class NocturneCtrlSimRuntime:
         if teacher is not None:
             return teacher
 
-        from batch_inference import ExternalTeacher
+        from batch_inference import ExternalTeacher, build_external_teacher_kwargs
 
         teacher = ExternalTeacher(
-            checkpoint_path=env.opponent_checkpoint,
-            device=env.device,
-            inference_precision=env.inference_precision,
+            **build_external_teacher_kwargs(
+                checkpoint_path=env.opponent_checkpoint,
+                device=env.device,
+                inference_precision=env.inference_precision,
+                config_source=env,
+            )
         )
         teacher.validate_student_action_space(
             student_accel_discretization=env.student_accel_discretization,

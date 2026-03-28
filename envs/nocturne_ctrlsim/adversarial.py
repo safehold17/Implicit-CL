@@ -69,6 +69,7 @@ from tools.build_scenario_index import ScenarioIndex
 
 from ctrlsim_adapter.config_loader import create_minimal_config
 from ctrlsim_adapter.data_bridge import DataBridge
+from ctrlsim_adapter.policy_reweighting_helpers import AdversarialRTGConfig
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
 class NocturneCtrlSimAdversarial(gym.Env):
     """
@@ -177,6 +178,33 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.use_ego_ctrlsim_kl_loss = bool(
             kwargs.get("use_ego_ctrlsim_kl_loss", False)
         )
+        opponent_policy_reweighting_enabled = bool(
+            kwargs.get("opponent_policy_reweighting_enabled", False)
+        )
+        policy_reweighting_target = str(
+            kwargs.get("policy_reweighting_target", "rtg")
+        )
+        if policy_reweighting_target not in {"rtg", "action"}:
+            raise ValueError(
+                "policy_reweighting_target must be 'rtg' or 'action', "
+                f"got {policy_reweighting_target}"
+            )
+        reweighting_frequency = int(kwargs.get("reweighting_frequency", 1))
+        if reweighting_frequency < 1:
+            raise ValueError(
+                "reweighting_frequency must be >= 1, "
+                f"got {reweighting_frequency}"
+            )
+        self.opponent_policy_reweighting_enabled = opponent_policy_reweighting_enabled
+        self.policy_reweighting_target = policy_reweighting_target
+        self.reweighting_frequency = reweighting_frequency
+        self.policy_reweighting_config = AdversarialRTGConfig(
+            enabled=opponent_policy_reweighting_enabled,
+            reward_scale=float(kwargs.get("policy_reweighting_reward_scale", 1.0)),
+            epsilon=float(kwargs.get("policy_reweighting_epsilon", 1e-6)),
+            error_mean=float(kwargs.get("policy_reweighting_error_mean", 0.0)),
+            error_sigma=float(kwargs.get("policy_reweighting_error_sigma", 1.0)),
+        )
         self.action_repeat_frequency = action_repeat_frequency
         self.kl_loss_computation_frequency = kl_loss_computation_frequency
 
@@ -238,7 +266,19 @@ class NocturneCtrlSimAdversarial(gym.Env):
             action_repeat_frequency=action_repeat_frequency,
             kl_loss_computation_frequency=kl_loss_computation_frequency,
             sparse_inference_action_repeat=sparse_inference_action_repeat,
+            opponent_policy_reweighting_enabled=opponent_policy_reweighting_enabled,
+            policy_reweighting_reward_scale=self.policy_reweighting_config.reward_scale,
+            policy_reweighting_epsilon=self.policy_reweighting_config.epsilon,
+            policy_reweighting_error_mean=self.policy_reweighting_config.error_mean,
+            policy_reweighting_error_sigma=self.policy_reweighting_config.error_sigma,
+            policy_reweighting_target=policy_reweighting_target,
+            reweighting_frequency=reweighting_frequency,
             load_on_init=(opponent_runtime_mode == 'normal'),
+        )
+        self.opponent._ego_action_scale = 1.0
+        self.opponent._ego_reweight_tilt = self._resolve_initial_ego_reweight_tilt(
+            tilting_mode=tilting_mode,
+            opponent_runtime_mode=opponent_runtime_mode,
         )
         
         # ========== Environment config ==========
@@ -517,6 +557,29 @@ class NocturneCtrlSimAdversarial(gym.Env):
         if self.tilting_mode == 'none':
             return [0]
         return [0, 0, 0, 0]
+
+    def _resolve_initial_ego_reweight_tilt(
+        self,
+        *,
+        tilting_mode: str,
+        opponent_runtime_mode: str,
+    ) -> Tuple[float, float, float]:
+        """Resolve the runtime tilt used for ego-side RTG mismatch computation."""
+        if not self.opponent_policy_reweighting_enabled:
+            return (0.0, 0.0, 0.0)
+        if opponent_runtime_mode != 'normal':
+            return (0.0, 0.0, 0.0)
+        if tilting_mode != 'ego':
+            return (0.0, 0.0, 0.0)
+
+        current_tilt = getattr(self.opponent, 'current_tilt', None)
+        if current_tilt is None:
+            return (0.0, 0.0, 0.0)
+        return (
+            float(current_tilt.goal_tilt),
+            float(current_tilt.veh_veh_tilt),
+            float(current_tilt.veh_edge_tilt),
+        )
 
     def _normalize_per_vehicle_tilting(self, per_vehicle_tilting: Tuple[int, ...]) -> Tuple[int, ...]:
         """Normalize per-vehicle tilting vector length to match current opponent_k."""

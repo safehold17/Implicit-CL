@@ -39,6 +39,9 @@ def pack_model_outputs(model_outputs: Optional[Dict[str, Any]]) -> Optional[Dict
         "env_idx": np.int32(int(model_outputs_typed["env_idx"])),
         "step_t": np.int32(int(model_outputs_typed["step_t"])),
         "token_index": np.int32(int(model_outputs_typed["token_index"])),
+        "ego_action_scale": np.float32(
+            float(model_outputs_typed.get("ego_action_scale", 1.0))
+        ),
         "action_veh_ids": action_veh_ids,
         "action_values": action_values,
         "rtg_veh_ids": rtg_veh_ids,
@@ -90,6 +93,7 @@ def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str,
         "env_idx": int(packed["env_idx"]),
         "step_t": int(packed["step_t"]),
         "token_index": int(packed["token_index"]),
+        "ego_action_scale": float(np.float32(packed.get("ego_action_scale", 1.0))),
         "action_results": action_results,
         "rtg_results": rtg_results,
         "processed_rtg_veh_ids": as_int_list(packed["processed_rtg_veh_ids"]),

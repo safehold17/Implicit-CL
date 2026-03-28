@@ -49,6 +49,10 @@ class PreparedPayload(TypedDict):
     token_index: int
     dead_ids: List[int]
     sampling_seed: int
+    ego_id: int | None
+    ego_context_owner_focal_id: int | None
+    ego_reweight_tilt: Tuple[int, int, int]
+    delayed_ego_action_scale: float
     sampling: SamplingPayload
     default_tilt: Tuple[int, int, int]
     tilt_by_veh_id: Dict[int, Tuple[int, int, int]]
@@ -62,6 +66,7 @@ class ModelOutputsPayload(TypedDict):
     env_idx: int
     step_t: int
     token_index: int
+    ego_action_scale: float
     action_results: Dict[int, Tuple[float, float]]
     rtg_results: Dict[int, Tuple[float, float, float]]
     processed_rtg_veh_ids: List[int]

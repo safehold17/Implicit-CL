@@ -259,6 +259,27 @@ def _make_env(args):
             'use_ego_ctrlsim_kl_loss': getattr(
                 args, 'use_ego_ctrlsim_kl_loss', False
             ),
+            'opponent_policy_reweighting_enabled': getattr(
+                args, 'opponent_policy_reweighting_enabled', False
+            ),
+            'policy_reweighting_reward_scale': getattr(
+                args, 'policy_reweighting_reward_scale', 1.0
+            ),
+            'policy_reweighting_epsilon': getattr(
+                args, 'policy_reweighting_epsilon', 1e-6
+            ),
+            'policy_reweighting_error_mean': getattr(
+                args, 'policy_reweighting_error_mean', 0.0
+            ),
+            'policy_reweighting_error_sigma': getattr(
+                args, 'policy_reweighting_error_sigma', 1.0
+            ),
+            'policy_reweighting_target': getattr(
+                args, 'policy_reweighting_target', 'rtg'
+            ),
+            'reweighting_frequency': getattr(
+                args, 'reweighting_frequency', 1
+            ),
         }
         env_kwargs.update(nocturne_kwargs)
         return gym_make(args.env_name, **env_kwargs)

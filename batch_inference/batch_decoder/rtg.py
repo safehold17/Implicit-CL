@@ -20,6 +20,7 @@ from .sampling import build_row_keys, build_stateless_uniforms, sample_categoric
 
 RTGCache = Dict[Tuple[int, int], Tuple[int, int, int]]
 _RTG_STAGE_TAG = 0
+_SIDE_CHANNEL_RTG_STAGE_TAG = 1
 
 
 def resolve_idx_in_model(
@@ -112,9 +113,10 @@ def _sample_rtg_indices(
     sampling_seed: np.ndarray,
     step_t: np.ndarray,
     veh_id: np.ndarray,
+    stage_tag: int = _RTG_STAGE_TAG,
 ) -> torch.Tensor:
     probs = F.softmax((flat_rtg_logits + flat_tilt_logits).permute(0, 2, 1), dim=-1)
-    row_keys = build_row_keys(step_t=step_t, veh_ids=veh_id, stage_tag=_RTG_STAGE_TAG)
+    row_keys = build_row_keys(step_t=step_t, veh_ids=veh_id, stage_tag=stage_tag)
     uniforms = build_stateless_uniforms(
         base_seed=sampling_seed,
         row_keys=row_keys,
@@ -127,6 +129,46 @@ def _sample_rtg_indices(
         probs.reshape(-1, probs.shape[-1]),
         uniforms.reshape(-1),
     ).reshape(-1, teacher.num_reward_components)
+
+
+def sample_tilted_rtg_side_channel_impl(
+    teacher: Any,
+    rtg_logits_row: torch.Tensor,
+    goal_tilt: int,
+    veh_tilt: int,
+    road_tilt: int,
+    sampling_seed: int,
+    step_t: int,
+    veh_id: int,
+    stage_tag: int = _SIDE_CHANNEL_RTG_STAGE_TAG,
+) -> np.ndarray:
+    """Sample a tilted RTG side-channel without mutating baseline RTG writeback."""
+    logits_3 = rtg_logits_row.reshape(
+        teacher.rtg_discretization,
+        teacher.num_reward_components,
+    )
+    tilt_logits = _build_flat_tilt_logits(
+        teacher=teacher,
+        goal_tilt=np.asarray([goal_tilt], dtype=np.int64),
+        veh_tilt=np.asarray([veh_tilt], dtype=np.int64),
+        road_tilt=np.asarray([road_tilt], dtype=np.int64),
+        dtype=logits_3.dtype,
+        device=logits_3.device,
+    )
+    discrete = _sample_rtg_indices(
+        teacher=teacher,
+        flat_rtg_logits=logits_3.unsqueeze(0),
+        flat_tilt_logits=tilt_logits,
+        sampling_seed=np.asarray([sampling_seed], dtype=np.uint64),
+        step_t=np.asarray([step_t], dtype=np.int64),
+        veh_id=np.asarray([veh_id], dtype=np.int64),
+        stage_tag=stage_tag,
+    )
+    continuous = _undiscretize_rtg_indices_batched(
+        teacher=teacher,
+        discrete_idx=discrete,
+    )
+    return continuous[0].detach().cpu().numpy().astype(np.float32, copy=False)
 
 
 def decode_rtg_jobs_batched_impl(
