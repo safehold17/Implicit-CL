@@ -119,11 +119,17 @@ class VecEnv(ABC):
         self.step_async(actions)
         return self.step_wait()
 
-    def step_env(self, actions, reset_random=False):
+    def step_env(self, actions, reset_random=False, auto_reset_on_done=True):
         if reset_random:
-            self.step_env_reset_random_async(actions)
+            if auto_reset_on_done:
+                self.step_env_reset_random_async(actions)
+            else:
+                self.step_env_reset_random_no_reset_async(actions)
         else:
-            self.step_env_async(actions)
+            if auto_reset_on_done:
+                self.step_env_async(actions)
+            else:
+                self.step_env_no_reset_async(actions)
         return self.step_wait()
 
     def render(self, mode='human'):

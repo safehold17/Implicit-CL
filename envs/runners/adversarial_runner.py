@@ -229,6 +229,7 @@ class AdversarialRunner(object):
         self.total_seeds_collected = 0
         self.student_grad_updates = 0
         self.sampled_level_info = None
+        self._pending_replay_obs = None
 
         max_return_queue_size = 10
         self.agent_returns = deque(maxlen=max_return_queue_size)
@@ -738,7 +739,18 @@ class AdversarialRunner(object):
     def _sample_replay_decision(self):
         return self._default_level_sampler.sample_replay_decision()
 
-    def _run_nocturne_batched_step(self, action, reset_random=False):
+    def _consume_pending_replay_obs(self):
+        """Return and clear the one-shot replay observation prepared for agent rollout."""
+        pending_obs = getattr(self, "_pending_replay_obs", None)
+        self._pending_replay_obs = None
+        return pending_obs
+
+    def _run_nocturne_batched_step(
+        self,
+        action,
+        reset_random=False,
+        auto_reset_on_done=True,
+    ):
         """执行 Nocturne 双路 batched step。 / Run the Nocturne batched step with opponent and ego_ctrlsim paths."""
         prepared_batch = self.venv.step_prepare(action)
         opponent_prepared, ego_ctrlsim_prepared = split_prepared_pack_batch(
@@ -773,6 +785,7 @@ class AdversarialRunner(object):
         obs, reward, done, infos = self.venv.step_complete(
             model_outputs,
             reset_random=reset_random,
+            auto_reset_on_done=auto_reset_on_done,
         )
 
         for info, logits in zip(infos, ego_ctrlsim_logits):
@@ -834,7 +847,7 @@ class AdversarialRunner(object):
             if level_replay: # Get replay levels
                 self.current_level_seeds = [level_sampler.sample_replay_level() for _ in range(args.num_processes)]
                 levels = [self.level_store.get_level(seed) for seed in self.current_level_seeds]
-                self.ued_venv.reset_to_level_batch(levels)
+                self._pending_replay_obs = self.ued_venv.reset_to_level_batch(levels)
                 return self.current_level_seeds
             elif self.is_dr and not plr_runtime_enabled: 
                 obs = self.ued_venv.reset_random() # don't need obs here
@@ -853,7 +866,9 @@ class AdversarialRunner(object):
                 obs = self.ued_venv.reset() # Prepare for constructive rollout
                 self.total_seeds_collected += args.num_processes
         else:
-            obs = self.venv.reset_agent()
+            obs = self._consume_pending_replay_obs()
+            if obs is None:
+                obs = self.venv.reset_agent()
 
         # Initialize first observation
         agent.storage.copy_obs_to_index(obs,0)
@@ -895,6 +910,7 @@ class AdversarialRunner(object):
 
             # Observe reward and next obs
             reset_random = self.is_dr and not plr_runtime_enabled
+            auto_reset_on_done = not (level_sampler and level_replay)
             _action = agent.process_action(action.cpu())
 
             if is_env:
@@ -903,11 +919,16 @@ class AdversarialRunner(object):
                 obs, reward, done, infos = self._run_nocturne_batched_step(
                     _action,
                     reset_random=reset_random,
+                    auto_reset_on_done=auto_reset_on_done,
                 )
                 if args.clip_reward:
                     reward = torch.clamp(reward, -args.clip_reward, args.clip_reward)
             else:
-                obs, reward, done, infos = self.venv.step_env(_action, reset_random=reset_random)
+                obs, reward, done, infos = self.venv.step_env(
+                    _action,
+                    reset_random=reset_random,
+                    auto_reset_on_done=auto_reset_on_done,
+                )
                 if args.clip_reward:
                     reward = torch.clamp(reward, -args.clip_reward, args.clip_reward)
 

@@ -201,15 +201,23 @@ class VecPreprocessImageWrapper(VecEnvWrapper):
 
 		return obs, rews, dones, infos
 
-	def step_env(self, actions, reset_random=False):
-		obs, rews, dones, infos = self.venv.step_env(actions, reset_random=reset_random)
+	def step_env(self, actions, reset_random=False, auto_reset_on_done=True):
+		obs, rews, dones, infos = self.venv.step_env(
+			actions,
+			reset_random=reset_random,
+			auto_reset_on_done=auto_reset_on_done,
+		)
 		return self._postprocess_step(obs, rews, dones, infos)
 
 	def step_prepare(self, action):
 		return self.venv.step_prepare(action)
 
-	def step_complete(self, model_outputs, reset_random=False):
-		obs, rews, dones, infos = self.venv.step_complete(model_outputs, reset_random=reset_random)
+	def step_complete(self, model_outputs, reset_random=False, auto_reset_on_done=True):
+		obs, rews, dones, infos = self.venv.step_complete(
+			model_outputs,
+			reset_random=reset_random,
+			auto_reset_on_done=auto_reset_on_done,
+		)
 		return self._postprocess_step(obs, rews, dones, infos)
 
 	def step_adversary(self, action):

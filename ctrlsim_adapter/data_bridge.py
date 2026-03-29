@@ -65,9 +65,45 @@ class DataBridge:
         self._preprocessed_files_cache: Optional[Dict[str, str]] = None
         self._preprocessed_indices_cache: Optional[Dict[str, int]] = None
         self._preproc_data_cache: OrderedDict[str, Dict] = OrderedDict()
+        self._gt_data_cache: OrderedDict[Tuple[str, str], Dict] = OrderedDict()
     
     def _ensure_preprocessed_files_cache(self):
         _preprocessed.ensure_preprocessed_files_cache(self)
+
+    def _get_cached_ground_truth(
+        self,
+        scenario_path: str,
+        scenario_filename: str,
+    ) -> Optional[Dict]:
+        """Return cached GT data for one scenario and refresh its LRU position."""
+        if self.preproc_cache_size <= 0:
+            return None
+
+        cache_key = (scenario_path, scenario_filename)
+        cached_data = self._gt_data_cache.get(cache_key)
+        if cached_data is None:
+            return None
+
+        self._gt_data_cache.move_to_end(cache_key)
+        return cached_data
+
+    def _update_ground_truth_cache(
+        self,
+        scenario_path: str,
+        scenario_filename: str,
+        gt_data_dict: Dict,
+    ) -> Dict:
+        """Store GT data in the LRU cache and return the cached object."""
+        if self.preproc_cache_size <= 0:
+            return gt_data_dict
+
+        cache_key = (scenario_path, scenario_filename)
+        if cache_key in self._gt_data_cache:
+            self._gt_data_cache.pop(cache_key)
+        self._gt_data_cache[cache_key] = gt_data_dict
+        if len(self._gt_data_cache) > self.preproc_cache_size:
+            self._gt_data_cache.popitem(last=False)
+        return gt_data_dict
     
     def get_ground_truth(
         self, 
@@ -87,7 +123,23 @@ class DataBridge:
                     [pos_x, pos_y, heading, speed, existence, goal_x, goal_y, length]
                 - type: one-hot
         """
-        return _ground_truth.get_ground_truth(self, scenario_path, scenario_filename)
+        cached_data = self._get_cached_ground_truth(
+            scenario_path,
+            scenario_filename,
+        )
+        if cached_data is not None:
+            return cached_data
+
+        gt_data_dict = _ground_truth.get_ground_truth(
+            self,
+            scenario_path,
+            scenario_filename,
+        )
+        return self._update_ground_truth_cache(
+            scenario_path,
+            scenario_filename,
+            gt_data_dict,
+        )
     
     def get_ground_truth_from_sim(
         self,
