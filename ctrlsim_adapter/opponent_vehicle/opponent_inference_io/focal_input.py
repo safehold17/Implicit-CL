@@ -17,6 +17,40 @@ from .prepare_inference_payload import (
 )
 
 
+def _format_value_range(values: np.ndarray) -> str:
+    """Return a compact min/max summary for logging."""
+    flat = np.asarray(values, dtype=np.float64).reshape(-1)
+    finite = flat[np.isfinite(flat)]
+    if finite.size == 0:
+        return "all_non_finite"
+    return f"min={finite.min():.3f}, max={finite.max():.3f}"
+
+
+def sanitize_index_array(
+    values: np.ndarray,
+    *,
+    field_name: str,
+    step_t: int,
+    min_value: int,
+    max_value: int,
+) -> np.ndarray:
+    """Clamp a discrete index array into the valid integer range."""
+    raw_values = np.asarray(values)
+    sanitized = np.nan_to_num(
+        raw_values,
+        nan=float(min_value),
+        posinf=float(max_value),
+        neginf=float(min_value),
+    )
+    sanitized = np.clip(sanitized, min_value, max_value).astype(np.int64, copy=False)
+    if not np.array_equal(raw_values, sanitized):
+        print(
+            f"[focal_input] sanitize[{field_name}] step={int(step_t)} "
+            f"{_format_value_range(raw_values)} -> {_format_value_range(sanitized)}"
+        )
+    return sanitized
+
+
 def slice_policy_window(
     policy: Any,
     t: int,
@@ -376,8 +410,21 @@ def build_step_shared_context(
     actions_buffer.fill(0)
     actions_buffer[: actions_src.shape[0]] = actions_src
     actions_discrete = adapter.dataset.discretize_actions(actions_buffer)
-    actions_values = actions_discrete[: actions_src.shape[0]]
-    adapter._pad_action_values_step = np.asarray(actions_discrete[actions_src.shape[0]]).copy()
+    action_dim = int(policy.action_dim)
+    actions_values = sanitize_index_array(
+        actions_discrete[: actions_src.shape[0]],
+        field_name="actions",
+        step_t=t,
+        min_value=0,
+        max_value=action_dim - 1,
+    )
+    adapter._pad_action_values_step = sanitize_index_array(
+        np.asarray(actions_discrete[actions_src.shape[0]]).copy(),
+        field_name="pad_actions",
+        step_t=t,
+        min_value=0,
+        max_value=action_dim - 1,
+    )
 
     rtgs = get_or_create_prepare_buffer(
         adapter=adapter,
@@ -397,8 +444,20 @@ def build_step_shared_context(
         rtgs_discrete.fill(0)
         rtgs_discrete[: rtgs.shape[0]] = rtgs
         rtgs_discrete_values = adapter.dataset.discretize_rtgs(rtgs_discrete)
-        rtgs_values = rtgs_discrete_values[: rtgs.shape[0]]
-        adapter._pad_rtg_values_step = np.asarray(rtgs_discrete_values[rtgs.shape[0]]).copy()
+        rtgs_values = sanitize_index_array(
+            rtgs_discrete_values[: rtgs.shape[0]],
+            field_name="rtgs",
+            step_t=t,
+            min_value=0,
+            max_value=int(policy.cfg_rl_waymo.rtg_discretization) - 1,
+        )
+        adapter._pad_rtg_values_step = sanitize_index_array(
+            np.asarray(rtgs_discrete_values[rtgs.shape[0]]).copy(),
+            field_name="pad_rtgs",
+            step_t=t,
+            min_value=0,
+            max_value=int(policy.cfg_rl_waymo.rtg_discretization) - 1,
+        )
     else:
         rtgs_values = rtgs
         adapter._pad_rtg_values_step = np.zeros(rtgs.shape[1:], dtype=rtgs.dtype)

@@ -6,6 +6,42 @@ from utils.layers import MLPLayer
 import torch.nn.functional as F 
 from modules.map_encoder import MapEncoder
 
+
+def _format_tensor_range(values: torch.Tensor) -> str:
+    """Return a compact finite min/max summary for logging."""
+    flat = values.detach().reshape(-1)
+    finite = flat[torch.isfinite(flat)]
+    if finite.numel() == 0:
+        return "all_non_finite"
+    finite_cpu = finite.to(dtype=torch.float32).cpu()
+    return f"min={float(finite_cpu.min()):.3f}, max={float(finite_cpu.max()):.3f}"
+
+
+def sanitize_embedding_indices(
+    values: torch.Tensor,
+    *,
+    field_name: str,
+    min_value: int,
+    max_value: int,
+    eval_mode: bool,
+) -> torch.Tensor:
+    """Clamp embedding indices into a valid integer range without failing."""
+    raw_values = values.detach()
+    sanitized = torch.nan_to_num(
+        values.to(dtype=torch.float32),
+        nan=float(min_value),
+        posinf=float(max_value),
+        neginf=float(min_value),
+    )
+    sanitized = sanitized.clamp(min=min_value, max=max_value).to(dtype=torch.long)
+    if not torch.equal(raw_values.to(dtype=torch.long), sanitized):
+        print(
+            f"[encoder] sanitize[{field_name}] eval={bool(eval_mode)} "
+            f"{_format_tensor_range(raw_values)} -> {_format_tensor_range(sanitized)}"
+        )
+    return sanitized
+
+
 class Encoder(nn.Module):
 
     def __init__(self, cfg):
@@ -96,6 +132,13 @@ class Encoder(nn.Module):
         else:
             rtgs = rtgs.reshape(batch_size, seq_len*self.cfg_rl_waymo.max_num_agents, self.cfg_model.num_reward_components)
 
+        actions = sanitize_embedding_indices(
+            actions,
+            field_name="actions",
+            min_value=0,
+            max_value=self.action_dim - 1,
+            eval_mode=eval,
+        )
         timestep_embeddings = self.embed_timestep(timesteps)
         agent_id_embeddings = self.embed_agent_id(agent_ids)
         state_embeddings = self.embed_state(states)
@@ -111,7 +154,7 @@ class Encoder(nn.Module):
         if self.cfg_model.encode_initial_state:
             initial_state_embeddings = state_embeddings[:, 0:self.cfg_rl_waymo.max_num_agents]
         
-        action_embeddings = self.embed_action(actions.long()) + timestep_embeddings + agent_id_embeddings
+        action_embeddings = self.embed_action(actions) + timestep_embeddings + agent_id_embeddings
         
         if self.cfg_model.decision_transformer:
             rtg_goal_embeddings = self.embed_rtg_goal(rtgs[:, :, 0:1])
@@ -119,9 +162,30 @@ class Encoder(nn.Module):
             rtg_road_embeddings = self.embed_rtg_road(rtgs[:, :, 2:3])
             rtg_embeddings = self.embed_rtg(torch.cat([rtg_goal_embeddings, rtg_veh_embeddings, rtg_road_embeddings], dim=-1)) + timestep_embeddings + agent_id_embeddings
         else:
-            rtg_goal_embeddings = self.embed_rtg_goal(rtgs[:, :, 0].long())
-            rtg_veh_embeddings = self.embed_rtg_veh(rtgs[:, :, 1].long())
-            rtg_road_embeddings = self.embed_rtg_road(rtgs[:, :, 2].long())
+            rtg_goal_idx = sanitize_embedding_indices(
+                rtgs[:, :, 0],
+                field_name="rtg_goal",
+                min_value=0,
+                max_value=self.cfg_rl_waymo.rtg_discretization - 1,
+                eval_mode=eval,
+            )
+            rtg_veh_idx = sanitize_embedding_indices(
+                rtgs[:, :, 1],
+                field_name="rtg_veh",
+                min_value=0,
+                max_value=self.cfg_rl_waymo.rtg_discretization - 1,
+                eval_mode=eval,
+            )
+            rtg_road_idx = sanitize_embedding_indices(
+                rtgs[:, :, 2],
+                field_name="rtg_road",
+                min_value=0,
+                max_value=self.cfg_rl_waymo.rtg_discretization - 1,
+                eval_mode=eval,
+            )
+            rtg_goal_embeddings = self.embed_rtg_goal(rtg_goal_idx)
+            rtg_veh_embeddings = self.embed_rtg_veh(rtg_veh_idx)
+            rtg_road_embeddings = self.embed_rtg_road(rtg_road_idx)
             rtg_embeddings = self.embed_rtg(torch.cat([rtg_goal_embeddings, rtg_veh_embeddings, rtg_road_embeddings], dim=-1)) + timestep_embeddings + agent_id_embeddings
 
         # zero out embeddings for missing timesteps
