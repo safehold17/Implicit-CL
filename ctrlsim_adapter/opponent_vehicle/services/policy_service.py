@@ -174,19 +174,27 @@ class OpponentPolicyService:
             self._load_checkpoint_cfg()
             self._validate_external_cfg_compatibility()
         model = _DummyModel(self.adapter._checkpoint_cfg)
+        action_dim = (
+            int(self.adapter.cfg.dataset.waymo.accel_discretization)
+            * int(self.adapter.cfg.dataset.waymo.steer_discretization)
+        )
 
         if self.adapter.per_vehicle_tilting is not None:
             tilt_dict = self._build_per_vehicle_tilt_dict(self.adapter.per_vehicle_tilting)
-            return PerVehicleAutoregressivePolicy(
+            policy = PerVehicleAutoregressivePolicy(
                 **self._build_policy_kwargs(model=model, tilt_dict=tilt_dict),
             )
+            policy.action_dim = action_dim
+            return policy
 
-        return AutoregressivePolicy(
+        policy = AutoregressivePolicy(
             **self._build_policy_kwargs(
                 model=model,
                 tilt_dict=self.adapter.current_tilt.to_dict(),
             ),
         )
+        policy.action_dim = action_dim
+        return policy
 
     def set_tilting(
         self,
