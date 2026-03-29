@@ -52,15 +52,17 @@ def _load_scenario_index(index_path: str) -> Tuple[List[str], Optional[str]]:
     return scenario_ids, source_dir
 
 
-def _find_degenerate_road_edge_segment(
+def _find_degenerate_road_geometry_issue(
     scenario_path: str,
     eps: float = 1e-12,
-) -> Optional[Tuple[int, int, Tuple[float, float], Tuple[float, float], float]]:
+) -> Optional[str]:
     """
-    Find the first degenerate road_edge segment in one scenario file.
+    Find the first malformed road geometry that can crash Nocturne.
 
-    A segment is considered degenerate when two adjacent geometry points are
-    identical (or near-identical within eps).
+    Cases currently treated as invalid:
+    - any non-stop-sign road with fewer than 2 geometry points
+    - any stop-sign road with no geometry points
+    - any road_edge segment whose adjacent points are identical (or nearly so)
     """
     with open(scenario_path, "r") as f:
         scenario_data = json.load(f)
@@ -71,10 +73,19 @@ def _find_degenerate_road_edge_segment(
 
     eps_sq = eps * eps
     for road_idx, road in enumerate(roads):
-        if not isinstance(road, dict) or road.get("type") != "road_edge":
+        if not isinstance(road, dict):
             continue
+        road_type = str(road.get("type"))
         geometry = road.get("geometry")
-        if not isinstance(geometry, list) or len(geometry) < 2:
+        if not isinstance(geometry, list):
+            continue
+        min_points = 1 if road_type == "stop_sign" else 2
+        if len(geometry) < min_points:
+            return (
+                f"Skip malformed road geometry (road[{road_idx}] type={road_type} "
+                f"has fewer than {min_points} points: {len(geometry)})"
+            )
+        if road_type != "road_edge":
             continue
 
         for seg_idx in range(len(geometry) - 1):
@@ -91,7 +102,11 @@ def _find_degenerate_road_edge_segment(
             ey = float(end["y"])
             len_sq = (ex - sx) ** 2 + (ey - sy) ** 2
             if len_sq <= eps_sq:
-                return road_idx, seg_idx, (sx, sy), (ex, ey), float(np.sqrt(len_sq))
+                return (
+                    f"Skip degenerate road_edge segment (road[{road_idx}] "
+                    f"seg[{seg_idx}] start={(sx, sy)} end={(ex, ey)} "
+                    f"len={float(np.sqrt(len_sq))})"
+                )
 
     return None
 
@@ -514,16 +529,12 @@ def _process_single_scenario(
             "vehicle_filtered": False,
         }
 
-    degenerate_segment = _find_degenerate_road_edge_segment(scenario_path)
-    if degenerate_segment is not None:
-        road_idx, seg_idx, start, end, seg_len = degenerate_segment
+    degenerate_geometry = _find_degenerate_road_geometry_issue(scenario_path)
+    if degenerate_geometry is not None:
         return {
-            "status": "degenerate_road_edge",
+            "status": "degenerate_road_geometry",
             "scenario_id": scenario_id,
-            "detail": (
-                f"Skip degenerate road_edge segment (road[{road_idx}] "
-                f"seg[{seg_idx}] start={start} end={end} len={seg_len})"
-            ),
+            "detail": degenerate_geometry,
             "warnings": [],
             "with_preproc": False,
             "vehicle_filtered": False,
@@ -787,7 +798,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         "scenarios_with_preproc": 0,
         "scenarios_filtered": 0,
         "close_goal_filtered_scenarios": 0,
-        "degenerate_road_edge_scenarios": 0,
+        "degenerate_road_geometry_scenarios": 0,
         "failed_scenarios": 0,
         "timeout_scenarios": 0,
         "worker_crash_scenarios": 0,
@@ -848,8 +859,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         detail = result.get("detail", "")
         if status == "ok":
             vehicle_map[scenario_id] = result["vehicle_map_item"]
-        elif status == "degenerate_road_edge":
-            stats["degenerate_road_edge_scenarios"] += 1
+        elif status == "degenerate_road_geometry":
+            stats["degenerate_road_geometry_scenarios"] += 1
             print(f"  {scenario_id}: {detail}")
         elif status == "close_goal_filtered":
             stats["close_goal_filtered_scenarios"] += 1
@@ -1105,7 +1116,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     print(f"Saved filtered scenario index to: {filtered_scenario_index_path}")
     print(f"\nStatistics:")
     print(f"  Total scenarios: {stats['total_scenarios']}")
-    print(f"  Degenerate-road-edge skipped scenarios: {stats['degenerate_road_edge_scenarios']}")
+    print(
+        "  Degenerate-road-geometry skipped scenarios: "
+        f"{stats['degenerate_road_geometry_scenarios']}"
+    )
     print(f"  Processed scenarios: {len(kept_scenario_ids)}")
     print(f"  Close-goal filtered scenarios: {stats['close_goal_filtered_scenarios']}")
     print(f"  Remaining scenarios after close-goal filter: {len(kept_scenario_ids)}")
