@@ -502,15 +502,17 @@ class Evaluator(object):
 
 					# Observe reward and next obs
 					action = action.cpu().numpy()
-					if not self.is_discrete_actions:
+					if env_name.startswith('Nocturne'):
 						action = agent.process_action(action)
-						if env_name.startswith('Nocturne'):
-							if external_teacher is None:
-								raise RuntimeError("Nocturne evaluation requires an ExternalTeacher.")
-							per_env_prepared = venv.step_prepare(action)
-							opponent_prepared, _ = split_prepared_pack_batch(per_env_prepared)
-							model_outputs = external_teacher.run_batched_forward(opponent_prepared)
-							obs, reward, done, infos = venv.step_complete(model_outputs, reset_random=True)
+						if external_teacher is None:
+							raise RuntimeError("Nocturne evaluation requires an ExternalTeacher.")
+						per_env_prepared = venv.step_prepare(action)
+						opponent_prepared, _ = split_prepared_pack_batch(per_env_prepared)
+						model_outputs = external_teacher.run_batched_forward(opponent_prepared)
+						obs, reward, done, infos = venv.step_complete(model_outputs, reset_random=True)
+					elif not self.is_discrete_actions:
+						action = agent.process_action(action)
+						obs, reward, done, infos = venv.step(action)
 					else:
 						obs, reward, done, infos = venv.step(action)
 
@@ -545,7 +547,7 @@ class Evaluator(object):
 					venv.render_to_screen()
 
 			if pbar:
-				pbar.close()	
+				pbar.close()
 	
 			env_returns[env_name] = returns
 			env_solved_episodes[env_name] = solved_episodes
@@ -577,6 +579,8 @@ def _collect_nocturne_required_args(flags, cli_args):
 		"scenario_data_dir",
 		"preprocess_dir",
 		"vehicle_map_path",
+		"student_accel_discretization",
+		"student_steer_discretization",
 		"student_num_neighbors",
 		"student_top_k_road",
 		"tilt_range",
@@ -631,6 +635,14 @@ def _get_poet_rose_env_names():
 	return env_names
 
 
+def _resolve_output_dir(base_path, output_path):
+	"""Resolve an output directory against the experiment base path."""
+	expanded_output_path = os.path.expandvars(os.path.expanduser(output_path))
+	if os.path.isabs(expanded_output_path):
+		return expanded_output_path
+	return os.path.join(base_path, expanded_output_path)
+
+
 if __name__ == '__main__':
 	os.environ["OMP_NUM_THREADS"] = "1"
 
@@ -651,6 +663,11 @@ if __name__ == '__main__':
 	# === Load checkpoint ===
 	# Load meta.json into flags object
 	base_path = os.path.expandvars(os.path.expanduser(args.base_path))
+	output_base_path = base_path
+	if args.prefix is None:
+		output_base_path = os.path.join(base_path, args.xpid)
+	result_path = _resolve_output_dir(output_base_path, args.result_path)
+	video_dir = os.path.join(output_base_path, 'videos')
 
 	xpids = [args.xpid]
 	if args.prefix is not None:
@@ -659,15 +676,17 @@ if __name__ == '__main__':
 		xpids = [x for x in all_xpids if filter_re.match(x)]
 
 	# Set up results management
-	os.makedirs(args.result_path, exist_ok=True)
+	os.makedirs(result_path, exist_ok=True)
+	if args.record_video:
+		os.makedirs(video_dir, exist_ok=True)
 	if args.prefix is not None:
 		result_fname = args.prefix
 	else:
 		result_fname = args.xpid
 	result_fname = f"{result_fname}-{args.model_tar}-{args.model_name}"
-	result_fpath = os.path.join(args.result_path, result_fname)
+	result_fpath = os.path.join(result_path, result_fname)
 	if os.path.exists(f'{result_fpath}.csv'):
-		result_fpath = os.path.join(args.result_path, f'{result_fname}_redo')
+		result_fpath = os.path.join(result_path, f'{result_fname}_redo')
 	result_fpath = f'{result_fpath}.csv'
 
 	csvout = open(result_fpath, 'w', newline='')
@@ -770,6 +789,7 @@ if __name__ == '__main__':
 					frame_stack=xpid_flags.frame_stack,
 					grayscale=xpid_flags.grayscale,
 					use_global_critic=xpid_flags.use_global_critic,
+					video_dir=video_dir,
 					**nocturne_required,
 					record_video=args.record_video)
 

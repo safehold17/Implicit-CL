@@ -861,7 +861,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
 
     def _sample_random_level(self) -> ScenarioLevel:
         """Randomly generate level."""
-        scenario_id = np.random.choice(self.scenario_ids)
+        scenario_id = self._level_seed_random_state.choice(self.scenario_ids)
         seed = self._sample_level_seed()
         runtime_mode = getattr(self, 'opponent_runtime_mode', 'normal')
 
