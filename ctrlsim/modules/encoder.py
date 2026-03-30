@@ -139,8 +139,22 @@ class Encoder(nn.Module):
             max_value=self.action_dim - 1,
             eval_mode=eval,
         )
-        timestep_embeddings = self.embed_timestep(timesteps)
-        agent_id_embeddings = self.embed_agent_id(agent_ids)
+        try:
+            timestep_embeddings = self.embed_timestep(timesteps)
+        except RuntimeError as exc:
+            print(
+                "[encoder] timestep_embedding_error "
+                f"exc={type(exc).__name__}: {exc}"
+            )
+            raise
+        try:
+            agent_id_embeddings = self.embed_agent_id(agent_ids)
+        except RuntimeError as exc:
+            print(
+                "[encoder] agent_id_embedding_error "
+                f"exc={type(exc).__name__}: {exc}"
+            )
+            raise
         state_embeddings = self.embed_state(states)
         goal_embeddings = self.embed_goal(goals)
         

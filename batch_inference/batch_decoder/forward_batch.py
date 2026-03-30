@@ -71,9 +71,16 @@ def forward_job_batch_impl(
         ]
 
     # first stage forward for RTG prediction
-    with torch.no_grad():
-        with teacher.model_forward_context():
-            preds = teacher.model(batched_data, eval=True)
+    try:
+        with torch.no_grad():
+            with teacher.model_forward_context():
+                preds = teacher.model(batched_data, eval=True)
+    except RuntimeError as exc:
+        print(
+            "[forward_batch] teacher_forward_error "
+            f"exc={type(exc).__name__}: {exc}"
+        )
+        raise
     rtg_logits = preds["rtg_preds"].float()
 
     # RTG decode to get RTG-aware prepared meta for the second stage forward 

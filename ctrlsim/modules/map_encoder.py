@@ -4,6 +4,7 @@ import torch.nn as nn
 from utils.train_utils import weight_init
 from utils.layers import MLPLayer
 
+
 class MapEncoder(nn.Module):
     def __init__(self, cfg):
         super(MapEncoder, self).__init__()
@@ -35,20 +36,26 @@ class MapEncoder(nn.Module):
         road_points = data['map'].road_points.float()
         road_types = data['map'].road_types.float()
 
-        batch_size = road_points.shape[0]
-        # [batch_size, num_polylines], [batch_size * num_polylines, num_points_per_polyline]
-        road_segment_mask, road_pts_mask = self.get_road_pts_mask(road_points)
-        road_pts_feats = self.road_pts_encoder(road_points[:, :, :, :self.cfg_model.map_attr]).view(batch_size*self.cfg_rl_waymo.max_num_road_polylines, self.cfg_rl_waymo.max_num_road_pts_per_polyline, -1).permute(1, 0, 2)
-        road_type_feats = self.road_type_encoder(road_types).unsqueeze(0).reshape(1, batch_size*self.cfg_rl_waymo.max_num_road_polylines, -1)
-        map_seeds = self.map_seeds.repeat(1, batch_size*self.cfg_rl_waymo.max_num_road_polylines, 1)
-        road_seg_emb = self.road_pts_attn_layer(query=map_seeds, key=road_pts_feats, value=road_pts_feats,
-                                                key_padding_mask=road_pts_mask)[0]
-        road_seg_emb = self.norm1(road_seg_emb)
-        road_seg_emb2 = road_seg_emb + self.map_feats(road_seg_emb)
-        road_seg_emb2 = self.norm2(road_seg_emb2)
-        road_seg_emb2 = torch.cat((road_seg_emb2, road_type_feats), dim=-1)
-        road_seg_emb2 = self.road_road_type_encoder(road_seg_emb2)
-        road_seg_emb = road_seg_emb2.view(1, batch_size, self.cfg_rl_waymo.max_num_road_polylines, -1)[0]
-        road_segment_mask = ~road_segment_mask 
-
-        return road_seg_emb, road_segment_mask
+        try:
+            batch_size = road_points.shape[0]
+            # [batch_size, num_polylines], [batch_size * num_polylines, num_points_per_polyline]
+            road_segment_mask, road_pts_mask = self.get_road_pts_mask(road_points)
+            road_pts_feats = self.road_pts_encoder(road_points[:, :, :, :self.cfg_model.map_attr]).view(batch_size*self.cfg_rl_waymo.max_num_road_polylines, self.cfg_rl_waymo.max_num_road_pts_per_polyline, -1).permute(1, 0, 2)
+            road_type_feats = self.road_type_encoder(road_types).unsqueeze(0).reshape(1, batch_size*self.cfg_rl_waymo.max_num_road_polylines, -1)
+            map_seeds = self.map_seeds.repeat(1, batch_size*self.cfg_rl_waymo.max_num_road_polylines, 1)
+            road_seg_emb = self.road_pts_attn_layer(query=map_seeds, key=road_pts_feats, value=road_pts_feats,
+                                                    key_padding_mask=road_pts_mask)[0]
+            road_seg_emb = self.norm1(road_seg_emb)
+            road_seg_emb2 = road_seg_emb + self.map_feats(road_seg_emb)
+            road_seg_emb2 = self.norm2(road_seg_emb2)
+            road_seg_emb2 = torch.cat((road_seg_emb2, road_type_feats), dim=-1)
+            road_seg_emb2 = self.road_road_type_encoder(road_seg_emb2)
+            road_seg_emb = road_seg_emb2.view(1, batch_size, self.cfg_rl_waymo.max_num_road_polylines, -1)[0]
+            road_segment_mask = ~road_segment_mask
+            return road_seg_emb, road_segment_mask
+        except RuntimeError as exc:
+            print(
+                "[map_encoder] map_forward_error "
+                f"exc={type(exc).__name__}: {exc}"
+            )
+            raise
