@@ -226,7 +226,6 @@ def decode_action_for_job_impl(
     return action_results
 
 
-@torch.no_grad()
 def decode_action_stage_batched_impl(
     teacher: Any,
     batched_data: Any,
@@ -234,31 +233,32 @@ def decode_action_stage_batched_impl(
     return_logits: bool = False,
     logits_job_indices: Sequence[int] = (),
 ):
-    with teacher.model_forward_context():
-        preds = teacher.model(batched_data, eval=True)
-    action_logits = preds["action_preds"].float()
+    with torch.inference_mode():
+        with teacher.model_forward_context():
+            preds = teacher.model(batched_data, eval=True)
+        action_logits = preds["action_preds"].float()
 
-    jobs: List[Dict[str, Any]] = batch_meta["jobs"]
-    action_results_by_job = decode_action_jobs_batched_impl(
-        teacher=teacher,
-        action_logits=action_logits,
-        decode_meta=batch_meta["decode_meta"]["action"],
-    )
-    job_count = len(jobs)
-    if len(action_results_by_job) != job_count:
-        raise ValueError("Action stage job/result count mismatch.")
-    if not return_logits:
-        return action_results_by_job
+        jobs: List[Dict[str, Any]] = batch_meta["jobs"]
+        action_results_by_job = decode_action_jobs_batched_impl(
+            teacher=teacher,
+            action_logits=action_logits,
+            decode_meta=batch_meta["decode_meta"]["action"],
+        )
+        job_count = len(jobs)
+        if len(action_results_by_job) != job_count:
+            raise ValueError("Action stage job/result count mismatch.")
+        if not return_logits:
+            return action_results_by_job
 
-    selected_logits_by_job = export_selected_action_logits_by_job_impl(
-        action_logits=action_logits,
-        decode_meta=batch_meta["decode_meta"]["action"],
-        selected_job_indices=logits_job_indices,
-    )
-    action_logits_by_job = [None] * job_count
-    for job_idx, logits in selected_logits_by_job.items():
-        action_logits_by_job[job_idx] = logits
+        selected_logits_by_job = export_selected_action_logits_by_job_impl(
+            action_logits=action_logits,
+            decode_meta=batch_meta["decode_meta"]["action"],
+            selected_job_indices=logits_job_indices,
+        )
+        action_logits_by_job = [None] * job_count
+        for job_idx, logits in selected_logits_by_job.items():
+            action_logits_by_job[job_idx] = logits
 
-    if len(action_logits_by_job) != job_count:
-        raise ValueError("Action-logit export job/result count mismatch.")
-    return action_results_by_job, action_logits_by_job
+        if len(action_logits_by_job) != job_count:
+            raise ValueError("Action-logit export job/result count mismatch.")
+        return action_results_by_job, action_logits_by_job

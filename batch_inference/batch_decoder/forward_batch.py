@@ -72,7 +72,7 @@ def forward_job_batch_impl(
 
     # first stage forward for RTG prediction
     try:
-        with torch.no_grad():
+        with torch.inference_mode():
             with teacher.model_forward_context():
                 preds = teacher.model(batched_data, eval=True)
     except RuntimeError as exc:

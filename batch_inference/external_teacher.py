@@ -243,21 +243,22 @@ class ExternalTeacher:
         Aggregate prepared inputs across environments, run batched inference pipeline,
         and scatter outputs back per environment.
         """
-        decoded_prepared = self._decode_prepared_batch(per_env_prepared)
-        try:
-            results: List[Optional[Dict[str, Any]]] = [None] * len(decoded_prepared)
-            focal_jobs = self._collect_focal_jobs(decoded_prepared, results)
+        with torch.inference_mode():
+            decoded_prepared = self._decode_prepared_batch(per_env_prepared)
+            try:
+                results: List[Optional[Dict[str, Any]]] = [None] * len(decoded_prepared)
+                focal_jobs = self._collect_focal_jobs(decoded_prepared, results)
 
-            if not focal_jobs:
-                self._fill_empty_ok_env_results(decoded_prepared, results)
-                return self._pack_outputs(results)
+                if not focal_jobs:
+                    self._fill_empty_ok_env_results(decoded_prepared, results)
+                    return self._pack_outputs(results)
 
-            job_outputs = self._forward_job_batch(focal_jobs)
-            env_outputs = self._aggregate_job_outputs_by_env(job_outputs, decoded_prepared, results)
-            return self._pack_outputs(env_outputs)
-        finally:
-            for prepared in decoded_prepared:
-                release_prepared_payload(prepared)
+                job_outputs = self._forward_job_batch(focal_jobs)
+                env_outputs = self._aggregate_job_outputs_by_env(job_outputs, decoded_prepared, results)
+                return self._pack_outputs(env_outputs)
+            finally:
+                for prepared in decoded_prepared:
+                    release_prepared_payload(prepared)
 
     def _resolve_inference_precision(self) -> Tuple[bool, Optional[torch.dtype]]:
         allowed = {"fp32", "amp_fp16", "amp_bf16"}
@@ -488,20 +489,19 @@ class ExternalTeacher:
             collate_numpy_buffers=self._collate_numpy_buffers,
         )
 
-    @torch.no_grad()
     def _decode_rtg_stage_batched(self, batched_data, batch_meta, decode_rtg_jobs_batched_fn):
-        with self.model_forward_context():
-            preds = self.model(batched_data, eval=True)
-        rtg_logits = preds["rtg_preds"].float()
-        rtg_results_by_job, processed_rtg_veh_ids_by_job = decode_rtg_jobs_batched_fn(
-            teacher=self,
-            batched_data=batched_data,
-            rtg_logits=rtg_logits,
-            decode_meta=batch_meta["decode_meta"]["rtg"],
-        )
-        return batched_data, rtg_results_by_job, processed_rtg_veh_ids_by_job
+        with torch.inference_mode():
+            with self.model_forward_context():
+                preds = self.model(batched_data, eval=True)
+            rtg_logits = preds["rtg_preds"].float()
+            rtg_results_by_job, processed_rtg_veh_ids_by_job = decode_rtg_jobs_batched_fn(
+                teacher=self,
+                batched_data=batched_data,
+                rtg_logits=rtg_logits,
+                decode_meta=batch_meta["decode_meta"]["rtg"],
+            )
+            return batched_data, rtg_results_by_job, processed_rtg_veh_ids_by_job
 
-    @torch.no_grad()
     def _decode_action_stage_batched(
         self,
         batched_data,
@@ -509,13 +509,14 @@ class ExternalTeacher:
         return_logits: bool = False,
         logits_job_indices=(),
     ):
-        return decode_action_stage_batched_impl(
-            teacher=self,
-            batched_data=batched_data,
-            batch_meta=batch_meta,
-            return_logits=return_logits,
-            logits_job_indices=logits_job_indices,
-        )
+        with torch.inference_mode():
+            return decode_action_stage_batched_impl(
+                teacher=self,
+                batched_data=batched_data,
+                batch_meta=batch_meta,
+                return_logits=return_logits,
+                logits_job_indices=logits_job_indices,
+            )
 
     def _forward_job_batch(self, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return forward_job_batch_impl(
@@ -530,83 +531,84 @@ class ExternalTeacher:
         opponent_prepared_batch: List[Optional[Dict[str, Any]]],
         ego_prepared_batch: List[Optional[Dict[str, Any]]],
     ) -> Tuple[List[Optional[Dict[str, Any]]], List[Optional[np.ndarray]]]:
-        decoded_opponent = self._decode_prepared_batch(opponent_prepared_batch)
-        decoded_ego = self._decode_prepared_batch(ego_prepared_batch)
-        try:
-            opponent_results: List[Optional[Dict[str, Any]]] = [None] * len(decoded_opponent)
-            ego_logits_by_env: List[Optional[np.ndarray]] = [None] * len(decoded_ego)
+        with torch.inference_mode():
+            decoded_opponent = self._decode_prepared_batch(opponent_prepared_batch)
+            decoded_ego = self._decode_prepared_batch(ego_prepared_batch)
+            try:
+                opponent_results: List[Optional[Dict[str, Any]]] = [None] * len(decoded_opponent)
+                ego_logits_by_env: List[Optional[np.ndarray]] = [None] * len(decoded_ego)
 
-            opponent_jobs = self._collect_focal_jobs(
-                decoded_opponent,
-                opponent_results,
-                job_type="opponent",
-                return_action_logits=False,
-            )
-            ego_jobs = self._collect_focal_jobs(
-                decoded_ego,
-                [None] * len(decoded_ego),
-                job_type="ego_ctrlsim",
-                return_action_logits=True,
-            )
-            combined_jobs = opponent_jobs + ego_jobs
-            if combined_jobs:
-                for predict_rtgs_mode in (False, True):
-                    bucket_jobs = [
-                        job
-                        for job in combined_jobs
-                        if bool(job["focal_batch"].get("predict_rtgs", True))
-                        == predict_rtgs_mode
-                    ]
-                    if not bucket_jobs:
-                        continue
-                    for job_output in self._forward_job_batch(bucket_jobs):
-                        job_type = str(job_output.get("job_type", "opponent"))
-                        env_idx = int(job_output["env_idx"])
-                        if job_type == "ego_ctrlsim":
-                            action_logits = job_output.get("action_logits")
-                            ego_logits_by_env[env_idx] = (
-                                action_logits.cpu().numpy()
-                                if action_logits is not None
-                                else None
-                            )
-                            if (
-                                opponent_results[env_idx] is None
-                                and decoded_opponent[env_idx] is not None
-                            ):
+                opponent_jobs = self._collect_focal_jobs(
+                    decoded_opponent,
+                    opponent_results,
+                    job_type="opponent",
+                    return_action_logits=False,
+                )
+                ego_jobs = self._collect_focal_jobs(
+                    decoded_ego,
+                    [None] * len(decoded_ego),
+                    job_type="ego_ctrlsim",
+                    return_action_logits=True,
+                )
+                combined_jobs = opponent_jobs + ego_jobs
+                if combined_jobs:
+                    for predict_rtgs_mode in (False, True):
+                        bucket_jobs = [
+                            job
+                            for job in combined_jobs
+                            if bool(job["focal_batch"].get("predict_rtgs", True))
+                            == predict_rtgs_mode
+                        ]
+                        if not bucket_jobs:
+                            continue
+                        for job_output in self._forward_job_batch(bucket_jobs):
+                            job_type = str(job_output.get("job_type", "opponent"))
+                            env_idx = int(job_output["env_idx"])
+                            if job_type == "ego_ctrlsim":
+                                action_logits = job_output.get("action_logits")
+                                ego_logits_by_env[env_idx] = (
+                                    action_logits.cpu().numpy()
+                                    if action_logits is not None
+                                    else None
+                                )
+                                if (
+                                    opponent_results[env_idx] is None
+                                    and decoded_opponent[env_idx] is not None
+                                ):
+                                    opponent_results[env_idx] = self._build_empty_env_result(
+                                        prepared=job_output["prepared"],
+                                        env_idx=env_idx,
+                                        status="ok",
+                                    )
+                                if opponent_results[env_idx] is not None:
+                                    opponent_results[env_idx]["ego_action_scale"] = float(
+                                        job_output.get("ego_action_scale", 1.0)
+                                    )
+                                continue
+
+                            if opponent_results[env_idx] is None:
                                 opponent_results[env_idx] = self._build_empty_env_result(
                                     prepared=job_output["prepared"],
                                     env_idx=env_idx,
                                     status="ok",
                                 )
-                            if opponent_results[env_idx] is not None:
-                                opponent_results[env_idx]["ego_action_scale"] = float(
-                                    job_output.get("ego_action_scale", 1.0)
-                                )
-                            continue
-
-                        if opponent_results[env_idx] is None:
-                            opponent_results[env_idx] = self._build_empty_env_result(
-                                prepared=job_output["prepared"],
-                                env_idx=env_idx,
-                                status="ok",
+                            opponent_results[env_idx]["action_results"].update(
+                                job_output["action_results"]
                             )
-                        opponent_results[env_idx]["action_results"].update(
-                            job_output["action_results"]
-                        )
-                        opponent_results[env_idx]["rtg_results"].update(
-                            job_output["rtg_results"]
-                        )
-                        opponent_results[env_idx]["processed_rtg_veh_ids"].extend(
-                            job_output["processed_rtg_veh_ids"]
-                        )
-                        scale = float(job_output.get("ego_action_scale", 1.0))
-                        if scale != 1.0:
-                            opponent_results[env_idx]["ego_action_scale"] = scale
+                            opponent_results[env_idx]["rtg_results"].update(
+                                job_output["rtg_results"]
+                            )
+                            opponent_results[env_idx]["processed_rtg_veh_ids"].extend(
+                                job_output["processed_rtg_veh_ids"]
+                            )
+                            scale = float(job_output.get("ego_action_scale", 1.0))
+                            if scale != 1.0:
+                                opponent_results[env_idx]["ego_action_scale"] = scale
 
-            self._fill_empty_ok_env_results(decoded_opponent, opponent_results)
-            return self._pack_outputs(opponent_results), ego_logits_by_env
-        finally:
-            for prepared in decoded_opponent:
-                release_prepared_payload(prepared)
-            for prepared in decoded_ego:
-                release_prepared_payload(prepared)
+                self._fill_empty_ok_env_results(decoded_opponent, opponent_results)
+                return self._pack_outputs(opponent_results), ego_logits_by_env
+            finally:
+                for prepared in decoded_opponent:
+                    release_prepared_payload(prepared)
+                for prepared in decoded_ego:
+                    release_prepared_payload(prepared)
