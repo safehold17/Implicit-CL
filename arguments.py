@@ -392,12 +392,12 @@ parser.add_argument(
 parser.add_argument(
     "--checkpoint_interval", 
     type=int, 
-    default=100,
+    default=5,
     help="Save model every this many updates.")
 parser.add_argument(
     "--archive_interval", 
     type=int, 
-    default=0,
+    default=5,
     help="Save an archived checkpoint every this many updates.")
 parser.add_argument(
     "--checkpoint_basis",
@@ -899,7 +899,7 @@ parser.add_argument(
 parser.add_argument(
     '--clearml_task',
     type=str,
-    default='train',
+    default='dcd-ctrlsim',
     help='ClearML task name.')
 parser.add_argument(
     '--clearml_dataset_project',

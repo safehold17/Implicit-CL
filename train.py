@@ -39,7 +39,6 @@ def _remap_clearml_dataset_paths(args, dataset_dir):
             continue
         setattr(args, key, os.path.join(dataset_dir, path))
 
-
 def init_clearml(args):
     """Initialize ClearML experiment tracking and resolve dataset paths.
 
@@ -313,9 +312,28 @@ def main(args, clearml_task=None):
         timer = timeit.default_timer
         initial_update_count = 0
         last_logged_update_at_restart = -1
-        checkpoint_path = os.path.expandvars(
-            os.path.expanduser("%s/%s/%s" % (log_dir, args.xpid, "model.tar"))
+        checkpoint_dir = os.path.expandvars(
+            os.path.expanduser("%s/%s" % (log_dir, args.xpid))
         )
+        latest_checkpoint_path = None
+        if os.path.isdir(checkpoint_dir):
+            checkpoint_candidates = []
+            for filename in os.listdir(checkpoint_dir):
+                if not filename.startswith('model_') or not filename.endswith('.tar'):
+                    continue
+                checkpoint_index_text = filename[len('model_'):-len('.tar')]
+                if checkpoint_index_text.isdigit():
+                    checkpoint_candidates.append(
+                        (
+                            int(checkpoint_index_text),
+                            os.path.join(checkpoint_dir, filename),
+                        )
+                    )
+            if checkpoint_candidates:
+                _, latest_checkpoint_path = max(
+                    checkpoint_candidates,
+                    key=lambda item: item[0],
+                )
         ## This is only used for the first iteration of finetuning
         if args.xpid_finetune:
             model_fname = f'{args.model_finetune}.tar'
@@ -326,21 +344,32 @@ def main(args, clearml_task=None):
         def checkpoint(index=None):
             if args.disable_checkpoint:
                 return
-            safe_checkpoint({'runner_state_dict': train_runner.state_dict()}, 
-                            checkpoint_path,
-                            index=index, 
-                            archive_interval=args.archive_interval)
+            if index is None:
+                return
+
+            checkpoint_path = os.path.join(checkpoint_dir, f'model_{index}.tar')
+            safe_checkpoint(
+                {'runner_state_dict': train_runner.state_dict()},
+                checkpoint_path,
+            )
             logging.info("Saved checkpoint to %s", checkpoint_path)
 
 
         # === Load checkpoint ===
-        if args.checkpoint and os.path.exists(checkpoint_path):
-            checkpoint_states = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
+        if args.checkpoint and latest_checkpoint_path is not None:
+            checkpoint_states = torch.load(
+                latest_checkpoint_path,
+                map_location=lambda storage, loc: storage,
+            )
             last_logged_update_at_restart = filewriter.latest_tick() # ticks are 0-indexed updates
             train_runner.load_state_dict(checkpoint_states['runner_state_dict'])
             initial_update_count = train_runner.num_updates
-            logging.info(f"Resuming preempted job after {initial_update_count} updates\n") # 0-indexed next update
-        elif args.xpid_finetune and not os.path.exists(checkpoint_path):
+            logging.info(
+                "Resuming preempted job from %s after %d updates\n",
+                latest_checkpoint_path,
+                initial_update_count,
+            ) # 0-indexed next update
+        elif args.xpid_finetune and latest_checkpoint_path is None:
             checkpoint_states = torch.load(base_checkpoint_path)
             state_dict = checkpoint_states['runner_state_dict']
             agent_state_dict = state_dict.get('agent_state_dict')
