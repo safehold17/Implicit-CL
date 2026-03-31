@@ -118,16 +118,12 @@ def reset(
             if speed <= static_speed_threshold:
                 pos = veh.getPosition()
                 velocity = veh.velocity()
-                gt_state = gt_traj_data[0]
                 adapter._constant_state_vehicle_ids.add(veh_id)
                 adapter._constant_state_by_id[veh_id] = {
                     "position": {"x": float(pos.x), "y": float(pos.y)},
                     "velocity": {"x": float(velocity.x), "y": float(velocity.y)},
                     "heading": float(veh.getHeading()),
                     "existence": 1 if sim_position_exists(pos.x, pos.y) else 0,
-                    "gt_position": {"x": float(gt_state[0]), "y": float(gt_state[1])},
-                    "gt_heading": float(gt_state[2]),
-                    "gt_speed": float(gt_state[3]),
                 }
         if veh_id in adapter._vehicles_to_control_set:
             pos = veh.getPosition()

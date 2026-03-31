@@ -12,11 +12,7 @@ from typing import Any, Dict, List
 from utils.sim import compute_reward
 
 from .existence import resolve_vehicle_exists
-from .state_helpers import (
-    append_gt_state_for_step,
-    get_sim_state_entries,
-    get_state_update_vehicle_ids,
-)
+from .state_helpers import get_sim_state_entries, get_state_update_vehicle_ids
 
 
 def update_vehicle_data_dict(
@@ -63,15 +59,6 @@ def update_vehicle_data_dict(
             adapter._constant_state_by_id.get(veh_id)
             if (not is_controlled and veh_id in adapter._constant_state_vehicle_ids)
             else None
-        )
-
-        append_gt_state_for_step(
-            veh_data=veh_data,
-            gt_traj_data=gt_traj_data,
-            t=t,
-            steps=adapter.steps,
-            dt=adapter.dt,
-            constant_state=constant_state,
         )
 
         pos, pos_entry, velocity_entry, heading = get_sim_state_entries(

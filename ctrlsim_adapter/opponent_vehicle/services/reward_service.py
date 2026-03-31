@@ -46,8 +46,6 @@ class OpponentRewardService:
                 continue
             if not veh_data.get("position"):
                 continue
-            if not veh_data.get("gt_position"):
-                continue
             if not veh_data.get("existence"):
                 continue
             context_vehicle_ids.append(veh_id)
@@ -70,23 +68,6 @@ class OpponentRewardService:
             ],
             dtype=np.float32,
         )[:, np.newaxis, :]
-
-    @staticmethod
-    def _build_xy(
-        veh_data_list: List[Dict],
-        t: int,
-        pos_key: str,
-    ) -> np.ndarray:
-        return np.asarray(
-            [
-                [
-                    OpponentRewardService._get_step_or_last(veh_data[pos_key], t)["x"],
-                    OpponentRewardService._get_step_or_last(veh_data[pos_key], t)["y"],
-                ]
-                for veh_data in veh_data_list
-            ],
-            dtype=np.float32,
-        )
 
     def prepare_road_edge_cache(self) -> None:
         adapter = self.adapter
@@ -189,14 +170,12 @@ class OpponentRewardService:
         all_xy_exist = self._build_xy_exist(context_data_list, t, "position")
         all_positions = all_xy_exist[:, 0, :2]
         all_existence = all_xy_exist[:, 0, 2]
-        all_gt_positions = self._build_xy(context_data_list, t, "gt_position")
 
         target_all_indices = np.asarray(
             [context_idx_map[veh_id] for veh_id in target_vehicle_ids],
             dtype=np.int64,
         )
         target_positions = all_positions[target_all_indices]
-        target_gt_positions = all_gt_positions[target_all_indices]
         target_existence = all_existence[target_all_indices]
 
         veh_veh_dist_rewards = self._compute_nearest_dist_to_all(
@@ -206,18 +185,10 @@ class OpponentRewardService:
             target_existence=target_existence,
             target_all_indices=target_all_indices,
         )
-        veh_veh_dist_rewards_gt = self._compute_nearest_dist_to_all(
-            target_positions=target_gt_positions,
-            all_positions=all_gt_positions,
-            all_existence=all_existence,
-            target_existence=target_existence,
-            target_all_indices=target_all_indices,
-        )
 
         for idx, veh_id in enumerate(target_vehicle_ids):
             veh_data = vehicle_data_dict[veh_id]
             veh_data["nearest_dist"].append(float(veh_veh_dist_rewards[idx, 0]))
-            veh_data["gt_nearest_dist"].append(float(veh_veh_dist_rewards_gt[idx, 0]))
 
         return vehicle_data_dict
 
@@ -263,7 +234,6 @@ class OpponentRewardService:
         all_xy_exist = self._build_xy_exist(context_data_list, t, "position")
         all_positions = all_xy_exist[:, 0, :2]
         all_existence = all_xy_exist[:, 0, 2]
-        all_gt_positions = self._build_xy(context_data_list, t, "gt_position")
 
         cfg_dataset = adapter.cfg.dataset.waymo
         dense_template = np.zeros(
@@ -271,12 +241,10 @@ class OpponentRewardService:
             dtype=np.float32,
         )
         nearest_dist_by_context_idx: Dict[int, float] = {}
-        gt_nearest_dist_by_context_idx: Dict[int, float] = {}
         dense_rewards_by_context_idx: Dict[int, np.ndarray] = {}
 
         if target_vehicle_ids:
             target_positions = all_positions[target_indices]
-            target_gt_positions = all_gt_positions[target_indices]
             target_existence = all_existence[target_indices]
 
             veh_edge_dist_rewards = np.zeros(
@@ -314,25 +282,12 @@ class OpponentRewardService:
                 target_existence=target_existence,
                 target_all_indices=target_indices,
             )
-            veh_veh_dist_rewards_gt = self._compute_nearest_dist_to_all(
-                target_positions=target_gt_positions,
-                all_positions=all_gt_positions,
-                all_existence=all_existence,
-                target_existence=target_existence,
-                target_all_indices=target_indices,
-            )
 
             max_veh_veh_distance = cfg_dataset.max_veh_veh_distance
             nearest_dist_values = veh_veh_dist_rewards[:, 0] * max_veh_veh_distance
-            gt_nearest_dist_values = (
-                veh_veh_dist_rewards_gt[:, 0] * max_veh_veh_distance
-            )
             for local_idx, context_idx in enumerate(target_indices):
                 nearest_dist_by_context_idx[int(context_idx)] = float(
                     nearest_dist_values[local_idx]
-                )
-                gt_nearest_dist_by_context_idx[int(context_idx)] = float(
-                    gt_nearest_dist_values[local_idx]
                 )
 
             veh_veh_dist_rewards_norm = np.clip(
@@ -391,9 +346,6 @@ class OpponentRewardService:
             veh_data = vehicle_data_dict[veh_id]
             veh_data["nearest_dist"].append(
                 nearest_dist_by_context_idx.get(context_idx, 0.0)
-            )
-            veh_data["gt_nearest_dist"].append(
-                gt_nearest_dist_by_context_idx.get(context_idx, 0.0)
             )
             veh_data["dense_reward"].append(
                 dense_rewards_by_context_idx.get(context_idx, dense_template.copy())

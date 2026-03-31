@@ -70,31 +70,6 @@ def store_next_action(
     actions[veh_id] = action
 
 
-def append_gt_state_for_step(
-    veh_data: Dict[str, Any],
-    gt_traj_data: np.ndarray,
-    t: int,
-    steps: int,
-    dt: float,
-    constant_state: Optional[Dict[str, Any]],
-) -> None:
-    if constant_state is not None:
-        veh_data["gt_position"].append(constant_state["gt_position"].copy())
-        veh_data["gt_heading"].append(constant_state["gt_heading"])
-        veh_data["gt_speed"].append(constant_state["gt_speed"])
-        veh_data["gt_acceleration"].append(0.0)
-        return
-
-    veh_data["gt_position"].append({"x": gt_traj_data[t, 0], "y": gt_traj_data[t, 1]})
-    veh_data["gt_heading"].append(gt_traj_data[t, 2])
-    veh_data["gt_speed"].append(gt_traj_data[t, 3])
-    if t > 0 and t < steps - 1:
-        gt_accel = (gt_traj_data[t + 1, 3] - gt_traj_data[t - 1, 3]) / (2 * dt)
-        veh_data["gt_acceleration"].append(gt_accel)
-    else:
-        veh_data["gt_acceleration"].append(0)
-
-
 def get_sim_state_entries(
     veh: Any,
     constant_state: Optional[Dict[str, Any]],
@@ -115,4 +90,3 @@ def get_sim_state_entries(
         {"x": velocity.x, "y": velocity.y},
         veh.getHeading(),
     )
-

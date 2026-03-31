@@ -332,11 +332,6 @@ class OpponentStateService:
         goal_velocity_x = goal_speed * np.cos(goal_heading)
         goal_velocity_y = goal_speed * np.sin(goal_heading)
         return {
-            "gt_position": [],
-            "gt_speed": [],
-            "gt_heading": [],
-            "gt_acceleration": [],
-            "gt_nearest_dist": [],
             "position": [],
             "velocity": [],
             "heading": [],
