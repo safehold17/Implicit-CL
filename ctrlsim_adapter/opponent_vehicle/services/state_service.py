@@ -178,7 +178,7 @@ class OpponentStateService:
         self,
         t: int,
         vehicles: List,
-        controlled_actions: Dict[int, Tuple[float, float]],
+        applied_actions: Dict[int, Tuple[float, float]],
     ):
         """
         记录所有车辆的动作（包括非控车辆使用 ground truth）
@@ -192,13 +192,13 @@ class OpponentStateService:
         t: current time step.
         vehicles: 所有车辆列表
         vehicles: list of all vehicles.
-        controlled_actions: 被控车辆的动作字典
-        controlled_actions: action dict for controlled vehicles.
+        applied_actions: 当前 step 已应用的动作字典
+        applied_actions: action dict for vehicles whose actions were already applied this step.
         """
         for veh in vehicles:
             veh_id = veh.getID()
-            if veh_id in controlled_actions:
-                action = controlled_actions[veh_id]
+            if veh_id in applied_actions:
+                action = applied_actions[veh_id]
             elif veh_id == self.adapter._ego_id:
                 continue
             else:

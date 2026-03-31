@@ -271,12 +271,12 @@ class NocturneCtrlSimRuntime:
 
         ego_id = env.ego_vehicle.getID() if env.ego_vehicle else None
         controlled_ids = set(opponent_actions.keys())
-        controlled_actions_for_history = dict(opponent_actions)
+        applied_actions_for_history = dict(opponent_actions)
         if ego_id is not None:
             controlled_ids.add(ego_id)
             ego_action = getattr(env, "_last_ego_student_action", None)
             if ego_action is not None:
-                controlled_actions_for_history[ego_id] = ego_action
+                applied_actions_for_history[ego_id] = ego_action
 
         for veh in env.vehicles:
             veh_id = veh.getID()
@@ -285,11 +285,12 @@ class NocturneCtrlSimRuntime:
             gt_action = get_gt_action(env, veh_id, env.current_step - 1, veh)
             if gt_action is not None:
                 env.opponent.apply_action(veh, gt_action)
+                applied_actions_for_history[veh_id] = gt_action
 
         env.opponent.record_all_actions(
             env.current_step - 1,
             env.vehicles,
-            controlled_actions_for_history,
+            applied_actions_for_history,
         )
 
         if hasattr(env.opponent, "cache_last_valid_positions"):

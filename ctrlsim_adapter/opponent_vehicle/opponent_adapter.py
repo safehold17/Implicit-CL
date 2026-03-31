@@ -364,13 +364,13 @@ class CtrlSimOpponentAdapter:
         self,
         t: int,
         vehicles: List,
-        controlled_actions: Dict[int, Tuple[float, float]],
+        applied_actions: Dict[int, Tuple[float, float]],
     ):
         self._ensure_services()
         return self._state_service.record_all_actions(
             t=t,
             vehicles=vehicles,
-            controlled_actions=controlled_actions,
+            applied_actions=applied_actions,
         )
 
     def _get_gt_action(self, veh_id: int, t: int, veh=None):
