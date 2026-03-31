@@ -28,7 +28,7 @@
     "use_plr": [true],
     "level_replay_prob": [0.9],
     "level_replay_rho": [1.0],
-    "level_replay_seed_buffer_size": [4000],
+    "level_replay_seed_buffer_size": [9600],
     "level_replay_strategy": ["value_l1"],
     "level_replay_score_transform": ["rank"],
     "level_replay_temperature": [0.3],
@@ -48,7 +48,7 @@
     "tilt_range": [[-25, 25]],
 
     "__note5__": ["warmup parameters"],
-    "warm_up_level_replay_seed_buffer_size": [4000],
+    "warm_up_level_replay_seed_buffer_size": [9600],
     "warmup_opponent_disable_ratio": [0.0],
     "warmup_opponent_replay_ratio": [0.1],
 
@@ -56,8 +56,10 @@
     "verbose": [false],
     "test_env_names": [""],
     "log_plr_buffer_stats": [true],
-    "screenshot_interval": [5],
+    "screenshot_interval": [5000],
     "log_interval": [1],
+    "checkpoint_interval": [100],
+    "archive_interval": [100],
 
     "__note7__": ["inference parameters"],
     "sparse_inference_action_repeat": [true],
@@ -65,9 +67,12 @@
     "action_repeat_frequency": [2],
 
     "__note8__": ["KL loss parameters"],
-    "kl_loss_coef": [0.2],
     "use_ego_ctrlsim_kl_loss": [false],
+    "ego_ctrlsim_kl_schedule": ["constant"],
+    "kl_loss_coef": [0.2],
     "kl_loss_computation_frequency": [2],
+    "ego_ctrlsim_kl_init_coef" : [0.5],
+    "ego_ctrlsim_kl_min_coef": [0.0],
 
     "__note9__": ["dataset parameters"],
     "scenario_index_path": ["preparation_file/scenarios_index_filtered_train.json"],
@@ -78,6 +83,7 @@
     "log_dir": ["~/logs/dcd"],
 
     "__note10__": ["clearml"],
-    "use_clearml": ["true"]
+    "use_clearml": ["true"],
+    "clearml_task": ["dcd-ctrlsim"]
   }
 }
