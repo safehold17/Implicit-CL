@@ -180,6 +180,7 @@ def _should_skip_opponent_inference(
     if t < adapter.history_steps - 1:
         warmup_actions = build_warmup_gt_actions(adapter, t)
         set_pending_sparse_actions(adapter, step_t=t, actions=warmup_actions)
+        return True
 
     is_sparse_step = adapter.sparse_inference.is_sparse_step(
         t=t,

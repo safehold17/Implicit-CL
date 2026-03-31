@@ -92,9 +92,6 @@ def apply_predictions(
         veh_data["next_acceleration"] = 0.0
         veh_data["next_steering"] = 0.0
 
-    if step_t < adapter.history_steps - 1:
-        consume_pending_sparse_actions(adapter, step_t=step_t)
-
     actions: Dict[int, Tuple[float, float]] = {}
     for veh_id in get_step_controlled_ids(adapter):
         veh_data = require_vehicle_data(
@@ -103,11 +100,6 @@ def apply_predictions(
             "controlled_vehicle_ids_step",
             step_t,
         )
-        if step_t < adapter.history_steps - 1:
-            veh = adapter._last_vehicle_by_id.get(veh_id)
-            actions[veh_id] = adapter._get_gt_action(veh_id, step_t, veh)
-            continue
-
         if not veh_data["existence"][-1]:
             veh = adapter._last_vehicle_by_id.get(veh_id)
             if veh is not None:
