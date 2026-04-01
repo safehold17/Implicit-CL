@@ -508,6 +508,7 @@ class ExternalTeacher:
         batch_meta,
         return_logits: bool = False,
         logits_job_indices=(),
+        cached_scene_enc=None,
     ):
         with torch.inference_mode():
             return decode_action_stage_batched_impl(
@@ -516,6 +517,7 @@ class ExternalTeacher:
                 batch_meta=batch_meta,
                 return_logits=return_logits,
                 logits_job_indices=logits_job_indices,
+                cached_scene_enc=cached_scene_enc,
             )
 
     def _forward_job_batch(self, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

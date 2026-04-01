@@ -38,13 +38,34 @@ class CtRLSim(pl.LightningModule):
             print("Resampling real data indices")
 
 
-    def forward(self, data, eval=False):
+    def forward(self, data, eval=False, return_enc=False):
         scene_enc = self.encoder(data, eval)
         pred = self.decoder(data, scene_enc, eval)
+        if return_enc:
+            return pred, scene_enc
+        return pred
 
-        return pred 
+    def forward_with_new_rtgs(self, data, scene_enc, eval=False):
+        """
+        Decode actions using updated RTGs without re-running the expensive encoder.
 
-    
+        The map encoder and transformer encoder outputs (encoder_embeddings,
+        src_key_padding_mask) are invariant between the RTG-prediction pass and
+        the action-prediction pass. Only the RTG token embeddings change.
+        This reuses cached state/action embeddings and scene context, rebuilding
+        only the RTG embeddings before running the decoder.
+
+        Args:
+            data: MotionData with data['agent'].rtgs updated in-place by RTG decode.
+            scene_enc: dict returned by a prior encoder.forward() call.
+            eval: whether in eval mode.
+
+        Returns:
+            preds dict from the decoder (same structure as forward).
+        """
+        updated_enc = self.encoder.forward_with_new_rtgs(data, eval, scene_enc)
+        return self.decoder(data, updated_enc, eval)
+
     def compute_loss(self, data, preds):
         loss_dict = {}
         if self.cfg_model.trajeglish:
