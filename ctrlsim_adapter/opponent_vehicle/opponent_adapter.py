@@ -169,7 +169,7 @@ class CtrlSimOpponentAdapter:
         self._opponent_vehicle_exits: Dict[int, bool] = {}
         self._opponent_last_valid_pos: Dict[int, Tuple[float, float]] = {}
         self._opponent_goal_hold_until: Dict[int, Optional[int]] = {}
-        self._goal_pos_tolerance: float = 1.0
+        self._goal_pos_tolerance: float = 2.0
         self._goal_hold_steps: int = 5
         self._all_vehicle_ids: List[int] = []
         self._controlled_vehicle_ids_present: List[int] = []

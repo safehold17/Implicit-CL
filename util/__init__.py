@@ -63,10 +63,7 @@ def init(module, weight_init, bias_init, gain=1):
 
 def safe_checkpoint(state_dict, path, index=None, archive_interval=None):
     filename, ext = os.path.splitext(path)
-    path_tmp = f'{filename}_tmp{ext}'
-    torch.save(state_dict, path_tmp)
-
-    os.replace(path_tmp, path)
+    torch.save(state_dict, path)
 
     if index is not None and archive_interval is not None and archive_interval > 0:
         if index % archive_interval == 0:

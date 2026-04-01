@@ -230,10 +230,10 @@ def compute_student_reward(env) -> float:
 
     scalar_reward = (
             position_reward_term
-            + pos_shaped_term          # default once reward
-            + approaching_goal_term
+            + pos_shaped_term          # not using
+            + approaching_goal_term    # not using
             + heading_target_term      # not using
-            + heading_shaped_term      # not using
+            + heading_shaped_term
             + speed_target_term        # not using
             + speed_shaped_term        # not using
             + veh_veh_shaped_term      # not using
