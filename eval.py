@@ -9,8 +9,6 @@ import os
 import csv
 import json
 import argparse
-import fnmatch
-import re
 from collections import defaultdict
 
 import numpy as np
@@ -35,6 +33,11 @@ from envs.nocturne_ctrlsim.runtime import split_prepared_pack_batch
 from envs.wrappers import VecMonitor, VecPreprocessImageWrapper, ParallelAdversarialVecEnv, \
 	MultiGridFullyObsWrapper, VecFrameStack, CarRacingWrapper
 from util import DotDict, str2bool, make_agent, create_parallel_env, is_discrete_actions, save_images
+from util.eval_helper import (
+	build_eval_csv_headers,
+	build_eval_csv_row,
+	set_eval_worker_seeds,
+)
 from arguments import parser
 from util import ignore_warning
 ignore_warning.configure_subprocess_env()
@@ -44,9 +47,7 @@ Example usage:
 
 python -m eval \
 --env_name=MultiGrid-SixteenRooms-v0 \
---xpid=<xpid> \
---base_path="~/logs/dcd" \
---result_path="eval_results/"
+--base_path="~/logs/dcd/latest" \
 --verbose
 """
 def parse_args():
@@ -56,17 +57,17 @@ def parse_args():
 		'--base_path',
 		type=str,
 		default='~/logs/dcd',
-		help='Base path to experiment results directories.')
+		help='Directory containing model checkpoint and meta.json.')
 	parser.add_argument(
 		'--xpid',
 		type=str,
 		default='latest',
-		help='Experiment ID (result directory name) for evaluation.')
+		help='Deprecated. Ignored by eval.py.')
 	parser.add_argument(
 		'--prefix',
 		type=str,
 		default=None,
-		help='Experiment ID prefix for evaluation (evaluate all matches).'
+		help='Deprecated. Ignored by eval.py.'
 	)
 	parser.add_argument(
 		'--env_names',
@@ -76,8 +77,8 @@ def parse_args():
 	parser.add_argument(
 		'--result_path',
 		type=str,
-		default='eval_results/',
-		help='Relative path to evaluation results directory.')
+		default='.',
+		help='Output directory for evaluation results, relative to base_path.')
 	parser.add_argument(
 		'--benchmark',
 		type=str,
@@ -274,7 +275,8 @@ class Evaluator(object):
 
 			if record_video:
 				from gym.wrappers.monitor import Monitor
-				env = Monitor(env, "videos/", force=True)
+				video_dir = kwargs.get('video_dir', 'videos/')
+				env = Monitor(env, video_dir, force=True)
 				print('Recording video!', flush=True)
 
 		if is_nocturne:
@@ -398,6 +400,8 @@ class Evaluator(object):
 		self.num_processes = num_processes
 		self.device = device
 		self.venv = {env_name:None for env_name in env_names}
+		eval_seed = kwargs.get('seed')
+		singleton_env = bool(kwargs.get('singleton_env', False))
 
 		for env_name in env_names:
 			make_fn = [
@@ -411,6 +415,12 @@ class Evaluator(object):
 			]
 			venv = ParallelAdversarialVecEnv(make_fn, adversary=False, is_eval=True)
 			venv = Evaluator.wrap_venv(venv, env_name, device=device)
+			set_eval_worker_seeds(
+				venv=venv,
+				seed=eval_seed,
+				num_processes=self.num_processes,
+				singleton_env=singleton_env,
+			)
 			self.venv[env_name] = venv
 
 		self.is_discrete_actions = is_discrete_actions(self.venv[env_names[0]])
@@ -664,26 +674,14 @@ if __name__ == '__main__':
 	# Load meta.json into flags object
 	base_path = os.path.expandvars(os.path.expanduser(args.base_path))
 	output_base_path = base_path
-	if args.prefix is None:
-		output_base_path = os.path.join(base_path, args.xpid)
 	result_path = _resolve_output_dir(output_base_path, args.result_path)
-	video_dir = os.path.join(output_base_path, 'videos')
-
-	xpids = [args.xpid]
-	if args.prefix is not None:
-		all_xpids = fnmatch.filter(os.listdir(base_path), f"{args.prefix}*")
-		filter_re = re.compile('.*_[0-9]*$')
-		xpids = [x for x in all_xpids if filter_re.match(x)]
+	video_dir = output_base_path
 
 	# Set up results management
 	os.makedirs(result_path, exist_ok=True)
 	if args.record_video:
 		os.makedirs(video_dir, exist_ok=True)
-	if args.prefix is not None:
-		result_fname = args.prefix
-	else:
-		result_fname = args.xpid
-	result_fname = f"{result_fname}-{args.model_tar}-{args.model_name}"
+	result_fname = f"eval-{args.model_tar}-{args.model_name}"
 	result_fpath = os.path.join(result_path, result_fname)
 	if os.path.exists(f'{result_fpath}.csv'):
 		result_fpath = os.path.join(result_path, f'{result_fname}_redo')
@@ -720,33 +718,29 @@ if __name__ == '__main__':
 		args.num_processes = 1
 
 	num_seeds = 0
-	for xpid in xpids:
-		if args.max_seeds is not None and num_seeds >= args.max_seeds:
-			break
+	meta_json_path = os.path.join(base_path, 'meta.json')
+	model_tar = f'{args.model_tar}.tar'
+	checkpoint_path = os.path.join(base_path, model_tar)
 
-		xpid_dir = os.path.join(base_path, xpid)
-		meta_json_path = os.path.join(xpid_dir, 'meta.json')
-
-		model_tar = f'{args.model_tar}.tar'
-		checkpoint_path = os.path.join(xpid_dir, model_tar)
-
-		if os.path.exists(checkpoint_path):
-			meta_json_file = open(meta_json_path)       
+	if os.path.exists(checkpoint_path):
+		with open(meta_json_path) as meta_json_file:
 			xpid_flags = DotDict(json.load(meta_json_file)['args'])
-			xpid_flags_meta = DotDict(dict(xpid_flags))
+		xpid_flags_meta = DotDict(dict(xpid_flags))
 
-			nocturne_required = _collect_nocturne_required_args(xpid_flags_meta, args)
-			make_fn = [lambda: Evaluator._make_env(env_names[0], **nocturne_required)]
-			dummy_venv = ParallelAdversarialVecEnv(make_fn, adversary=False, is_eval=True)
-			dummy_venv = Evaluator.wrap_venv(dummy_venv, env_name=env_names[0], device=device)
+		nocturne_required = _collect_nocturne_required_args(xpid_flags_meta, args)
+		make_fn = [lambda: Evaluator._make_env(env_names[0], **nocturne_required)]
+		dummy_venv = ParallelAdversarialVecEnv(make_fn, adversary=False, is_eval=True)
+		dummy_venv = Evaluator.wrap_venv(dummy_venv, env_name=env_names[0], device=device)
 
-			# Load the agent
-			agent = make_agent(name='agent', env=dummy_venv, args=xpid_flags, device=device)
+		# Load the agent
+		agent = make_agent(name='agent', env=dummy_venv, args=xpid_flags, device=device)
 
-			try:
-				checkpoint = torch.load(checkpoint_path, map_location='cpu')
-			except:
-				continue
+		try:
+			checkpoint = torch.load(checkpoint_path, map_location='cpu')
+		except:
+			checkpoint = None
+
+		if checkpoint is not None:
 			model_name = args.model_name
 
 			if 'runner_state_dict' in checkpoint:
@@ -754,7 +748,7 @@ if __name__ == '__main__':
 			else:
 				agent.algo.actor_critic.load_state_dict(checkpoint)
 
-			num_seeds += 1
+			num_seeds = 1
 
 			external_teacher = None
 			if any(name.startswith("Nocturne") for name in env_names):
@@ -783,18 +777,20 @@ if __name__ == '__main__':
 				xpid_flags.update({"use_skip": False})
 				nocturne_required = _collect_nocturne_required_args(xpid_flags_meta, args)
 
-				evaluator = Evaluator(env_names_, 
-					num_processes=args.num_processes, 
-					num_episodes=args.num_episodes, 
+				evaluator = Evaluator(env_names_,
+					num_processes=args.num_processes,
+					num_episodes=args.num_episodes,
 					frame_stack=xpid_flags.frame_stack,
 					grayscale=xpid_flags.grayscale,
 					use_global_critic=xpid_flags.use_global_critic,
 					video_dir=video_dir,
+					seed=args.seed,
+					singleton_env=args.singleton_env,
 					**nocturne_required,
 					record_video=args.record_video)
 
-				stats = evaluator.evaluate(agent, 
-					deterministic=args.deterministic, 
+				stats = evaluator.evaluate(agent,
+					deterministic=args.deterministic,
 					show_progress=args.verbose,
 					render=args.render,
 					accumulator=args.accumulator,
@@ -807,8 +803,8 @@ if __name__ == '__main__':
 						env_results[k] += v
 
 				evaluator.close()
-		else:
-			print(f'No model path {checkpoint_path}')
+	else:
+		print(f'No model path {checkpoint_path}')
 
 	output_results = {}
 	for k,_ in stats.items():
@@ -822,13 +818,15 @@ if __name__ == '__main__':
 	key_excluded = {k: () for k in output_results.keys()}
 	HumanOutputFormat(sys.stdout).write(output_results, key_excluded=key_excluded, step=0)
 
-	if args.accumulator:
-		csvwriter.writerow(['metric',] + [x for x in range(num_seeds)])
-	else:
-		csvwriter.writerow(['metric',] + [x for x in range(num_seeds*args.num_episodes)])
-	for k,v in env_results.items():
-		row = [k,] + v
-		csvwriter.writerow(row)
+	first_metric_values = next(iter(env_results.values()), [])
+	csvwriter.writerow(
+		build_eval_csv_headers(
+			accumulator=args.accumulator,
+			value_count=len(first_metric_values),
+		)
+	)
+	for metric_key, values in env_results.items():
+		csvwriter.writerow(build_eval_csv_row(metric_key, values))
 
 	if display:
 		display.stop()
