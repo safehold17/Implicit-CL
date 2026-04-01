@@ -32,7 +32,7 @@ class Decoder(nn.Module):
             num_types = 1
         else:
             num_types = 2
-        self.causal_mask = get_causal_mask(self.cfg, self.cfg_rl_waymo.train_context_length, num_types)
+        self.register_buffer('causal_mask', get_causal_mask(self.cfg, self.cfg_rl_waymo.train_context_length, num_types), persistent=False)
         self.apply(weight_init)
 
 
@@ -49,7 +49,10 @@ class Decoder(nn.Module):
         src_key_padding_mask = scene_enc['src_key_padding_mask']
         num_timesteps = agent_states.shape[2]
         
-        output = self.transformer_decoder(stacked_embeddings, encoder_embeddings, tgt_mask=self.causal_mask.to(stacked_embeddings.device), memory_key_padding_mask=src_key_padding_mask)
+        output = self.transformer_decoder(
+            stacked_embeddings, encoder_embeddings, tgt_mask=self.causal_mask,
+            memory_key_padding_mask=src_key_padding_mask
+        )
         
         preds = {}
         if not (self.cfg_model.trajeglish or self.cfg_model.il):

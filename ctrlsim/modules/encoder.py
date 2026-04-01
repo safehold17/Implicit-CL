@@ -26,7 +26,6 @@ def sanitize_embedding_indices(
     eval_mode: bool,
 ) -> torch.Tensor:
     """Clamp embedding indices into a valid integer range without failing."""
-    raw_values = values.detach()
     sanitized = torch.nan_to_num(
         values.to(dtype=torch.float32),
         nan=float(min_value),
@@ -34,11 +33,14 @@ def sanitize_embedding_indices(
         neginf=float(min_value),
     )
     sanitized = sanitized.clamp(min=min_value, max=max_value).to(dtype=torch.long)
-    if not torch.equal(raw_values.to(dtype=torch.long), sanitized):
-        print(
-            f"[encoder] sanitize[{field_name}] eval={bool(eval_mode)} "
-            f"{_format_tensor_range(raw_values)} -> {_format_tensor_range(sanitized)}"
-        )
+    if not eval_mode:
+        raw_values = values.detach()
+        if not torch.equal(raw_values.to(dtype=torch.long), sanitized):
+            print(
+                f"[encoder] sanitize[{field_name}] eval={bool(eval_mode)} "
+                f"{_format_tensor_range(raw_values)}"
+            f" -> {_format_tensor_range(sanitized)}"
+            )
     return sanitized
 
 
