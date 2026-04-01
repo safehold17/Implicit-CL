@@ -222,6 +222,10 @@ class ExternalTeacher:
 
         self._collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]] = {}
 
+        # Compile after all config attributes are extracted so OptimizedModule
+        self.model = torch.compile(self.model, dynamic=True)
+        print("[ExternalTeacher] Model compiled with torch.compile (dynamic=True).")
+
     def validate_student_action_space(
         self,
         student_accel_discretization: int,

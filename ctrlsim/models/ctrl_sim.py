@@ -19,7 +19,7 @@ torch.set_printoptions(sci_mode=False)
 class CtRLSim(pl.LightningModule):
     def __init__(self, cfg, data_module=None):
         super(CtRLSim, self).__init__()
-        
+
         if not cfg.train.finetuning:
             self.save_hyperparameters()
         self.cfg = cfg 
@@ -38,33 +38,23 @@ class CtRLSim(pl.LightningModule):
             print("Resampling real data indices")
 
 
-    def forward(self, data, eval=False, return_enc=False):
+    def forward(self, data, eval=False, return_enc=False, cached_scene_enc=None):
+        """
+        Args:
+            cached_scene_enc: when provided (second/action pass), skips the expensive
+                map encoder + transformer encoder and recomputes only RTG token embeddings.
+                A single torch.compile(model) covers both the full pass (cached_scene_enc=None)
+                and the cheap RTG-update pass (cached_scene_enc=<prior scene_enc>).
+        """
+        if cached_scene_enc is not None:
+            updated_enc = self.encoder.forward_with_new_rtgs(data, eval, cached_scene_enc)
+            return self.decoder(data, updated_enc, eval)
+
         scene_enc = self.encoder(data, eval)
         pred = self.decoder(data, scene_enc, eval)
         if return_enc:
             return pred, scene_enc
         return pred
-
-    def forward_with_new_rtgs(self, data, scene_enc, eval=False):
-        """
-        Decode actions using updated RTGs without re-running the expensive encoder.
-
-        The map encoder and transformer encoder outputs (encoder_embeddings,
-        src_key_padding_mask) are invariant between the RTG-prediction pass and
-        the action-prediction pass. Only the RTG token embeddings change.
-        This reuses cached state/action embeddings and scene context, rebuilding
-        only the RTG embeddings before running the decoder.
-
-        Args:
-            data: MotionData with data['agent'].rtgs updated in-place by RTG decode.
-            scene_enc: dict returned by a prior encoder.forward() call.
-            eval: whether in eval mode.
-
-        Returns:
-            preds dict from the decoder (same structure as forward).
-        """
-        updated_enc = self.encoder.forward_with_new_rtgs(data, eval, scene_enc)
-        return self.decoder(data, updated_enc, eval)
 
     def compute_loss(self, data, preds):
         loss_dict = {}

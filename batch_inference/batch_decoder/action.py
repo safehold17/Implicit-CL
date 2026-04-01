@@ -236,12 +236,9 @@ def decode_action_stage_batched_impl(
 ):
     with torch.inference_mode():
         with teacher.model_forward_context():
-            if cached_scene_enc is not None:
-                preds = teacher.model.forward_with_new_rtgs(
-                    batched_data, cached_scene_enc, eval=True
-                )
-            else:
-                preds = teacher.model(batched_data, eval=True)
+            preds = teacher.model(
+                batched_data, eval=True, cached_scene_enc=cached_scene_enc
+            )
         action_logits = preds["action_preds"].float()
 
         jobs: List[Dict[str, Any]] = batch_meta["jobs"]
