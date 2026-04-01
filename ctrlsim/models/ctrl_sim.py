@@ -19,7 +19,7 @@ torch.set_printoptions(sci_mode=False)
 class CtRLSim(pl.LightningModule):
     def __init__(self, cfg, data_module=None):
         super(CtRLSim, self).__init__()
-        
+
         if not cfg.train.finetuning:
             self.save_hyperparameters()
         self.cfg = cfg 
@@ -38,13 +38,24 @@ class CtRLSim(pl.LightningModule):
             print("Resampling real data indices")
 
 
-    def forward(self, data, eval=False):
+    def forward(self, data, eval=False, return_enc=False, cached_scene_enc=None):
+        """
+        Args:
+            cached_scene_enc: when provided (second/action pass), skips the expensive
+                map encoder + transformer encoder and recomputes only RTG token embeddings.
+                A single torch.compile(model) covers both the full pass (cached_scene_enc=None)
+                and the cheap RTG-update pass (cached_scene_enc=<prior scene_enc>).
+        """
+        if cached_scene_enc is not None:
+            updated_enc = self.encoder.forward_with_new_rtgs(data, eval, cached_scene_enc)
+            return self.decoder(data, updated_enc, eval)
+
         scene_enc = self.encoder(data, eval)
         pred = self.decoder(data, scene_enc, eval)
+        if return_enc:
+            return pred, scene_enc
+        return pred
 
-        return pred 
-
-    
     def compute_loss(self, data, preds):
         loss_dict = {}
         if self.cfg_model.trajeglish:

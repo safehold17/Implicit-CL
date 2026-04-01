@@ -70,11 +70,12 @@ def forward_job_batch_impl(
             for idx, job in enumerate(jobs)
         ]
 
-    # first stage forward for RTG prediction
+    # first stage forward for RTG prediction; also cache scene_enc to skip the
+    # expensive map encoder + transformer encoder on the second (action) pass.
     try:
         with torch.inference_mode():
             with teacher.model_forward_context():
-                preds = teacher.model(batched_data, eval=True)
+                preds, scene_enc = teacher.model(batched_data, eval=True, return_enc=True)
     except RuntimeError as exc:
         print(
             "[forward_batch] teacher_forward_error "
@@ -83,7 +84,7 @@ def forward_job_batch_impl(
         raise
     rtg_logits = preds["rtg_preds"].float()
 
-    # RTG decode to get RTG-aware prepared meta for the second stage forward 
+    # RTG decode to get RTG-aware prepared meta for the second stage forward
     batch_jobs: List[Dict[str, Any]] = batch_meta["jobs"]
     rtg_results_by_job, processed_rtg_veh_ids_by_job = decode_rtg_jobs_batched_fn(
         teacher=teacher,
@@ -98,12 +99,13 @@ def forward_job_batch_impl(
         rtg_results_by_job=rtg_results_by_job,
     )
 
-    # second stage decode with RTG-aware prepared meta
+    # second stage decode reusing cached scene context (only RTG embeddings rebuilt)
     action_decode_outputs = teacher._decode_action_stage_batched(
         batched_data=batched_data,
         batch_meta=batch_meta,
         return_logits=need_action_logits,
         logits_job_indices=logits_job_indices,
+        cached_scene_enc=scene_enc,
     )
     if need_action_logits:
         action_results_by_job, action_logits_by_job = action_decode_outputs

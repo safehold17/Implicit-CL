@@ -232,10 +232,13 @@ def decode_action_stage_batched_impl(
     batch_meta: Dict[str, Any],
     return_logits: bool = False,
     logits_job_indices: Sequence[int] = (),
+    cached_scene_enc: Any = None,
 ):
     with torch.inference_mode():
         with teacher.model_forward_context():
-            preds = teacher.model(batched_data, eval=True)
+            preds = teacher.model(
+                batched_data, eval=True, cached_scene_enc=cached_scene_enc
+            )
         action_logits = preds["action_preds"].float()
 
         jobs: List[Dict[str, Any]] = batch_meta["jobs"]

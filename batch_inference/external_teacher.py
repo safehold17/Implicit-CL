@@ -222,6 +222,10 @@ class ExternalTeacher:
 
         self._collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]] = {}
 
+        # Compile after all config attributes are extracted so OptimizedModule
+        self.model = torch.compile(self.model, dynamic=True)
+        print("[ExternalTeacher] Model compiled with torch.compile (dynamic=True).")
+
     def validate_student_action_space(
         self,
         student_accel_discretization: int,
@@ -508,6 +512,7 @@ class ExternalTeacher:
         batch_meta,
         return_logits: bool = False,
         logits_job_indices=(),
+        cached_scene_enc=None,
     ):
         with torch.inference_mode():
             return decode_action_stage_batched_impl(
@@ -516,6 +521,7 @@ class ExternalTeacher:
                 batch_meta=batch_meta,
                 return_logits=return_logits,
                 logits_job_indices=logits_job_indices,
+                cached_scene_enc=cached_scene_enc,
             )
 
     def _forward_job_batch(self, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
