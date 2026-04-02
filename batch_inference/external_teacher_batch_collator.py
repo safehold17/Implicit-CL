@@ -60,8 +60,8 @@ def infer_job_batch_layout(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
     max_road_pts = 1
     max_timestep_feat_dim = 1
     for job in jobs:
-        prepared = job["prepared"]
         motion_data_np = job["focal_batch"]["motion_data_np"]
+        prepared = job["prepared"]
         shared_timesteps = np.asarray(prepared["shared_timesteps"])
         max_agents = max(max_agents, int(motion_data_np["agent_states"].shape[0]))
         max_seq_len = max(max_seq_len, int(motion_data_np["agent_states"].shape[1]))
@@ -307,12 +307,22 @@ def build_decode_metadata(
         sampling_seed = int(prepared["sampling_seed"])
 
         sampling = prepared["sampling"]
-        for veh_id in focal_batch["data_veh_ids"]:
-            idx_in_model = _resolve_idx_in_model(
-                veh_id=int(veh_id),
-                veh_id_to_idx=veh_id_to_idx,
-                new_agent_idx_dict=new_agent_idx_dict,
-            )
+        precomputed_action_indices = np.asarray(
+            focal_batch.get("data_veh_model_indices", []),
+            dtype=np.int64,
+        )
+        for entry_idx, veh_id in enumerate(focal_batch["data_veh_ids"]):
+            idx_in_model = None
+            if entry_idx < precomputed_action_indices.shape[0]:
+                resolved_idx = int(precomputed_action_indices[entry_idx])
+                if resolved_idx >= 0:
+                    idx_in_model = resolved_idx
+            if idx_in_model is None:
+                idx_in_model = _resolve_idx_in_model(
+                    veh_id=int(veh_id),
+                    veh_id_to_idx=veh_id_to_idx,
+                    new_agent_idx_dict=new_agent_idx_dict,
+                )
             if idx_in_model is None:
                 continue
             action_job_idx.append(batch_idx)
@@ -333,12 +343,22 @@ def build_decode_metadata(
         data_veh_id_set = set(int(veh_id) for veh_id in focal_batch["data_veh_ids"])
         default_tilt = prepared["default_tilt"]
         tilt_by_veh_id = prepared["tilt_by_veh_id"]
-        for veh_id in focal_batch["veh_ids_in_context"]:
-            idx_in_model = _resolve_idx_in_model(
-                veh_id=int(veh_id),
-                veh_id_to_idx=veh_id_to_idx,
-                new_agent_idx_dict=new_agent_idx_dict,
-            )
+        precomputed_context_indices = np.asarray(
+            focal_batch.get("context_veh_model_indices", []),
+            dtype=np.int64,
+        )
+        for entry_idx, veh_id in enumerate(focal_batch["veh_ids_in_context"]):
+            idx_in_model = None
+            if entry_idx < precomputed_context_indices.shape[0]:
+                resolved_idx = int(precomputed_context_indices[entry_idx])
+                if resolved_idx >= 0:
+                    idx_in_model = resolved_idx
+            if idx_in_model is None:
+                idx_in_model = _resolve_idx_in_model(
+                    veh_id=int(veh_id),
+                    veh_id_to_idx=veh_id_to_idx,
+                    new_agent_idx_dict=new_agent_idx_dict,
+                )
             if idx_in_model is None:
                 continue
             veh_id_int = int(veh_id)

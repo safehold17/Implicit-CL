@@ -21,6 +21,34 @@ from .prepare_inference_payload import (
 )
 
 
+def _get_rtg_history_vehicle_ids(
+    adapter: Any,
+    processed_rtg_veh_ids: set[int],
+    dead_ids: set[int],
+) -> list[int]:
+    """返回当前步需要写回 RTG 历史的车辆列表。
+
+    该列表只覆盖当前步真正相关的车辆：受控车辆优先，其次补上本步额外返回 RTG 的车辆和死亡车辆，
+    以避免在 `predict_rtgs=True` 时扫描整个 `vehicle_data_dict`。
+
+    Return the vehicle ids whose RTG history should be written for the current step.
+    The list is scoped to vehicles that are actually relevant to this step: controlled vehicles first,
+    followed by any additional vehicles appearing in RTG outputs or dead-id results, avoiding a full
+    scan over `vehicle_data_dict` when `predict_rtgs=True`.
+    """
+    ordered_ids = list(get_step_controlled_ids(adapter))
+    seen_ids = set(ordered_ids)
+    for veh_id in sorted(processed_rtg_veh_ids | dead_ids):
+        veh_id_int = int(veh_id)
+        if veh_id_int in seen_ids:
+            continue
+        if veh_id_int not in adapter._vehicle_data_dict:
+            continue
+        ordered_ids.append(veh_id_int)
+        seen_ids.add(veh_id_int)
+    return ordered_ids
+
+
 def apply_predictions(
     adapter: Any,
     model_outputs: Optional[Dict[str, Any]],
@@ -61,7 +89,21 @@ def apply_predictions(
         veh_data["next_rtg_road"] = road_val
 
     if adapter._policy.predict_rtgs:
-        for veh_id, veh_data in adapter._vehicle_data_dict.items():
+        zero_rtg = np.zeros(
+            adapter._policy.cfg_model.num_reward_components,
+            dtype=np.float32,
+        )
+        for veh_id in _get_rtg_history_vehicle_ids(
+            adapter=adapter,
+            processed_rtg_veh_ids=processed_rtg_veh_ids,
+            dead_ids=dead_ids,
+        ):
+            veh_data = require_vehicle_data(
+                adapter._vehicle_data_dict,
+                veh_id,
+                "predict_rtgs_history",
+                step_t,
+            )
             if veh_id in processed_rtg_veh_ids:
                 missing = [key for key in NEXT_RTG_KEYS if key not in veh_data]
                 if missing:
@@ -74,13 +116,12 @@ def apply_predictions(
                             veh_data["next_rtg_goal"],
                             veh_data["next_rtg_veh"],
                             veh_data["next_rtg_road"],
-                        ]
+                        ],
+                        dtype=np.float32,
                     )
                 )
             else:
-                veh_data["rtgs"].append(
-                    np.array([0] * adapter._policy.cfg_model.num_reward_components)
-                )
+                veh_data["rtgs"].append(zero_rtg.copy())
 
     for veh_id, (accel, steer) in action_results.items():
         veh_data = require_vehicle_data(adapter._vehicle_data_dict, veh_id, "action_results", step_t)

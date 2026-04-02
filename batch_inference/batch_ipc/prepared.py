@@ -114,6 +114,8 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     map_vals_rows: List[List[int]] = []
     data_veh_rows: List[List[int]] = []
     context_rows: List[List[int]] = []
+    data_model_index_rows: List[List[int]] = []
+    context_model_index_rows: List[List[int]] = []
     total_motion_bytes = 0
     for fb in focal_batches:
         map_items = list(fb["new_agent_idx_dict"].items())
@@ -121,6 +123,24 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         map_vals_rows.append([int(v) for _, v in map_items])
         data_veh_rows.append([int(v) for v in fb["data_veh_ids"]])
         context_rows.append([int(v) for v in fb["veh_ids_in_context"]])
+        data_model_index_rows.append(
+            [
+                int(v)
+                for v in np.asarray(
+                    fb.get("data_veh_model_indices", []),
+                    dtype=np.int32,
+                ).tolist()
+            ]
+        )
+        context_model_index_rows.append(
+            [
+                int(v)
+                for v in np.asarray(
+                    fb.get("context_veh_model_indices", []),
+                    dtype=np.int32,
+                ).tolist()
+            ]
+        )
         motion_data_np = fb["motion_data_np"]
         for field_name in MOTION_FIELD_NAMES:
             total_motion_bytes += packed_motion_nbytes(field_name, motion_data_np[field_name])
@@ -141,6 +161,14 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     context_flat, context_offsets = pack_ragged_int_lists(context_rows)
     packed["veh_ids_in_context_flat"] = context_flat
     packed["veh_ids_in_context_offsets"] = context_offsets
+
+    data_model_flat, data_model_offsets = pack_ragged_int_lists(data_model_index_rows)
+    packed["data_veh_model_indices_flat"] = data_model_flat
+    packed["data_veh_model_indices_offsets"] = data_model_offsets
+
+    context_model_flat, context_model_offsets = pack_ragged_int_lists(context_model_index_rows)
+    packed["context_veh_model_indices_flat"] = context_model_flat
+    packed["context_veh_model_indices_offsets"] = context_model_offsets
 
     for field_name in MOTION_FIELD_NAMES:
         packed_values = [
@@ -214,6 +242,10 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
             "data_veh_ids_offsets",
             "veh_ids_in_context_flat",
             "veh_ids_in_context_offsets",
+            "data_veh_model_indices_flat",
+            "data_veh_model_indices_offsets",
+            "context_veh_model_indices_flat",
+            "context_veh_model_indices_offsets",
         ),
         "packed prepared payload",
     )
@@ -275,6 +307,14 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         np.asarray(packed["veh_ids_in_context_flat"], dtype=np.int32),
         np.asarray(packed["veh_ids_in_context_offsets"], dtype=np.int32),
     )
+    data_model_index_rows = unpack_ragged_int_lists(
+        np.asarray(packed["data_veh_model_indices_flat"], dtype=np.int32),
+        np.asarray(packed["data_veh_model_indices_offsets"], dtype=np.int32),
+    )
+    context_model_index_rows = unpack_ragged_int_lists(
+        np.asarray(packed["context_veh_model_indices_flat"], dtype=np.int32),
+        np.asarray(packed["context_veh_model_indices_offsets"], dtype=np.int32),
+    )
 
     row_count = int(focal_ids.shape[0])
     if not (
@@ -284,6 +324,8 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         == len(new_agent_vals_rows)
         == len(data_veh_rows)
         == len(context_rows)
+        == len(data_model_index_rows)
+        == len(context_model_index_rows)
     ):
         raise ValueError("packed prepared payload ragged row counts mismatch.")
 
@@ -336,6 +378,14 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
                     "new_agent_idx_dict": new_agent_idx_dict,
                     "data_veh_ids": data_veh_rows[i],
                     "veh_ids_in_context": context_rows[i],
+                    "data_veh_model_indices": np.asarray(
+                        data_model_index_rows[i],
+                        dtype=np.int64,
+                    ),
+                    "context_veh_model_indices": np.asarray(
+                        context_model_index_rows[i],
+                        dtype=np.int64,
+                    ),
                     "predict_rtgs": bool(predict_rtgs_arr[i]),
                 }
             )

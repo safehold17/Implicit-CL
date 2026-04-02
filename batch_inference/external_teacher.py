@@ -302,7 +302,7 @@ class ExternalTeacher:
         raise RuntimeError("ExternalTeacher model has no floating-point parameters.")
 
     def model_forward_context(self):
-        if not self._autocast_enabled:
+        if not getattr(self, "_autocast_enabled", False):
             return nullcontext()
         return torch.autocast(device_type="cuda", dtype=self._autocast_dtype)
 
@@ -493,7 +493,12 @@ class ExternalTeacher:
             collate_numpy_buffers=self._collate_numpy_buffers,
         )
 
-    def _decode_rtg_stage_batched(self, batched_data, batch_meta, decode_rtg_jobs_batched_fn):
+    def _decode_rtg_stage_batched(
+        self,
+        batched_data,
+        batch_meta,
+        decode_rtg_jobs_batched_fn,
+    ):
         with torch.inference_mode():
             with self.model_forward_context():
                 preds = self.model(batched_data, eval=True)

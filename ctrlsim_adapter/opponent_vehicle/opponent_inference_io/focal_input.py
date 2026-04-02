@@ -11,264 +11,307 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .prepare_inference_payload import (
-    get_control_vehicle_queue,
-    get_or_create_prepare_buffer,
-)
+from ..step_tensor_context import build_policy_step_tensor_context
+from .prepare_inference_payload import get_control_vehicle_queue
 
-
-def _format_value_range(values: np.ndarray) -> str:
-    """Return a compact min/max summary for logging."""
-    flat = np.asarray(values, dtype=np.float64).reshape(-1)
-    finite = flat[np.isfinite(flat)]
-    if finite.size == 0:
-        return "all_non_finite"
-    return f"min={finite.min():.3f}, max={finite.max():.3f}"
-
-
-def sanitize_index_array(
-    values: np.ndarray,
-    *,
-    field_name: str,
-    step_t: int,
-    min_value: int,
-    max_value: int,
-) -> np.ndarray:
-    """Clamp a discrete index array into the valid integer range."""
-    raw_values = np.asarray(values)
-    sanitized = np.nan_to_num(
-        raw_values,
-        nan=float(min_value),
-        posinf=float(max_value),
-        neginf=float(min_value),
-    )
-    sanitized = np.clip(sanitized, min_value, max_value).astype(np.int64, copy=False)
-    if not np.array_equal(raw_values, sanitized):
-        print(
-            f"[focal_input] sanitize[{field_name}] step={int(step_t)} "
-            f"{_format_value_range(raw_values)} -> {_format_value_range(sanitized)}"
-        )
-    return sanitized
-
-
-def slice_policy_window(
-    policy: Any,
-    t: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    tcl = policy.cfg_rl_waymo.train_context_length
-    start = 0 if t < tcl else t - (tcl - 1)
-    end = tcl if t < tcl else t + 1
-
-    return (
-        policy.states[:, start:end],
-        policy.types,
-        policy.actions[:, start:end],
-        policy.rtgs[:, start:end],
-        policy.goals[:, start:end],
-        policy.timesteps[0, start:end],
-    )
-
-
-def normalize_rtgs_inplace(rtgs: np.ndarray, rl: Any) -> None:
-    rtgs[:, :, 0] = (np.clip(rtgs[:, :, 0], rl.min_rtg_pos, rl.max_rtg_pos) - rl.min_rtg_pos) / (
-        rl.max_rtg_pos - rl.min_rtg_pos
-    )
-    rtgs[:, :, 1] = (np.clip(rtgs[:, :, 1], rl.min_rtg_veh, rl.max_rtg_veh) - rl.min_rtg_veh) / (
-        rl.max_rtg_veh - rl.min_rtg_veh
-    )
-    rtgs[:, :, 2] = (np.clip(rtgs[:, :, 2], rl.min_rtg_road, rl.max_rtg_road) - rl.min_rtg_road) / (
-        rl.max_rtg_road - rl.min_rtg_road
-    )
-
-
-def _angle_sub_np(current_angle: np.ndarray, target_angle: np.ndarray) -> np.ndarray:
-    diff = (target_angle - current_angle) % (2 * np.pi)
-    mask = diff > np.pi
-    diff[mask] = -(2 * np.pi - diff[mask])
-    return diff
-
-
-def _apply_se2_transform_np(
+def _apply_se2_transform_batched_np(
     coordinates: np.ndarray,
     translation: np.ndarray,
-    yaw: float,
+    yaw: np.ndarray,
 ) -> np.ndarray:
+    """对 batched 坐标执行 SE(2) 变换。
+
+    输入张量的第一个维度视为 batch 维，后续任意维度都保持原样广播。
+    该函数用于一次性归一化多个 focal 的 agent / goal / road 坐标。
+
+    Apply an SE(2) transform to batched coordinates.
+    The first axis is treated as the batch axis, and all remaining dimensions are preserved
+    through broadcasting. This helper normalizes agent/goal/road coordinates for multiple
+    focals in one pass.
+    """
     shifted = coordinates - translation
     x = shifted[..., 0]
     y = shifted[..., 1]
-    cos_yaw = np.cos(yaw)
-    sin_yaw = np.sin(yaw)
+    expand_shape = (coordinates.shape[0],) + (1,) * (coordinates.ndim - 2)
+    cos_yaw = np.cos(yaw).reshape(expand_shape)
+    sin_yaw = np.sin(yaw).reshape(expand_shape)
     out = np.empty_like(shifted)
     out[..., 0] = cos_yaw * x - sin_yaw * y
     out[..., 1] = sin_yaw * x + cos_yaw * y
     return out
 
 
-def select_relevant_agents_fast(
-    dset: Any,
+def _angle_sub_batched_np(
+    current_angle: np.ndarray,
+    target_angle: np.ndarray,
+) -> np.ndarray:
+    """对 batched heading 计算包角差。
+
+    该函数允许 `current_angle` 和 `target_angle` 以 batch 维对齐，
+    从而在一次向量化调用中处理多个 focal 的 heading 归一化。
+
+    Compute wrapped angular differences for batched heading tensors.
+    Both operands may carry a batch axis so multiple focal heading normalizations can be handled
+    in one vectorized call.
+    """
+    diff = (target_angle - current_angle) % (2 * np.pi)
+    mask = diff > np.pi
+    diff = diff.copy()
+    diff[mask] = -(2 * np.pi - diff[mask])
+    return diff
+
+
+def _resolve_selected_agent_indices(
+    adapter: Any,
     ag_states: np.ndarray,
-    ag_types: np.ndarray,
-    actions_values: np.ndarray,
-    pad_action_values: np.ndarray,
-    rtgs_values: np.ndarray,
-    pad_rtg_values: np.ndarray,
-    goals_step: np.ndarray,
-    origin_agent_idx: int,
-    moving_agent_mask: np.ndarray,
-    cached_relevant_agent_idxs: List[int],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[int, int], List[int]]:
-    cfg = dset.cfg_dataset
-    max_agents = int(cfg.max_num_agents)
+    focal_id: int,
+) -> tuple[np.ndarray, List[int], bool]:
+    """解析单个 focal 的相关 agent 索引集合。
+
+    该函数负责保留当前实现的语义边界：
+    1. 优先复用 `policy.relevant_agent_idxs` 的缓存；
+    2. 当缓存缺失时，基于距离阈值重新选择上下文车辆；
+    3. 保证返回的索引列表仍是 policy 全局 agent index，而不是局部重排后的 index。
+
+    Resolve the relevant agent-index set for one focal vehicle.
+    The helper preserves the current semantics by:
+    1. Reusing `policy.relevant_agent_idxs` when available;
+    2. Recomputing the context from distance thresholds on cache miss;
+    3. Returning policy-global agent indices rather than local reordered indices.
+    """
+    policy = adapter._policy
+    dataset = adapter.dataset
+    cfg = dataset.cfg_dataset
+    origin_agent_idx = int(policy.veh_id_to_idx[focal_id])
     num_agents = int(ag_states.shape[0])
+    max_agents = int(cfg.max_num_agents)
+
     origin_xy = ag_states[origin_agent_idx, 0, :2]
     delta = ag_states[:, 0, :2] - origin_xy[np.newaxis, :]
     dist_sq = np.sum(delta * delta, axis=-1)
     valid_mask = dist_sq < float(cfg.agent_dist_threshold) ** 2
 
-    has_cached = len(cached_relevant_agent_idxs) > 0
-    if has_cached:
-        cached = np.asarray(cached_relevant_agent_idxs, dtype=np.int64)
-        in_range_mask = (cached >= 0) & (cached < num_agents)
-        cached = cached[in_range_mask]
-        if cached.size > 0:
-            valid_cached = cached[valid_mask[cached]]
-            closest_ag_ids = np.unique(valid_cached)
+    cached_indices = list(policy.relevant_agent_idxs.get(focal_id, []))
+    has_cached_indices = len(cached_indices) > 0
+    if has_cached_indices:
+        cached_array = np.asarray(cached_indices, dtype=np.int64)
+        in_range_mask = (cached_array >= 0) & (cached_array < num_agents)
+        cached_array = cached_array[in_range_mask]
+        if cached_array.size == 0:
+            selected_indices = np.empty((0,), dtype=np.int64)
         else:
-            closest_ag_ids = np.empty((0,), dtype=np.int64)
-        valid_cached_set = set(int(idx) for idx in closest_ag_ids.tolist())
-        relevant_agent_idxs = [int(idx) for idx in cached_relevant_agent_idxs if int(idx) in valid_cached_set]
+            selected_indices = np.unique(cached_array[valid_mask[cached_array]])
+        selected_index_set = set(int(idx) for idx in selected_indices.tolist())
+        relevant_indices = [
+            int(idx) for idx in cached_indices if int(idx) in selected_index_set
+        ]
     else:
         candidate_count = min(max_agents, num_agents)
         if candidate_count <= 0:
-            closest_ag_ids = np.empty((0,), dtype=np.int64)
+            selected_indices = np.empty((0,), dtype=np.int64)
         elif candidate_count < num_agents:
-            candidate_idxs = np.argpartition(dist_sq, candidate_count - 1)[:candidate_count]
-            closest_ag_ids = candidate_idxs[valid_mask[candidate_idxs]]
+            candidate_indices = np.argpartition(dist_sq, candidate_count - 1)[:candidate_count]
+            selected_indices = candidate_indices[valid_mask[candidate_indices]]
         else:
-            candidate_idxs = np.arange(num_agents, dtype=np.int64)
-            closest_ag_ids = candidate_idxs[valid_mask[candidate_idxs]]
-        if closest_ag_ids.size > 1:
-            closest_ag_ids = np.sort(closest_ag_ids)
-            if dset.split_name == "train":
-                np.random.shuffle(closest_ag_ids)
-        relevant_agent_idxs = []
+            candidate_indices = np.arange(num_agents, dtype=np.int64)
+            selected_indices = candidate_indices[valid_mask[candidate_indices]]
+        if selected_indices.size > 1:
+            selected_indices = np.sort(selected_indices)
+            if dataset.split_name == "train":
+                np.random.shuffle(selected_indices)
+        relevant_indices = []
 
-    if closest_ag_ids.size > max_agents:
-        closest_ag_ids = closest_ag_ids[:max_agents]
-
-    final_agent_states = np.zeros((max_agents, *ag_states.shape[1:]), dtype=ag_states.dtype)
-    final_agent_types = -np.ones((max_agents, *ag_types.shape[1:]), dtype=ag_types.dtype)
-    final_actions = np.empty((max_agents, *actions_values.shape[1:]), dtype=actions_values.dtype)
-    final_actions[:] = pad_action_values
-    final_rtgs = np.empty((max_agents, *rtgs_values.shape[1:]), dtype=rtgs_values.dtype)
-    final_rtgs[:] = pad_rtg_values
-    final_goals = np.zeros((max_agents, *goals_step.shape[1:]), dtype=goals_step.dtype)
-    final_moving_agent_mask = np.zeros(max_agents, dtype=moving_agent_mask.dtype)
-
-    num_selected = int(closest_ag_ids.shape[0])
-    if num_selected > 0:
-        final_agent_states[:num_selected] = ag_states[closest_ag_ids]
-        final_agent_types[:num_selected] = ag_types[closest_ag_ids]
-        final_actions[:num_selected] = actions_values[closest_ag_ids]
-        final_rtgs[:num_selected] = rtgs_values[closest_ag_ids]
-        final_goals[:num_selected] = goals_step[closest_ag_ids]
-        final_moving_agent_mask[:num_selected] = moving_agent_mask[closest_ag_ids]
-
-    new_agent_idx_dict = {int(old_idx): int(new_idx) for new_idx, old_idx in enumerate(closest_ag_ids.tolist())}
-    return (
-        final_agent_states,
-        final_agent_types,
-        final_actions,
-        final_rtgs,
-        final_goals,
-        final_moving_agent_mask,
-        new_agent_idx_dict,
-        relevant_agent_idxs,
-    )
+    if selected_indices.size > max_agents:
+        selected_indices = selected_indices[:max_agents]
+    origin_in_selection = bool(np.any(selected_indices == origin_agent_idx))
+    return selected_indices, relevant_indices, origin_in_selection
 
 
-def normalize_scene_fast(
-    rl: Any,
-    rel_ag_states: np.ndarray,
-    rel_goals: np.ndarray,
-    new_origin_agent_idx: int,
-    road_points_src: np.ndarray,
-    road_types_src: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    yaw = float(rel_ag_states[new_origin_agent_idx, 0, 4])
-    angle_of_rotation = (np.pi / 2.0) + np.sign(-yaw) * np.abs(yaw)
-    translation_xy = rel_ag_states[new_origin_agent_idx, 0, :2].copy()
-    translation = translation_xy[np.newaxis, np.newaxis, :]
-    zero_translation = np.zeros_like(translation)
-
-    rel_ag_states[:, :, :2] = _apply_se2_transform_np(
-        coordinates=rel_ag_states[:, :, :2],
-        translation=translation,
-        yaw=angle_of_rotation,
-    )
-    rel_ag_states[:, :, 2:4] = _apply_se2_transform_np(
-        coordinates=rel_ag_states[:, :, 2:4],
-        translation=zero_translation,
-        yaw=angle_of_rotation,
-    )
-    rel_ag_states[:, :, 4] = _angle_sub_np(
-        rel_ag_states[:, :, 4],
-        -np.asarray(angle_of_rotation).reshape(1, 1),
-    )
-
-    rel_goals[:, :2] = _apply_se2_transform_np(
-        coordinates=rel_goals[:, :2],
-        translation=translation[:, 0],
-        yaw=angle_of_rotation,
-    )
-    if int(rl.goal_dim) == 5:
-        rel_goals[:, 2:4] = _apply_se2_transform_np(
-            coordinates=rel_goals[:, 2:4],
-            translation=np.zeros_like(translation[:, 0]),
-            yaw=angle_of_rotation,
-        )
-        rel_goals[:, 4] = _angle_sub_np(
-            rel_goals[:, 4],
-            -np.asarray(angle_of_rotation).reshape(1),
-        )
-
-    max_roads = int(rl.max_num_road_polylines)
-    final_road_points = np.zeros((max_roads, *road_points_src.shape[1:]), dtype=road_points_src.dtype)
-    final_road_types = -np.ones((max_roads, *road_types_src.shape[1:]), dtype=road_types_src.dtype)
-    if max_roads <= 0:
-        return rel_ag_states, final_road_points, final_road_types, rel_goals
-
-    num_roads = int(road_points_src.shape[0])
-    if num_roads > 0:
-        selected_road_points = road_points_src
-        selected_road_types = road_types_src
-        if num_roads > max_roads:
-            road_valid_mask = road_points_src[:, :, -1]
-            road_delta = road_points_src[:, :, :2] - translation_xy[np.newaxis, np.newaxis, :]
-            road_dist_sq = np.sum(road_delta * road_delta, axis=-1) * road_valid_mask
-            selected = np.argsort(np.max(road_dist_sq, axis=1))[:max_roads]
-            selected_road_points = road_points_src[selected]
-            selected_road_types = road_types_src[selected]
-
-        normalized_road_points = selected_road_points.copy()
-        normalized_road_points[:, :, :2] = _apply_se2_transform_np(
-            coordinates=normalized_road_points[:, :, :2],
-            translation=translation,
-            yaw=angle_of_rotation,
-        )
-        selected_count = int(normalized_road_points.shape[0])
-        final_road_points[:selected_count] = normalized_road_points[:max_roads]
-        final_road_types[:selected_count] = selected_road_types[:max_roads]
-
-    return rel_ag_states, final_road_points, final_road_types, rel_goals
-
-
-def build_focal_batch(
+def _build_focal_group_plans(
     adapter: Any,
     t: int,
-    focal_id: int,
-    remaining_veh_ids: List[int],
-    remaining_veh_id_set: set[int],
+    focal_vehicle_ids: List[int],
+    ag_states: np.ndarray,
+    road_points_src: np.ndarray,
+    predict_rtgs: Optional[bool],
+) -> tuple[List[Dict[str, Any]], List[int]]:
+    """为多个 focal 构建批处理计划，而不立即复制 motion 张量。
+
+    计划阶段只做轻量级工作：
+    1. 判断 focal 是否死亡；
+    2. 解析每个 focal 的相关 agent index；
+    3. 按当前语义决定哪些 controlled vehicle 会并入同一个 focal batch；
+    4. 记录后续 batched gather/normalize 所需的索引信息。
+
+    Build lightweight batch plans for multiple focals without copying motion tensors yet.
+    The planning stage only:
+    1. Marks dead focals;
+    2. Resolves relevant agent indices per focal;
+    3. Groups controlled vehicles into the same focal batch using the current semantics;
+    4. Records the indices required by the later batched gather/normalize stage.
+    """
+    policy = adapter._policy
+    ordered_ids = list(focal_vehicle_ids)
+    ordered_ids_arr = np.asarray(ordered_ids, dtype=np.int64)
+    dead_ids: List[int] = []
+    plans: List[Dict[str, Any]] = []
+    has_roads = int(len(road_points_src)) > 0
+    num_focals = len(ordered_ids)
+    if num_focals == 0:
+        return plans, dead_ids
+
+    resolved_indices: List[np.ndarray] = []
+    relevant_indices_by_row: List[List[int]] = []
+    origin_in_selection = np.zeros((num_focals,), dtype=np.bool_)
+    focal_alive = np.zeros((num_focals,), dtype=np.bool_)
+    max_selected_agents = 0
+    for row_idx, focal_id in enumerate(ordered_ids):
+        origin_agent_idx = int(policy.veh_id_to_idx[focal_id])
+        focal_alive[row_idx] = bool(policy.states[origin_agent_idx, t, -1]) and has_roads
+        if not focal_alive[row_idx]:
+            resolved_indices.append(np.zeros((0,), dtype=np.int64))
+            relevant_indices_by_row.append([])
+            continue
+        selected_indices, relevant_indices, has_origin = _resolve_selected_agent_indices(
+            adapter=adapter,
+            ag_states=ag_states,
+            focal_id=int(focal_id),
+        )
+        resolved_indices.append(selected_indices.astype(np.int64, copy=False))
+        relevant_indices_by_row.append(relevant_indices)
+        origin_in_selection[row_idx] = bool(has_origin)
+        max_selected_agents = max(max_selected_agents, int(selected_indices.shape[0]))
+
+    selected_agent_indices = np.zeros((num_focals, max_selected_agents), dtype=np.int64)
+    selected_agent_mask = np.zeros((num_focals, max_selected_agents), dtype=np.bool_)
+    for row_idx, selected_indices in enumerate(resolved_indices):
+        selected_count = int(selected_indices.shape[0])
+        if selected_count <= 0:
+            continue
+        selected_agent_indices[row_idx, :selected_count] = selected_indices
+        selected_agent_mask[row_idx, :selected_count] = True
+
+    controlled_agent_indices = np.asarray(
+        [int(policy.veh_id_to_idx[focal_id]) for focal_id in ordered_ids],
+        dtype=np.int64,
+    )
+    selected_controlled_mask = np.any(
+        (selected_agent_indices[:, :, None] == controlled_agent_indices[None, None, :])
+        & selected_agent_mask[:, :, None],
+        axis=1,
+    )
+    accounted_mask = np.zeros((num_focals,), dtype=np.bool_)
+
+    for row_idx, focal_id in enumerate(ordered_ids):
+        if accounted_mask[row_idx]:
+            continue
+        accounted_mask[row_idx] = True
+
+        origin_agent_idx = int(policy.veh_id_to_idx[focal_id])
+        if not focal_alive[row_idx]:
+            dead_ids.append(int(focal_id))
+            continue
+
+        selected_indices = resolved_indices[row_idx]
+        relevant_indices = relevant_indices_by_row[row_idx]
+        if not origin_in_selection[row_idx]:
+            dead_ids.append(int(focal_id))
+            continue
+
+        grouped_mask = selected_controlled_mask[row_idx] & (~accounted_mask)
+        grouped_mask[row_idx] = True
+        accounted_mask[grouped_mask] = True
+        grouped_controlled_ids = ordered_ids_arr[grouped_mask].tolist()
+
+        relevant_ids_for_store = (
+            list(selected_indices.tolist())
+            if not policy.relevant_agent_idxs.get(focal_id, [])
+            else relevant_indices
+        )
+        for grouped_id in grouped_controlled_ids:
+            policy.relevant_agent_idxs[int(grouped_id)] = relevant_ids_for_store
+
+        plans.append(
+            {
+                "focal_id": int(focal_id),
+                "origin_agent_idx": origin_agent_idx,
+                "selected_agent_indices": selected_indices.astype(np.int64, copy=False),
+                "grouped_controlled_ids": grouped_controlled_ids,
+                "veh_ids_in_context": [
+                    int(policy.idx_to_veh_id[idx])
+                    for idx in policy.relevant_agent_idxs[int(focal_id)]
+                ],
+                "predict_rtgs": bool(
+                    policy.predict_rtgs if predict_rtgs is None else predict_rtgs
+                ),
+            }
+        )
+
+    return plans, dead_ids
+
+
+def _select_roads_for_focals_batched(
+    rl_cfg: Any,
+    road_points_src: np.ndarray,
+    road_types_src: np.ndarray,
+    translation_xy: np.ndarray,
+    angle_of_rotation: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """为多个 focal 一次性选择并归一化道路折线。
+
+    该函数把道路选择与局部坐标系变换统一放到 batched 路径中，
+    以减少重复的距离计算、排序和 Python 层循环。
+
+    Select and normalize road polylines for multiple focals in one batched pass.
+    It performs road selection and local-frame transforms in one batched path,
+    reducing repeated distance computation, sorting, and Python loops.
+    """
+    batch_size = int(translation_xy.shape[0])
+    max_roads = int(rl_cfg.max_num_road_polylines)
+    final_road_points = np.zeros(
+        (batch_size, max_roads, *road_points_src.shape[1:]),
+        dtype=road_points_src.dtype,
+    )
+    final_road_types = -np.ones(
+        (batch_size, max_roads, *road_types_src.shape[1:]),
+        dtype=road_types_src.dtype,
+    )
+    if max_roads <= 0 or int(road_points_src.shape[0]) == 0:
+        return final_road_points, final_road_types
+
+    num_roads = int(road_points_src.shape[0])
+    if num_roads > max_roads:
+        road_valid_mask = road_points_src[:, :, -1]
+        road_delta = road_points_src[None, :, :, :2] - translation_xy[:, None, None, :]
+        road_dist_sq = np.sum(road_delta * road_delta, axis=-1) * road_valid_mask[None, :, :]
+        selected_indices = np.argsort(np.max(road_dist_sq, axis=2), axis=1)[:, :max_roads]
+        selected_road_points = road_points_src[selected_indices]
+        selected_road_types = road_types_src[selected_indices]
+    else:
+        selected_road_points = np.broadcast_to(
+            road_points_src[None, :, :, :],
+            (batch_size, num_roads, *road_points_src.shape[1:]),
+        ).copy()
+        selected_road_types = np.broadcast_to(
+            road_types_src[None, :, :],
+            (batch_size, num_roads, *road_types_src.shape[1:]),
+        ).copy()
+
+    normalized_road_points = selected_road_points.copy()
+    normalized_road_points[:, :, :, :2] = _apply_se2_transform_batched_np(
+        coordinates=normalized_road_points[:, :, :, :2],
+        translation=translation_xy[:, None, None, :],
+        yaw=angle_of_rotation,
+    )
+    selected_count = int(selected_road_points.shape[1])
+    final_road_points[:, :selected_count] = normalized_road_points[:, :max_roads]
+    final_road_types[:, :selected_count] = selected_road_types[:, :max_roads]
+    return final_road_points, final_road_types
+
+
+def _build_motion_batches_from_plans(
+    adapter: Any,
+    plans: List[Dict[str, Any]],
     ag_states: np.ndarray,
     ag_types: np.ndarray,
     actions_values: np.ndarray,
@@ -277,95 +320,145 @@ def build_focal_batch(
     moving_agent_mask: np.ndarray,
     road_points_src: np.ndarray,
     road_types_src: np.ndarray,
-    predict_rtgs: Optional[bool] = None,
-) -> Tuple[Optional[Dict[str, Any]], List[int], bool]:
+) -> List[Dict[str, Any]]:
+    """基于 focal 计划一次性完成 batched gather 与归一化。
+
+    该函数是新的热点主路径：先把每个 focal 的 `selected_agent_indices` 拼成统一二维索引矩阵，
+    再通过 advanced indexing 一次性 gather agent/action/RTG/goal 张量，并在 batch 维上统一完成
+    heading、goal、road 的局部坐标系归一化，最后再拆回现有 `focal_batch` 结构。
+
+    Materialize focal batches with one batched gather-and-normalize pass.
+    It stacks each focal plan's `selected_agent_indices` into one 2D index matrix, gathers
+    agent/action/RTG/goal tensors via advanced indexing, performs local-frame normalization for
+    headings/goals/roads across the batch dimension, and finally converts the result back into the
+    existing `focal_batch` structure.
+    """
+    if not plans:
+        return []
+
     policy = adapter._policy
-    dset = adapter.dataset
-    rl = policy.cfg_rl_waymo
+    rl_cfg = policy.cfg_rl_waymo
+    max_agents = int(rl_cfg.max_num_agents)
+    batch_size = len(plans)
+    selected_indices = np.zeros((batch_size, max_agents), dtype=np.int64)
+    selected_mask = np.zeros((batch_size, max_agents), dtype=np.bool_)
+    for batch_idx, plan in enumerate(plans):
+        row_indices = plan["selected_agent_indices"]
+        count = min(int(row_indices.shape[0]), max_agents)
+        if count <= 0:
+            continue
+        selected_indices[batch_idx, :count] = row_indices[:count]
+        selected_mask[batch_idx, :count] = True
 
-    origin_agent_idx = policy.veh_id_to_idx[focal_id]
-    if not policy.states[origin_agent_idx, t, -1]:
-        return None, [], True
-    if len(road_points_src) == 0:
-        return None, [], True
+    gathered_agent_states = ag_states[selected_indices].copy()
+    gathered_agent_types = ag_types[selected_indices].copy()
+    gathered_actions = actions_values[selected_indices].copy()
+    gathered_rtgs = rtgs_values[selected_indices].copy()
+    gathered_goals = goals_step[selected_indices].copy()
+    gathered_moving_mask = moving_agent_mask[selected_indices].copy()
 
-    has_cached_relevant_agents = focal_id in policy.relevant_agent_idxs
-    cached_relevant_agent_idxs = policy.relevant_agent_idxs.get(focal_id, [])
+    invalid_mask = ~selected_mask
+    if np.any(invalid_mask):
+        gathered_agent_states[invalid_mask] = 0
+        gathered_agent_types[invalid_mask] = -1
+        gathered_actions[invalid_mask] = adapter._pad_action_values_step
+        gathered_rtgs[invalid_mask] = adapter._pad_rtg_values_step
+        gathered_goals[invalid_mask] = 0
+        gathered_moving_mask[invalid_mask] = 0
 
-    (
-        rel_ag_states,
-        rel_ag_types,
-        rel_actions,
-        rel_rtgs,
-        rel_goals,
-        rel_moving_agent_mask,
-        new_agent_idx_dict,
-        relevant_agent_idxs,
-    ) = select_relevant_agents_fast(
-        dset=dset,
-        ag_states=ag_states,
-        ag_types=ag_types,
-        actions_values=actions_values,
-        pad_action_values=adapter._pad_action_values_step,
-        rtgs_values=rtgs_values,
-        pad_rtg_values=adapter._pad_rtg_values_step,
-        goals_step=goals_step,
-        origin_agent_idx=origin_agent_idx,
-        moving_agent_mask=moving_agent_mask,
-        cached_relevant_agent_idxs=cached_relevant_agent_idxs,
+    origin_agent_indices = np.asarray(
+        [int(plan["origin_agent_idx"]) for plan in plans],
+        dtype=np.int64,
+    )
+    origin_in_model = np.argmax(selected_indices == origin_agent_indices[:, None], axis=1)
+    row_idx = np.arange(batch_size, dtype=np.int64)
+    yaw = gathered_agent_states[row_idx, origin_in_model, 0, 4].astype(np.float32, copy=False)
+    angle_of_rotation = (np.pi / 2.0) + np.sign(-yaw) * np.abs(yaw)
+    translation_xy = gathered_agent_states[row_idx, origin_in_model, 0, :2].copy()
+
+    gathered_agent_states[:, :, :, :2] = _apply_se2_transform_batched_np(
+        coordinates=gathered_agent_states[:, :, :, :2],
+        translation=translation_xy[:, None, None, :],
+        yaw=angle_of_rotation,
+    )
+    zero_translation = np.zeros((batch_size, 1, 1, 2), dtype=translation_xy.dtype)
+    gathered_agent_states[:, :, :, 2:4] = _apply_se2_transform_batched_np(
+        coordinates=gathered_agent_states[:, :, :, 2:4],
+        translation=zero_translation,
+        yaw=angle_of_rotation,
+    )
+    gathered_agent_states[:, :, :, 4] = _angle_sub_batched_np(
+        current_angle=gathered_agent_states[:, :, :, 4],
+        target_angle=(-angle_of_rotation)[:, None, None],
     )
 
-    accounted_veh_ids = [policy.idx_to_veh_id[idx] for idx in new_agent_idx_dict.keys()]
-    cur_data_veh_ids = [focal_id]
-    additionally_accounted: List[int] = []
-    for veh_id in remaining_veh_ids:
-        if veh_id in remaining_veh_id_set and veh_id in accounted_veh_ids:
-            cur_data_veh_ids.append(veh_id)
-            additionally_accounted.append(veh_id)
-            remaining_veh_id_set.discard(veh_id)
-            remaining_veh_ids.remove(veh_id)
+    gathered_goals[:, :, :2] = _apply_se2_transform_batched_np(
+        coordinates=gathered_goals[:, :, :2],
+        translation=translation_xy[:, None, :],
+        yaw=angle_of_rotation,
+    )
+    if int(rl_cfg.goal_dim) == 5:
+        gathered_goals[:, :, 2:4] = _apply_se2_transform_batched_np(
+            coordinates=gathered_goals[:, :, 2:4],
+            translation=np.zeros((batch_size, 1, 2), dtype=translation_xy.dtype),
+            yaw=angle_of_rotation,
+        )
+        gathered_goals[:, :, 4] = _angle_sub_batched_np(
+            current_angle=gathered_goals[:, :, 4],
+            target_angle=(-angle_of_rotation)[:, None],
+        )
 
-    if not has_cached_relevant_agents:
-        relevant_ids_for_store = list(new_agent_idx_dict.keys())
-    else:
-        relevant_ids_for_store = relevant_agent_idxs
-    for veh_id in cur_data_veh_ids:
-        policy.relevant_agent_idxs[veh_id] = relevant_ids_for_store
-
-    new_origin_agent_idx = new_agent_idx_dict.get(origin_agent_idx)
-    if new_origin_agent_idx is None:
-        return None, [], True
-
-    rel_ag_states, rel_road_points, rel_road_types, rel_goals = normalize_scene_fast(
-        rl=rl,
-        rel_ag_states=rel_ag_states,
-        rel_goals=rel_goals,
-        new_origin_agent_idx=new_origin_agent_idx,
+    gathered_road_points, gathered_road_types = _select_roads_for_focals_batched(
+        rl_cfg=rl_cfg,
         road_points_src=road_points_src,
         road_types_src=road_types_src,
+        translation_xy=translation_xy,
+        angle_of_rotation=angle_of_rotation,
     )
-    motion_data_np = {
-        "agent_states": rel_ag_states,
-        "agent_types": rel_ag_types,
-        "goals": rel_goals,
-        "actions": rel_actions,
-        "rtgs": rel_rtgs,
-        "moving_agent_mask": rel_moving_agent_mask,
-        "road_points": rel_road_points,
-        "road_types": rel_road_types,
-    }
-    veh_ids_in_context = [policy.idx_to_veh_id[idx] for idx in policy.relevant_agent_idxs[focal_id]]
-    focal_batch = {
-        "focal_id": focal_id,
-        "motion_data_np": motion_data_np,
-        "new_agent_idx_dict": {int(k): int(v) for k, v in new_agent_idx_dict.items()},
-        "data_veh_ids": cur_data_veh_ids,
-        "veh_ids_in_context": veh_ids_in_context,
-        "predict_rtgs": bool(
-            policy.predict_rtgs if predict_rtgs is None else predict_rtgs
-        ),
-    }
-    return focal_batch, additionally_accounted, False
+
+    focal_batches: List[Dict[str, Any]] = []
+    for batch_idx, plan in enumerate(plans):
+        valid_indices = selected_indices[batch_idx, selected_mask[batch_idx]]
+        new_agent_idx_dict = {
+            int(old_idx): int(new_idx)
+            for new_idx, old_idx in enumerate(valid_indices.tolist())
+        }
+        veh_ids_in_context = list(plan["veh_ids_in_context"])
+        data_veh_ids = list(plan["grouped_controlled_ids"])
+        focal_batches.append(
+            {
+                "focal_id": int(plan["focal_id"]),
+                "motion_data_np": {
+                    "agent_states": gathered_agent_states[batch_idx],
+                    "agent_types": gathered_agent_types[batch_idx],
+                    "goals": gathered_goals[batch_idx],
+                    "actions": gathered_actions[batch_idx],
+                    "rtgs": gathered_rtgs[batch_idx],
+                    "moving_agent_mask": gathered_moving_mask[batch_idx],
+                    "road_points": gathered_road_points[batch_idx],
+                    "road_types": gathered_road_types[batch_idx],
+                },
+                "new_agent_idx_dict": new_agent_idx_dict,
+                "data_veh_ids": data_veh_ids,
+                "veh_ids_in_context": veh_ids_in_context,
+                "data_veh_model_indices": np.asarray(
+                    [
+                        int(new_agent_idx_dict.get(policy.veh_id_to_idx[int(veh_id)], -1))
+                        for veh_id in data_veh_ids
+                    ],
+                    dtype=np.int64,
+                ),
+                "context_veh_model_indices": np.asarray(
+                    [
+                        int(new_agent_idx_dict.get(policy.veh_id_to_idx[int(veh_id)], -1))
+                        for veh_id in veh_ids_in_context
+                    ],
+                    dtype=np.int64,
+                ),
+                "predict_rtgs": bool(plan["predict_rtgs"]),
+            }
+        )
+    return focal_batches
 
 
 def build_focal_batches(
@@ -373,16 +466,17 @@ def build_focal_batches(
     t: int,
     focal_vehicle_ids: Optional[List[int]] = None,
     predict_rtgs: Optional[bool] = None,
-) -> Tuple[List[Dict[str, Any]], List[int], np.ndarray]:
+) -> Tuple[List[Dict[str, Any]], List[int]]:
     """为指定 focal 车辆构建 batch 输入。 / Build batched focal inputs for the specified vehicles."""
     shared_context = build_step_shared_context(adapter, t)
-    return build_focal_batches_from_shared_context(
+    focal_batches, dead_ids, _ = build_focal_batches_from_shared_context(
         adapter,
         t,
         shared_context,
         focal_vehicle_ids=focal_vehicle_ids,
         predict_rtgs=predict_rtgs,
     )
+    return focal_batches, dead_ids
 
 
 def build_step_shared_context(
@@ -390,115 +484,19 @@ def build_step_shared_context(
     t: int,
 ) -> Dict[str, Any]:
     """构建单个 step 共享的预处理上下文。 / Build the shared per-step preprocessing context."""
-    policy = adapter._policy
-    moving_agent_mask = adapter._moving_agent_mask_cache
-    if moving_agent_mask is None:
-        moving_ids = np.where(
-            np.linalg.norm(policy.states[:, 0, :2] - policy.goals[:, 0, :2], axis=1)
-            > policy.cfg_rl_waymo.moving_threshold
-        )[0]
-        moving_agent_mask = np.isin(np.arange(policy.states.shape[0]), moving_ids)
-        adapter._moving_agent_mask_cache = moving_agent_mask
-
-    ag_states, ag_types, actions_src, rtgs_src, goals, timesteps_src = slice_policy_window(policy, t)
-    actions_buffer = get_or_create_prepare_buffer(
-        adapter=adapter,
-        name="actions_buffer",
-        shape=(actions_src.shape[0] + 1, *actions_src.shape[1:]),
-        dtype=actions_src.dtype,
-    )
-    actions_buffer.fill(0)
-    actions_buffer[: actions_src.shape[0]] = actions_src
-    actions_discrete = adapter.dataset.discretize_actions(actions_buffer)
-    action_dim = int(policy.action_dim)
-    actions_values = sanitize_index_array(
-        actions_discrete[: actions_src.shape[0]],
-        field_name="actions",
-        step_t=t,
-        min_value=0,
-        max_value=action_dim - 1,
-    )
-    adapter._pad_action_values_step = sanitize_index_array(
-        np.asarray(actions_discrete[actions_src.shape[0]]).copy(),
-        field_name="pad_actions",
-        step_t=t,
-        min_value=0,
-        max_value=action_dim - 1,
-    )
-
-    rtgs = get_or_create_prepare_buffer(
-        adapter=adapter,
-        name="rtgs_norm_buffer",
-        shape=rtgs_src.shape,
-        dtype=rtgs_src.dtype,
-    )
-    np.copyto(rtgs, rtgs_src)
-    normalize_rtgs_inplace(rtgs, policy.cfg_rl_waymo)
-    if policy.discretize_rtgs:
-        rtgs_discrete = get_or_create_prepare_buffer(
-            adapter=adapter,
-            name="rtgs_discrete_buffer",
-            shape=(rtgs.shape[0] + 1, *rtgs.shape[1:]),
-            dtype=rtgs.dtype,
-        )
-        rtgs_discrete.fill(0)
-        rtgs_discrete[: rtgs.shape[0]] = rtgs
-        rtgs_discrete_values = adapter.dataset.discretize_rtgs(rtgs_discrete)
-        rtgs_values = sanitize_index_array(
-            rtgs_discrete_values[: rtgs.shape[0]],
-            field_name="rtgs",
-            step_t=t,
-            min_value=0,
-            max_value=int(policy.cfg_rl_waymo.rtg_discretization) - 1,
-        )
-        adapter._pad_rtg_values_step = sanitize_index_array(
-            np.asarray(rtgs_discrete_values[rtgs.shape[0]]).copy(),
-            field_name="pad_rtgs",
-            step_t=t,
-            min_value=0,
-            max_value=int(policy.cfg_rl_waymo.rtg_discretization) - 1,
-        )
-    else:
-        rtgs_values = rtgs
-        adapter._pad_rtg_values_step = np.zeros(rtgs.shape[1:], dtype=rtgs.dtype)
-
-    timesteps = get_or_create_prepare_buffer(
-        adapter=adapter,
-        name="timesteps_int_buffer",
-        shape=timesteps_src.shape,
-        dtype=np.dtype(np.int64),
-    )
-    np.copyto(timesteps, timesteps_src, casting="unsafe")
-    rel_timesteps_template = get_or_create_prepare_buffer(
-        adapter=adapter,
-        name="rel_timesteps_template",
-        shape=(
-            policy.cfg_rl_waymo.max_num_agents,
-            timesteps.shape[0],
-            timesteps.shape[1],
-        ),
-        dtype=timesteps.dtype,
-    )
-    rel_timesteps_template[...] = timesteps[np.newaxis, ...]
-
-    road_points_src = adapter._preproc_data.get("road_points")
-    road_types_src = adapter._preproc_data.get("road_types")
-    if road_points_src is None:
-        road_points_src = np.zeros((0, 1, 3), dtype=np.float32)
-    if road_types_src is None:
-        road_types_src = np.zeros((0, 1), dtype=np.float32)
-    goals_step = goals[:, 0]
+    tensor_context = build_policy_step_tensor_context(adapter, t)
 
     return {
-        "ag_states": ag_states,
-        "ag_types": ag_types,
-        "actions_values": actions_values,
-        "rtgs_values": rtgs_values,
-        "goals_step": goals_step,
-        "moving_agent_mask": moving_agent_mask,
-        "road_points_src": road_points_src,
-        "road_types_src": road_types_src,
-        "shared_timesteps": rel_timesteps_template,
+        "ag_states": tensor_context.policy_window_states,
+        "ag_types": tensor_context.policy_window_types,
+        "actions_values": tensor_context.actions_values,
+        "rtgs_values": tensor_context.rtgs_values,
+        "goals_step": tensor_context.goals_step,
+        "moving_agent_mask": tensor_context.moving_agent_mask,
+        "road_points_src": tensor_context.road_points_src,
+        "road_types_src": tensor_context.road_types_src,
+        "shared_timesteps": tensor_context.shared_timesteps,
+        "tensor_context": tensor_context,
     }
 
 
@@ -520,41 +518,30 @@ def build_focal_batches_from_shared_context(
     road_types_src = shared_context["road_types_src"]
     shared_timesteps = shared_context["shared_timesteps"]
 
-    dead_ids: List[int] = []
-    focal_batches: List[Dict[str, Any]] = []
     if focal_vehicle_ids is None:
-        unaccounted_veh_ids = get_control_vehicle_queue(adapter)
+        ordered_focal_vehicle_ids = get_control_vehicle_queue(adapter)
     else:
-        unaccounted_veh_ids = list(focal_vehicle_ids)
-    unaccounted_veh_id_set = set(unaccounted_veh_ids)
-    while unaccounted_veh_ids and unaccounted_veh_id_set:
-        focal_id = unaccounted_veh_ids.pop(0)
-        if focal_id not in unaccounted_veh_id_set:
-            continue
-        unaccounted_veh_id_set.remove(focal_id)
+        ordered_focal_vehicle_ids = list(focal_vehicle_ids)
 
-        focal_batch, additionally_accounted, is_dead = build_focal_batch(
-            adapter=adapter,
-            t=t,
-            focal_id=focal_id,
-            remaining_veh_ids=unaccounted_veh_ids,
-            remaining_veh_id_set=unaccounted_veh_id_set,
-            ag_states=ag_states,
-            ag_types=ag_types,
-            actions_values=actions_values,
-            rtgs_values=rtgs_values,
-            goals_step=goals_step,
-            moving_agent_mask=moving_agent_mask,
-            road_points_src=road_points_src,
-            road_types_src=road_types_src,
-            predict_rtgs=predict_rtgs,
-        )
-        if is_dead:
-            dead_ids.append(focal_id)
-            continue
-
-        for veh_id in additionally_accounted:
-            unaccounted_veh_id_set.discard(veh_id)
-        focal_batches.append(focal_batch)
+    plans, dead_ids = _build_focal_group_plans(
+        adapter=adapter,
+        t=t,
+        focal_vehicle_ids=ordered_focal_vehicle_ids,
+        ag_states=ag_states,
+        road_points_src=road_points_src,
+        predict_rtgs=predict_rtgs,
+    )
+    focal_batches = _build_motion_batches_from_plans(
+        adapter=adapter,
+        plans=plans,
+        ag_states=ag_states,
+        ag_types=ag_types,
+        actions_values=actions_values,
+        rtgs_values=rtgs_values,
+        goals_step=goals_step,
+        moving_agent_mask=moving_agent_mask,
+        road_points_src=road_points_src,
+        road_types_src=road_types_src,
+    )
 
     return focal_batches, dead_ids, shared_timesteps

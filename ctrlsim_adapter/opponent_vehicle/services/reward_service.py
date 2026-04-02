@@ -11,9 +11,6 @@ import numpy as np
 
 from . import reward_geometry as _reward_helpers
 
-_compute_signed_distance_to_polyline_np = (
-    _reward_helpers.compute_signed_distance_to_polyline_np
-)
 _compute_signed_distance_to_polylines_np = (
     _reward_helpers.compute_signed_distance_to_polylines_np
 )
@@ -35,6 +32,12 @@ class OpponentRewardService:
         return entries[-1]
 
     def _get_context_vehicle_ids(self, vehicle_data_dict: Dict) -> List[int]:
+        step_tensor_context = getattr(self.adapter, "_step_tensor_context", None)
+        if (
+            step_tensor_context is not None
+            and step_tensor_context.context_vehicle_ids is not None
+        ):
+            return list(step_tensor_context.context_vehicle_ids)
         veh_ids = self.adapter._all_vehicle_ids
         if not veh_ids:
             veh_ids = list(vehicle_data_dict.keys())
@@ -129,6 +132,13 @@ class OpponentRewardService:
         return rewards.reshape(num_targets, 1)
 
     def _get_step_vehicle_ids(self, t: int, vehicle_data_dict: Dict) -> List[int]:
+        step_tensor_context = getattr(self.adapter, "_step_tensor_context", None)
+        if (
+            step_tensor_context is not None
+            and int(step_tensor_context.step_t) == int(t)
+            and step_tensor_context.update_vehicle_ids
+        ):
+            return list(step_tensor_context.update_vehicle_ids)
         veh_ids = self.adapter._state_update_vehicle_ids_step
         if not veh_ids:
             veh_ids = self.adapter._all_vehicle_ids
@@ -157,24 +167,40 @@ class OpponentRewardService:
         if not context_vehicle_ids:
             return vehicle_data_dict
 
-        context_idx_map = {
-            veh_id: idx for idx, veh_id in enumerate(context_vehicle_ids)
-        }
-        target_vehicle_ids = [
-            veh_id for veh_id in step_vehicle_ids if veh_id in context_idx_map
-        ]
+        step_tensor_context = getattr(self.adapter, "_step_tensor_context", None)
+        context_idx_map = {veh_id: idx for idx, veh_id in enumerate(context_vehicle_ids)}
+        if (
+            step_tensor_context is not None
+            and int(step_tensor_context.step_t) == int(t)
+            and step_tensor_context.target_vehicle_ids is not None
+        ):
+            target_vehicle_ids = list(step_tensor_context.target_vehicle_ids)
+        else:
+            target_vehicle_ids = [
+                veh_id for veh_id in step_vehicle_ids if veh_id in context_idx_map
+            ]
         if not target_vehicle_ids:
             return vehicle_data_dict
 
-        context_data_list = [vehicle_data_dict[veh_id] for veh_id in context_vehicle_ids]
-        all_xy_exist = self._build_xy_exist(context_data_list, t, "position")
-        all_positions = all_xy_exist[:, 0, :2]
-        all_existence = all_xy_exist[:, 0, 2]
-
-        target_all_indices = np.asarray(
-            [context_idx_map[veh_id] for veh_id in target_vehicle_ids],
-            dtype=np.int64,
-        )
+        if (
+            step_tensor_context is not None
+            and int(step_tensor_context.step_t) == int(t)
+            and step_tensor_context.context_positions_xy is not None
+            and step_tensor_context.context_existence is not None
+            and step_tensor_context.target_context_indices is not None
+        ):
+            all_positions = step_tensor_context.context_positions_xy
+            all_existence = step_tensor_context.context_existence
+            target_all_indices = step_tensor_context.target_context_indices
+        else:
+            context_data_list = [vehicle_data_dict[veh_id] for veh_id in context_vehicle_ids]
+            all_xy_exist = self._build_xy_exist(context_data_list, t, "position")
+            all_positions = all_xy_exist[:, 0, :2]
+            all_existence = all_xy_exist[:, 0, 2]
+            target_all_indices = np.asarray(
+                [context_idx_map[veh_id] for veh_id in target_vehicle_ids],
+                dtype=np.int64,
+            )
         target_positions = all_positions[target_all_indices]
         target_existence = all_existence[target_all_indices]
 
@@ -214,34 +240,60 @@ class OpponentRewardService:
 
         adapter = self.adapter
         dataset = adapter.dataset
-        context_idx_map = {
-            veh_id: idx for idx, veh_id in enumerate(context_vehicle_ids)
-        }
-        target_vehicle_ids = []
-        for veh_id in step_vehicle_ids:
-            if veh_id not in context_idx_map:
-                continue
-            veh_data = vehicle_data_dict[veh_id]
-            if not self._get_step_or_last(veh_data["existence"], t):
-                continue
-            target_vehicle_ids.append(veh_id)
-        target_indices = np.asarray(
-            [context_idx_map[veh_id] for veh_id in target_vehicle_ids],
-            dtype=np.int64,
-        )
+        step_tensor_context = getattr(adapter, "_step_tensor_context", None)
+        context_idx_map = {veh_id: idx for idx, veh_id in enumerate(context_vehicle_ids)}
+        if (
+            step_tensor_context is not None
+            and int(step_tensor_context.step_t) == int(t)
+            and step_tensor_context.target_vehicle_ids is not None
+        ):
+            target_vehicle_ids = [
+                veh_id
+                for veh_id in step_tensor_context.target_vehicle_ids
+                if self._get_step_or_last(vehicle_data_dict[veh_id]["existence"], t)
+            ]
+            target_indices = np.asarray(
+                [context_idx_map[veh_id] for veh_id in target_vehicle_ids],
+                dtype=np.int64,
+            )
+        else:
+            target_vehicle_ids = []
+            for veh_id in step_vehicle_ids:
+                if veh_id not in context_idx_map:
+                    continue
+                veh_data = vehicle_data_dict[veh_id]
+                if not self._get_step_or_last(veh_data["existence"], t):
+                    continue
+                target_vehicle_ids.append(veh_id)
+            target_indices = np.asarray(
+                [context_idx_map[veh_id] for veh_id in target_vehicle_ids],
+                dtype=np.int64,
+            )
 
-        context_data_list = [vehicle_data_dict[veh_id] for veh_id in context_vehicle_ids]
-        all_xy_exist = self._build_xy_exist(context_data_list, t, "position")
-        all_positions = all_xy_exist[:, 0, :2]
-        all_existence = all_xy_exist[:, 0, 2]
+        if (
+            step_tensor_context is not None
+            and int(step_tensor_context.step_t) == int(t)
+            and step_tensor_context.context_positions_xy is not None
+            and step_tensor_context.context_existence is not None
+        ):
+            all_positions = step_tensor_context.context_positions_xy
+            all_existence = step_tensor_context.context_existence
+        else:
+            context_data_list = [vehicle_data_dict[veh_id] for veh_id in context_vehicle_ids]
+            all_xy_exist = self._build_xy_exist(context_data_list, t, "position")
+            all_positions = all_xy_exist[:, 0, :2]
+            all_existence = all_xy_exist[:, 0, 2]
 
         cfg_dataset = adapter.cfg.dataset.waymo
         dense_template = np.zeros(
             adapter.cfg.model.num_reward_components,
             dtype=np.float32,
         )
-        nearest_dist_by_context_idx: Dict[int, float] = {}
-        dense_rewards_by_context_idx: Dict[int, np.ndarray] = {}
+        nearest_dist_values = np.zeros((len(step_vehicle_ids),), dtype=np.float32)
+        dense_reward_values = np.zeros(
+            (len(step_vehicle_ids), dense_template.shape[0]),
+            dtype=np.float32,
+        )
 
         if target_vehicle_ids:
             target_positions = all_positions[target_indices]
@@ -252,27 +304,27 @@ class OpponentRewardService:
                 dtype=np.float32,
             )
             if adapter._road_edge_polylines_cpu:
-                dynamic_target_indices: List[int] = []
-                dynamic_target_positions: List[np.ndarray] = []
                 constant_road_edge_reward_by_id = (
                     adapter._constant_road_edge_reward_by_id
                 )
-                for local_idx, veh_id in enumerate(target_vehicle_ids):
-                    cached_reward = constant_road_edge_reward_by_id.get(veh_id)
-                    if cached_reward is not None:
-                        veh_edge_dist_rewards[local_idx, 0] = cached_reward
-                        continue
-                    dynamic_target_indices.append(local_idx)
-                    dynamic_target_positions.append(target_positions[local_idx])
-
-                if dynamic_target_positions:
+                cached_road_rewards = np.asarray(
+                    [
+                        float(constant_road_edge_reward_by_id.get(veh_id, np.nan))
+                        for veh_id in target_vehicle_ids
+                    ],
+                    dtype=np.float32,
+                )
+                cached_reward_mask = ~np.isnan(cached_road_rewards)
+                if np.any(cached_reward_mask):
+                    veh_edge_dist_rewards[cached_reward_mask, 0] = cached_road_rewards[
+                        cached_reward_mask
+                    ]
+                dynamic_target_mask = ~cached_reward_mask
+                if np.any(dynamic_target_mask):
                     dynamic_rewards = self._compute_road_edge_rewards(
-                        np.asarray(dynamic_target_positions, dtype=np.float32),
+                        target_positions[dynamic_target_mask],
                     )
-                    veh_edge_dist_rewards[
-                        np.asarray(dynamic_target_indices, dtype=np.int64),
-                        0,
-                    ] = dynamic_rewards[:, 0]
+                    veh_edge_dist_rewards[dynamic_target_mask, 0] = dynamic_rewards[:, 0]
                 veh_edge_dist_rewards *= target_existence[:, np.newaxis]
 
             veh_veh_dist_rewards = self._compute_nearest_dist_to_all(
@@ -284,11 +336,7 @@ class OpponentRewardService:
             )
 
             max_veh_veh_distance = cfg_dataset.max_veh_veh_distance
-            nearest_dist_values = veh_veh_dist_rewards[:, 0] * max_veh_veh_distance
-            for local_idx, context_idx in enumerate(target_indices):
-                nearest_dist_by_context_idx[int(context_idx)] = float(
-                    nearest_dist_values[local_idx]
-                )
+            target_nearest_dist_values = veh_veh_dist_rewards[:, 0] * max_veh_veh_distance
 
             veh_veh_dist_rewards_norm = np.clip(
                 veh_veh_dist_rewards,
@@ -299,17 +347,32 @@ class OpponentRewardService:
                 veh_veh_dist_rewards_norm / max_veh_veh_distance
             )
 
-            processed_rewards = np.asarray(
-                [
-                    (
-                        np.asarray(vehicle_data_dict[veh_id]["reward"][-1], dtype=np.float32)
-                        if vehicle_data_dict[veh_id]["reward"]
-                        else np.asarray(adapter._zero_reward_template, dtype=np.float32)
-                    )
-                    for veh_id in target_vehicle_ids
-                ],
-                dtype=np.float32,
-            )[:, np.newaxis, :]
+            if (
+                step_tensor_context is not None
+                and int(step_tensor_context.step_t) == int(t)
+                and step_tensor_context.latest_rewards is not None
+                and step_tensor_context.target_update_indices is not None
+                and step_tensor_context.latest_rewards.shape[0] > 0
+                and step_tensor_context.latest_rewards.shape[1] > 0
+            ):
+                processed_rewards = np.asarray(
+                    step_tensor_context.latest_rewards[
+                        step_tensor_context.target_update_indices[: len(target_vehicle_ids)]
+                    ],
+                    dtype=np.float32,
+                )[:, np.newaxis, :]
+            else:
+                processed_rewards = np.asarray(
+                    [
+                        (
+                            np.asarray(vehicle_data_dict[veh_id]["reward"][-1], dtype=np.float32)
+                            if vehicle_data_dict[veh_id]["reward"]
+                            else np.asarray(adapter._zero_reward_template, dtype=np.float32)
+                        )
+                        for veh_id in target_vehicle_ids
+                    ],
+                    dtype=np.float32,
+                )[:, np.newaxis, :]
             processed_rewards = (
                 processed_rewards
                 * target_existence[:, np.newaxis, np.newaxis]
@@ -333,23 +396,25 @@ class OpponentRewardService:
             )
 
             dense_template = np.zeros_like(target_rewards[0, 0], dtype=np.float32)
-            for target_idx, context_idx in enumerate(target_indices):
-                dense_rewards_by_context_idx[int(context_idx)] = target_rewards[
-                    target_idx,
-                    0,
-                ]
+            dense_reward_values = np.zeros(
+                (len(step_vehicle_ids), dense_template.shape[0]),
+                dtype=np.float32,
+            )
+            step_row_by_vehicle_id = {
+                veh_id: row_idx for row_idx, veh_id in enumerate(step_vehicle_ids)
+            }
+            target_step_indices = np.asarray(
+                [step_row_by_vehicle_id[veh_id] for veh_id in target_vehicle_ids],
+                dtype=np.int64,
+            )
+            if target_step_indices.size > 0:
+                nearest_dist_values[target_step_indices] = target_nearest_dist_values
+                dense_reward_values[target_step_indices] = target_rewards[:, 0]
 
-        for veh_id in step_vehicle_ids:
-            context_idx = context_idx_map.get(veh_id)
-            if context_idx is None:
-                continue
+        for step_idx, veh_id in enumerate(step_vehicle_ids):
             veh_data = vehicle_data_dict[veh_id]
-            veh_data["nearest_dist"].append(
-                nearest_dist_by_context_idx.get(context_idx, 0.0)
-            )
-            veh_data["dense_reward"].append(
-                dense_rewards_by_context_idx.get(context_idx, dense_template.copy())
-            )
+            veh_data["nearest_dist"].append(float(nearest_dist_values[step_idx]))
+            veh_data["dense_reward"].append(dense_reward_values[step_idx].copy())
 
         return vehicle_data_dict
 

@@ -7,62 +7,18 @@ Converts model outputs into per-vehicle RTG results while removing per-row sampl
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Iterator, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ctrlsim_adapter.opponent_vehicle.discretization import undiscretize_rtg_indices
 from utils.data import MotionData
 
 from .sampling import build_row_keys, build_stateless_uniforms, sample_categorical_from_uniform
 
-RTGCache = Dict[Tuple[int, int], Tuple[int, int, int]]
 _RTG_STAGE_TAG = 0
 _SIDE_CHANNEL_RTG_STAGE_TAG = 1
-
-
-def resolve_idx_in_model(
-    veh_id: int,
-    veh_id_to_idx: Dict[int, int],
-    new_agent_idx_dict: Dict[int, int],
-) -> Optional[int]:
-    agent_key = veh_id_to_idx.get(veh_id)
-    if agent_key is None:
-        return None
-    idx_in_model = new_agent_idx_dict.get(agent_key)
-    if idx_in_model is None:
-        return None
-    return int(idx_in_model)
-
-
-def write_rtg_discrete(
-    batched_data: MotionData,
-    batch_idx: int,
-    idx_in_model: int,
-    token_index: int,
-    discrete: Tuple[int, int, int],
-) -> None:
-    batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 0] = int(discrete[0])
-    batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 1] = int(discrete[1])
-    batched_data["agent"].rtgs[batch_idx, idx_in_model, token_index, 2] = int(discrete[2])
-
-
-def iter_resolved_vehicle_indices(
-    vehicle_ids: Iterable[int],
-    veh_id_to_idx: Dict[int, int],
-    new_agent_idx_dict: Dict[int, int],
-) -> Iterator[Tuple[int, int]]:
-    for veh_id in vehicle_ids:
-        idx_in_model = resolve_idx_in_model(
-            veh_id=veh_id,
-            veh_id_to_idx=veh_id_to_idx,
-            new_agent_idx_dict=new_agent_idx_dict,
-        )
-        if idx_in_model is None:
-            continue
-        yield int(veh_id), idx_in_model
 
 
 def _build_flat_tilt_logits(
@@ -279,92 +235,3 @@ def decode_rtg_jobs_batched_impl(
     if len(rtg_results_by_job) != job_count:
         raise ValueError("RTG decode job/result count mismatch.")
     return rtg_results_by_job, processed_rtg_veh_ids_by_job
-
-
-def decode_rtg_for_job_impl(
-    teacher: Any,
-    batched_data: MotionData,
-    rtg_logits: torch.Tensor,
-    batch_idx: int,
-    job: Dict[str, Any],
-    token_index: int,
-    rtg_cache: RTGCache,
-) -> Tuple[Dict[int, Tuple[float, float, float]], List[int]]:
-    prepared = job["prepared"]
-    focal_batch = job["focal_batch"]
-    if not bool(focal_batch["predict_rtgs"]):
-        return {}, []
-
-    veh_id_to_idx = prepared["veh_id_to_idx"]
-    tilt_by_veh_id = prepared["tilt_by_veh_id"]
-    default_tilt = prepared["default_tilt"]
-    data_veh_ids = set(focal_batch["data_veh_ids"])
-
-    rtg_results: Dict[int, Tuple[float, float, float]] = {}
-    processed_rtg_veh_ids: List[int] = []
-    sampling_seed = np.asarray([prepared["sampling_seed"]], dtype=np.uint64)
-
-    for veh_id, idx_in_model in iter_resolved_vehicle_indices(
-        vehicle_ids=focal_batch["veh_ids_in_context"],
-        veh_id_to_idx=veh_id_to_idx,
-        new_agent_idx_dict=focal_batch["new_agent_idx_dict"],
-    ):
-        cache_key = (int(job["env_idx"]), int(veh_id))
-        if cache_key in rtg_cache:
-            write_rtg_discrete(
-                batched_data=batched_data,
-                batch_idx=batch_idx,
-                idx_in_model=idx_in_model,
-                token_index=token_index,
-                discrete=rtg_cache[cache_key],
-            )
-            continue
-
-        if veh_id in data_veh_ids:
-            goal_tilt, veh_tilt, road_tilt = tilt_by_veh_id.get(veh_id, default_tilt)
-        else:
-            goal_tilt, veh_tilt, road_tilt = (0, 0, 0)
-        rtg_logits_3 = rtg_logits[batch_idx, idx_in_model, token_index].reshape(
-            teacher.rtg_discretization,
-            teacher.num_reward_components,
-        )
-        tilt_logits = _build_flat_tilt_logits(
-            teacher=teacher,
-            goal_tilt=np.asarray([goal_tilt], dtype=np.int64),
-            veh_tilt=np.asarray([veh_tilt], dtype=np.int64),
-            road_tilt=np.asarray([road_tilt], dtype=np.int64),
-            dtype=rtg_logits_3.dtype,
-            device=rtg_logits_3.device,
-        )
-        discrete = _sample_rtg_indices(
-            teacher=teacher,
-            flat_rtg_logits=rtg_logits_3.unsqueeze(0),
-            flat_tilt_logits=tilt_logits,
-            sampling_seed=sampling_seed,
-            step_t=np.asarray([int(prepared["step_t"])], dtype=np.int64),
-            veh_id=np.asarray([int(veh_id)], dtype=np.int64),
-        )[0]
-        discrete_tuple = tuple(int(v) for v in discrete.tolist())
-        write_rtg_discrete(
-            batched_data=batched_data,
-            batch_idx=batch_idx,
-            idx_in_model=idx_in_model,
-            token_index=token_index,
-            discrete=discrete_tuple,
-        )
-        rtg_cache[cache_key] = discrete_tuple
-        rtg_results[int(veh_id)] = undiscretize_rtg_indices(
-            discrete_tuple[0],
-            discrete_tuple[1],
-            discrete_tuple[2],
-            teacher.rtg_discretization,
-            teacher.min_rtg_pos,
-            teacher.max_rtg_pos,
-            teacher.min_rtg_veh,
-            teacher.max_rtg_veh,
-            teacher.min_rtg_road,
-            teacher.max_rtg_road,
-        )
-        processed_rtg_veh_ids.append(int(veh_id))
-
-    return rtg_results, processed_rtg_veh_ids

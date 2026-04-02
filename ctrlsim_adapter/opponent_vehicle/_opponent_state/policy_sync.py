@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 from utils.data import get_object_type_onehot
 
 
@@ -27,6 +29,70 @@ def update_policy_state(service: Any, t: int) -> None:
     goal_dim = policy.cfg_rl_waymo.goal_dim
     use_rtg = policy.use_rtg
     use_real_time_rtgs = policy.real_time_rewards and policy.use_rtg
+    step_tensor_context = getattr(adapter, "_step_tensor_context", None)
+    if (
+        step_tensor_context is not None
+        and int(step_tensor_context.step_t) == int(t)
+        and step_tensor_context.policy_vehicle_indices is not None
+        and step_tensor_context.positions_xy is not None
+        and step_tensor_context.velocities_xy is not None
+        and step_tensor_context.headings is not None
+        and step_tensor_context.existence is not None
+        and step_tensor_context.timesteps is not None
+        and step_tensor_context.goals_state is not None
+    ):
+        policy_vehicle_indices = step_tensor_context.policy_vehicle_indices
+        states[policy_vehicle_indices, t, 0:2] = step_tensor_context.positions_xy
+        states[policy_vehicle_indices, t, 2:4] = step_tensor_context.velocities_xy
+        states[policy_vehicle_indices, t, 4] = step_tensor_context.headings
+        states[policy_vehicle_indices, t, 5] = np.asarray(
+            [
+                float(adapter._vehicle_data_dict[veh_id]["length"])
+                for veh_id in step_tensor_context.update_vehicle_ids
+            ],
+            dtype=np.float32,
+        )
+        states[policy_vehicle_indices, t, 6] = np.asarray(
+            [
+                float(adapter._vehicle_data_dict[veh_id]["width"])
+                for veh_id in step_tensor_context.update_vehicle_ids
+            ],
+            dtype=np.float32,
+        )
+        states[policy_vehicle_indices, t, 7] = step_tensor_context.existence
+
+        if t == 0:
+            for veh_idx, veh_id in zip(
+                policy_vehicle_indices.tolist(),
+                step_tensor_context.update_vehicle_ids,
+            ):
+                types[veh_idx] = get_object_type_onehot(
+                    adapter._vehicle_data_dict[veh_id]["type"]
+                )
+
+        timesteps[policy_vehicle_indices, t, 0] = step_tensor_context.timesteps
+        if t > 0 and step_tensor_context.latest_actions is not None:
+            actions[policy_vehicle_indices, t - 1] = step_tensor_context.latest_actions
+            if (
+                use_rtg
+                and step_tensor_context.latest_rtgs is not None
+                and step_tensor_context.latest_rtgs.shape[0] == len(policy_vehicle_indices)
+                and step_tensor_context.latest_rtgs.shape[1] > 0
+            ):
+                rtgs[policy_vehicle_indices, t - 1] = step_tensor_context.latest_rtgs
+        if (
+            use_real_time_rtgs
+            and step_tensor_context.latest_rtgs is not None
+            and step_tensor_context.latest_rtgs.shape[0] == len(policy_vehicle_indices)
+            and step_tensor_context.latest_rtgs.shape[1] > 0
+        ):
+            rtgs[policy_vehicle_indices, t] = step_tensor_context.latest_rtgs
+
+        goal_width = min(int(goal_dim), int(step_tensor_context.goals_state.shape[1]))
+        goals[policy_vehicle_indices, t, :goal_width] = step_tensor_context.goals_state[
+            :, :goal_width
+        ]
+        return
 
     for veh_id in adapter._state_update_vehicle_ids_step:
         veh_data = adapter._vehicle_data_dict.get(veh_id)

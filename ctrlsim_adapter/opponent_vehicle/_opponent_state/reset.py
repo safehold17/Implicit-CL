@@ -88,6 +88,7 @@ def reset(
     adapter._opponent_goal_hold_until = {}
     adapter._moving_agent_mask_cache = None
     adapter._batch_prepare_cache = {}
+    adapter._step_tensor_context = None
     adapter._pending_sparse_actions_step_t = None
     adapter._pending_sparse_actions = {}
     adapter._ego_action_scale = 1.0

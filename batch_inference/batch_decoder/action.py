@@ -12,9 +12,6 @@ from typing import Any, Dict, List, Sequence, Tuple
 import numpy as np
 import torch
 
-from ctrlsim_adapter.opponent_vehicle.discretization import undiscretize_action_index
-
-from .rtg import iter_resolved_vehicle_indices
 from .sampling import (
     build_action_probabilities,
     build_row_keys,
@@ -177,55 +174,6 @@ def export_selected_action_logits_by_job_impl(
     if len(logits_by_job) != len(selected_job_indices):
         raise ValueError("Selected action-logit export job/result count mismatch.")
     return logits_by_job
-
-
-def decode_action_for_job_impl(
-    teacher: Any,
-    action_logits: torch.Tensor,
-    batch_idx: int,
-    job: Dict[str, Any],
-    token_index: int,
-) -> Dict[int, Tuple[float, float]]:
-    prepared = job["prepared"]
-    focal_batch = job["focal_batch"]
-    veh_id_to_idx = prepared["veh_id_to_idx"]
-    new_agent_idx_dict = focal_batch["new_agent_idx_dict"]
-    data_veh_ids = focal_batch["data_veh_ids"]
-    sampling = prepared["sampling"]
-    sampling_seed = np.asarray([prepared["sampling_seed"]], dtype=np.uint64)
-    temperature = torch.as_tensor([float(sampling["action_temperature"])], dtype=action_logits.dtype, device=action_logits.device)
-    nucleus_sampling = torch.as_tensor([bool(sampling["nucleus_sampling"])], dtype=torch.bool, device=action_logits.device)
-    nucleus_threshold = torch.as_tensor([float(sampling["nucleus_threshold"])], dtype=action_logits.dtype, device=action_logits.device)
-
-    action_results: Dict[int, Tuple[float, float]] = {}
-    for veh_id, idx_in_model in iter_resolved_vehicle_indices(
-        vehicle_ids=data_veh_ids,
-        veh_id_to_idx=veh_id_to_idx,
-        new_agent_idx_dict=new_agent_idx_dict,
-    ):
-        logits_1d = action_logits[batch_idx, idx_in_model, token_index]
-        action_idx = _sample_action_indices(
-            flat_logits=logits_1d.unsqueeze(0),
-            temperatures=temperature,
-            nucleus_sampling=nucleus_sampling,
-            nucleus_thresholds=nucleus_threshold,
-            sampling_seed=sampling_seed,
-            step_t=np.asarray([int(prepared["step_t"])], dtype=np.int64),
-            veh_id=np.asarray([int(veh_id)], dtype=np.int64),
-        )
-        accel, steer = undiscretize_action_index(
-            int(action_idx[0]),
-            teacher.accel_discretization,
-            teacher.steer_discretization,
-            teacher.min_accel,
-            teacher.max_accel,
-            teacher.min_steer,
-            teacher.max_steer,
-        )
-        action_results[veh_id] = (float(accel), float(steer))
-    return action_results
-
-
 def decode_action_stage_batched_impl(
     teacher: Any,
     batched_data: Any,
