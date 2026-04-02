@@ -25,26 +25,16 @@ def map_action_to_tilt(
     return round_clipped_tilt(tilt_value, tilt_range)
 
 
-def build_zero_tilt_level(
-    scenario_id: str,
-    seed: int,
+def init_level_params_vec(
     tilting_mode: str,
     per_vehicle_tilting_length: int,
-) -> ScenarioLevel:
-    """Build a zero-tilt level for modes that ignore tilting."""
-    per_vehicle_tilting = (
-        (0,) * per_vehicle_tilting_length
-        if tilting_mode == "per_vehicle"
-        else ()
-    )
-    return ScenarioLevel(
-        scenario_id=scenario_id,
-        seed=seed,
-        goal_tilt=0,
-        veh_veh_tilt=0,
-        veh_edge_tilt=0,
-        per_vehicle_tilting=per_vehicle_tilting,
-    )
+) -> list[int]:
+    """Build the default ``level_params_vec`` layout for the tilting mode."""
+    if tilting_mode == "per_vehicle":
+        return [0, 0, 0, 0] + [0] * per_vehicle_tilting_length
+    if tilting_mode == "none":
+        return [0]
+    return [0, 0, 0, 0]
 
 
 def apply_adversary_tilting_action(
@@ -116,32 +106,6 @@ def sample_random_tilt_components(
             for _ in range(per_vehicle_tilting_length)
         ),
     )
-
-
-def normalize_level_for_tilting_mode(
-    level: ScenarioLevel,
-    tilting_mode: str,
-    per_vehicle_tilting_length: int,
-    normalize_per_vehicle_tilting: Callable[[tuple[int, ...]], tuple[int, ...]],
-) -> ScenarioLevel:
-    """Normalize a level so it matches the current environment tilting mode."""
-    if tilting_mode == "per_vehicle":
-        normalized_per_vehicle_tilting = normalize_per_vehicle_tilting(
-            level.per_vehicle_tilting
-        )
-        return replace(level, per_vehicle_tilting=normalized_per_vehicle_tilting)
-
-    if tilting_mode == "none":
-        return build_zero_tilt_level(
-            scenario_id=level.scenario_id,
-            seed=level.seed,
-            tilting_mode=tilting_mode,
-            per_vehicle_tilting_length=per_vehicle_tilting_length,
-        )
-
-    return level
-
-
 def encode_level_params(
     scenario_idx: int,
     level: ScenarioLevel,

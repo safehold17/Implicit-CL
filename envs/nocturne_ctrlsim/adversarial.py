@@ -7,32 +7,38 @@ Support DCD framework requirements:
 - dynamic scenario pool size
 - Level mutation and editing
 """
-import os
 import random
-import warnings
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gym
 import numpy as np
 import torch
+from dataclasses import replace
 
-from .level import ScenarioLevel
+from .config import build_nocturne_ctrlsim_env_config
+from .level import (
+    ScenarioLevel,
+    build_zero_tilt_level,
+    normalize_per_vehicle_tilting,
+)
+from .services.bootstrap import (
+    NocturneCtrlSimBootstrapDependencies,
+    bootstrap_nocturne_ctrlsim_env,
+)
 
 from .services.scenario_helpers import (
     get_vehicle_by_id,
     load_scenario,
     remove_background_moving_vehicles,
 )
+from .services import level_manager as level_manager_service
+from .services import scenario_pool as scenario_pool_service
 
 from .services.gt_helpers import (
     get_goal_point_for_vehicle,
     initialize_ego_goal_state,
 )
-from .student_env_policy import (
-    build_student_observation_config,
-    get_student_obs_dim,
-    get_student_observation,
-)
+from .student_env_policy import get_student_observation
 from .services.runtime import NocturneCtrlSimRuntime
 
 from .services.simulation_info import (
@@ -41,27 +47,16 @@ from .services.simulation_info import (
 )
 
 from .utils.vehicle_map_helpers import (
-    format_vehicle_map_exhausted_error,
-    format_vehicle_map_skip_warning,
     is_retryable_vehicle_map_error,
     load_vehicle_ids_for_scenario,
 )
 from .utils.encoding_helpers import (
-    decode_level_from_string_array,
     encode_level_to_string_array,
 )
 from .utils.tilt_helpers import (
     apply_adversary_tilting_action,
-    build_zero_tilt_level,
-    encode_level_params,
-    map_action_to_tilt,
-    mutate_global_level,
-    mutate_per_vehicle_level,
-    normalize_level_for_tilting_mode,
-    sample_random_tilt_components,
+    init_level_params_vec,
 )
-
-from .utils.video_recorder import NocturneVideoRecorder
 
 from .utils import visualization as viz
 
@@ -69,7 +64,6 @@ from tools.build_scenario_index import ScenarioIndex
 
 from ctrlsim_adapter.config_loader import create_minimal_config
 from ctrlsim_adapter.data_bridge import DataBridge
-from ctrlsim_adapter.policy_reweighting_helpers import AdversarialRTGConfig
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
 class NocturneCtrlSimAdversarial(gym.Env):
     """
@@ -110,401 +104,27 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """
         super().__init__()
 
-        vehicle_map_path = kwargs.get('vehicle_map_path', "data/vehicle_map_valid.json")
-        preproc_cache_size = int(kwargs.get('preproc_cache_size', 64))
-        opponent_k = kwargs.get('opponent_k', 7)
-        max_episode_steps = kwargs.get('max_episode_steps', 90)
-        device = kwargs.get('device', 'cuda')
-        cfg = kwargs.get('cfg', None)
-        seed = kwargs.get('seed', 0)
-        fixed_environment = kwargs.get('fixed_environment', False)
-        random_z_dim = kwargs.get('random_z_dim', 50)
-        dynamic_scenario_pool = kwargs.get('dynamic_scenario_pool', False)
-        max_scenario_pool_size = kwargs.get('max_scenario_pool_size', 10000)
-        tilting_mode = kwargs.get('tilting_mode', 'per_vehicle')
-        mutation_mode = kwargs.get('mutation_mode', 'all')
-        mutation_range = kwargs.get('mutation_range', 5.0)
-        show_tilting_params = kwargs.get('show_tilting_params', True)
-        show_vehicle_ids = kwargs.get('show_vehicle_ids', True)
-        show_ego_vehicle_selection = kwargs.get('show_ego_vehicle_selection', True)
-        remove_background_vehicles = kwargs.get('remove_background_vehicles', True)
-        requested_obs_dim = kwargs.get('obs_dim')
-        student_accel_discretization = int(kwargs['student_accel_discretization'])
-        student_steer_discretization = int(kwargs['student_steer_discretization'])
-        if student_accel_discretization < 2:
-            raise ValueError(
-                "student_accel_discretization must be >= 2, "
-                f"got {student_accel_discretization}"
-            )
-        if student_steer_discretization < 2:
-            raise ValueError(
-                "student_steer_discretization must be >= 2, "
-                f"got {student_steer_discretization}"
-            )
-        tilt_range = kwargs.get("tilt_range")
-        if tilt_range is None:
-            tilt_range = (-25.0, 25.0)
-        try:
-            tilt_low, tilt_high = tilt_range
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "tilt_range must be a length-2 iterable of (low, high)"
-            ) from exc
-        tilt_range = (float(tilt_low), float(tilt_high))
-        if tilt_range[0] > tilt_range[1]:
-            raise ValueError(
-                "tilt_range must satisfy low <= high, "
-                f"got {tilt_range}"
-            )
-        action_repeat_frequency = int(
-            kwargs.get("action_repeat_frequency", 2)
+        config = build_nocturne_ctrlsim_env_config(
+            scenario_index_path=scenario_index_path,
+            opponent_checkpoint=opponent_checkpoint,
+            scenario_data_dir=scenario_data_dir,
+            preprocess_dir=preprocess_dir,
+            kwargs=kwargs,
         )
-        if action_repeat_frequency < 1:
-            raise ValueError(
-                "action_repeat_frequency must be >= 1, "
-                f"got {action_repeat_frequency}"
-            )
-        kl_loss_computation_frequency = int(
-            kwargs.get("kl_loss_computation_frequency", 2)
+        dependencies = NocturneCtrlSimBootstrapDependencies(
+            scenario_index_cls=ScenarioIndex,
+            create_minimal_config=create_minimal_config,
+            data_bridge_cls=DataBridge,
+            opponent_cls=CtrlSimOpponentAdapter,
+            runtime_cls=NocturneCtrlSimRuntime,
+            load_scenario=load_scenario,
+            get_vehicle_by_id=get_vehicle_by_id,
+            load_vehicle_ids_for_scenario=load_vehicle_ids_for_scenario,
+            initialize_ego_goal_state=initialize_ego_goal_state,
+            get_goal_point_for_vehicle=get_goal_point_for_vehicle,
+            get_student_observation=get_student_observation,
         )
-        if kl_loss_computation_frequency < 1:
-            raise ValueError(
-                "kl_loss_computation_frequency must be >= 1, "
-                f"got {kl_loss_computation_frequency}"
-            )
-        sparse_inference_action_repeat = bool(
-            kwargs.get("sparse_inference_action_repeat", False)
-        )
-        self.use_ego_ctrlsim_kl_loss = bool(
-            kwargs.get("use_ego_ctrlsim_kl_loss", False)
-        )
-        opponent_policy_reweighting_enabled = bool(
-            kwargs.get("opponent_policy_reweighting_enabled", False)
-        )
-        policy_reweighting_target = str(
-            kwargs.get("policy_reweighting_target", "rtg")
-        )
-        if policy_reweighting_target not in {"rtg", "action"}:
-            raise ValueError(
-                "policy_reweighting_target must be 'rtg' or 'action', "
-                f"got {policy_reweighting_target}"
-            )
-        reweighting_frequency = int(kwargs.get("reweighting_frequency", 1))
-        if reweighting_frequency < 1:
-            raise ValueError(
-                "reweighting_frequency must be >= 1, "
-                f"got {reweighting_frequency}"
-            )
-        self.opponent_policy_reweighting_enabled = opponent_policy_reweighting_enabled
-        self.policy_reweighting_target = policy_reweighting_target
-        self.reweighting_frequency = reweighting_frequency
-        self.policy_reweighting_config = AdversarialRTGConfig(
-            enabled=opponent_policy_reweighting_enabled,
-            reward_scale=float(kwargs.get("policy_reweighting_reward_scale", 1.0)),
-            epsilon=float(kwargs.get("policy_reweighting_epsilon", 1e-6)),
-            error_mean=float(kwargs.get("policy_reweighting_error_mean", 0.0)),
-            error_sigma=float(kwargs.get("policy_reweighting_error_sigma", 1.0)),
-        )
-        self.action_repeat_frequency = action_repeat_frequency
-        self.kl_loss_computation_frequency = kl_loss_computation_frequency
-
-        self.fixed_environment = fixed_environment
-        self._set_process_seed(seed)
-        
-        # ========== Scenario index (support dynamic extension) ==========
-        self.scenario_index_path = scenario_index_path
-        self.scenario_index = ScenarioIndex(scenario_index_path)
-        self.scenario_ids = list(self.scenario_index.scenario_ids)
-        self.scenario_id_to_index = dict(self.scenario_index.scenario_id_to_index)
-        self.index_to_scenario_id = dict(self.scenario_index.index_to_scenario_id)
-        
-        # Dynamic scenario pool config
-        self.dynamic_scenario_pool = dynamic_scenario_pool
-        self.max_scenario_pool_size = max_scenario_pool_size
-        self._scenario_pool_dirty = False
-        
-        # ==========Opponent vehicle (Ctrlsim) config loading ==========
-        if cfg is None:
-            cfg = create_minimal_config(
-                checkpoint_path=opponent_checkpoint,
-                scenario_dir=scenario_data_dir,
-                preprocess_dir=preprocess_dir,
-            )
-        self.cfg = cfg
-        self.opponent_checkpoint = opponent_checkpoint
-        self.scenario_data_dir = scenario_data_dir
-        self.preprocess_dir = preprocess_dir
-        self.preproc_cache_size = preproc_cache_size
-        self.inference_precision = kwargs.get('inference_precision', 'fp32')
-        opponent_runtime_mode = kwargs.get('opponent_runtime_mode', 'normal')
-        
-        # Vehicle map path (for loading pre-computed ego/opponent IDs)
-        if vehicle_map_path:
-            if os.path.isabs(vehicle_map_path):
-                self.vehicle_map_path = vehicle_map_path
-            else:
-                project_root = os.path.abspath(
-                    os.path.join(os.path.dirname(__file__), "..", "..")
-                )
-                self.vehicle_map_path = os.path.join(project_root, vehicle_map_path)
-        else:
-            self.vehicle_map_path = None
-        self._vehicle_map_cache = None
-        
-        # ========== Data bridge ==========
-        self.data_bridge = DataBridge(
-            cfg,
-            preprocess_dir,
-            preproc_cache_size=preproc_cache_size,
-        )
-        
-        # ========== Opponent policy adapter ==========
-        self.opponent = CtrlSimOpponentAdapter(
-            cfg=cfg,
-            checkpoint_path=opponent_checkpoint,
-            device=device,
-            action_repeat_frequency=action_repeat_frequency,
-            kl_loss_computation_frequency=kl_loss_computation_frequency,
-            sparse_inference_action_repeat=sparse_inference_action_repeat,
-            opponent_policy_reweighting_enabled=opponent_policy_reweighting_enabled,
-            policy_reweighting_reward_scale=self.policy_reweighting_config.reward_scale,
-            policy_reweighting_epsilon=self.policy_reweighting_config.epsilon,
-            policy_reweighting_error_mean=self.policy_reweighting_config.error_mean,
-            policy_reweighting_error_sigma=self.policy_reweighting_config.error_sigma,
-            policy_reweighting_target=policy_reweighting_target,
-            reweighting_frequency=reweighting_frequency,
-            load_on_init=(opponent_runtime_mode == 'normal'),
-        )
-        self.opponent._ego_action_scale = 1.0
-        self.opponent._ego_reweight_tilt = self._resolve_initial_ego_reweight_tilt(
-            tilting_mode=tilting_mode,
-            opponent_runtime_mode=opponent_runtime_mode,
-        )
-        
-        # ========== Environment config ==========
-        if max_episode_steps is None:
-            max_episode_steps = cfg.nocturne.steps
-        if max_episode_steps != cfg.nocturne.steps:
-            warnings.warn(
-                f"max_episode_steps ({max_episode_steps}) != cfg.nocturne.steps "
-                f"({cfg.nocturne.steps}); using the passed max_episode_steps for termination."
-            )
-        self.max_episode_steps = max_episode_steps
-        self.done_on_position_reached_only = bool(
-            kwargs.get('done_on_position_reached_only', True)
-        )
-        self.device = device
-        self.opponent_k = int(opponent_k)
-        if self.opponent_k < 0:
-            raise ValueError(f"opponent_k must be non-negative, got {opponent_k}")
-        self.per_vehicle_tilting_length = 3 * self.opponent_k
-        self.dt = cfg.nocturne.dt
-        
-        # ========== Tilting config ==========
-        if tilting_mode not in ['global', 'per_vehicle', 'ego', 'none']:
-            raise ValueError(
-                "tilting_mode must be 'global', 'per_vehicle', 'ego', or 'none', "
-                f"got {tilting_mode}"
-            )
-        if mutation_mode not in ['one', 'all']:
-            raise ValueError(
-                "mutation_mode must be 'one' or 'all', "
-                f"got {mutation_mode}"
-            )
-        self.tilting_mode = tilting_mode
-        self.mutation_mode = mutation_mode
-        self.mutation_range = mutation_range
-        self.tilt_range = tilt_range
-        self.show_tilting_params = show_tilting_params
-        self.show_vehicle_ids = show_vehicle_ids
-        self.show_ego_vehicle_selection = show_ego_vehicle_selection
-        self.remove_background_vehicles = remove_background_vehicles
-        self.opponent_runtime_mode = opponent_runtime_mode
-        self.removed_vehicle_ids: List[int] = []
-        
-        # ========== State variables ==========
-        self.current_level: Optional[ScenarioLevel] = None
-        self.current_step = 0
-        self.adversary_step_count = 0  # Adversary building steps
-        self._set_level_seed(seed)
-        
-        # Nocturne simulation object
-        self.sim = None
-        self.scenario = None
-        self.vehicles: List = []
-        self._vehicle_by_id_cache: Dict = {}
-        self._single_env_teacher = None
-        self.ego_vehicle = None
-        self.opponent_vehicles: List = []
-        self.opponent_vehicle_ids: List[int] = []
-        self.current_opponent_vehicle_num: int = 0
-        self.ego_selection_mode: str = "unknown"
-        
-        # Ground truth and preprocessed data
-        self._gt_data_dict: Dict = {}
-        self._gt_traj_cache: Dict = {}
-        self._gt_action_target_cache: Dict = {}
-        self._gt_action_runtime_cache: Dict = {}
-        self._preproc_data: Optional[Dict] = None
-        self._veh_id_to_preproc_idx: Dict[int, int] = {}
-        
-        # Ego vehicle's goal and reward related state (for _compute_reward)
-        self._ego_goal_dict: Optional[Dict] = None
-        self._ego_goal_dist_normalizer: float = 1.0
-        self._ego_vehicle_data_dict: Dict = {}  # Track ego's historical data
-        self._goal_points_by_id: Dict[int, np.ndarray] = {}
-        
-        # Termination condition
-        self._collision_occurred: bool = False
-        self._goal_reached: bool = False
-        self._offroad_occurred: bool = False
-        self._position_reached: bool = False
-        
-        # Episode statistics (for training monitoring)
-        self._episode_collision_occurred: bool = False
-        self._episode_goal_reached: bool = False
-        self._episode_offroad_occurred: bool = False
-        self._episode_position_reached: bool = False
-        self._episode_steps: int = 0
-        self._episode_progress: float = 0.0  # Target progress [0, 1]
-        
-        # Cache for last completed episode (for get_complexity_info)
-        self._last_completed_complexity_info: Optional[Dict] = None
-        
-        # Level parameters vector (for adversary building)
-        # [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt, per_vehicle_tilts...]
-        self.level_params_vec = self._init_level_params_vec()
-        
-        # ========== Student observation config (from args) ==========
-        # These parameters are used in make_agent, set default values here
-        self._max_observable_agents = kwargs.get('student_num_neighbors', 16)
-        self._top_k_road_points = kwargs.get('student_top_k_road', 64)
-        self.veh_veh_collision_rew_multiplier = kwargs.get('veh_veh_collision_rew_multiplier', 10.0)
-        self.veh_edge_collision_rew_multiplier = kwargs.get('veh_edge_collision_rew_multiplier', 10.0)
-        self.pos_target_achieved_rew_multiplier = kwargs.get(
-            'pos_target_achieved_rew_multiplier', 10.0
-        )
-        self.use_persistent_position_reward = kwargs.get(
-            'use_persistent_position_reward', False
-        )
-        self.use_pos_shaped = kwargs.get('use_pos_shaped', True)
-        self.use_approaching_goal = kwargs.get('use_approaching_goal', True)
-        self.use_speed_shaped = kwargs.get('use_speed_shaped', True)
-        self.use_heading_shaped = kwargs.get('use_heading_shaped', True)
-        self.use_speed_heading_target = kwargs.get(
-            'use_speed_heading_target', True
-        )
-        self.shaped_goal_reward = kwargs.get('shaped_goal_reward', True)
-        self.shaped_goal_distance_scaling = kwargs.get(
-            'shaped_goal_distance_scaling', 0.2
-        )
-        self.approaching_goal_scaling = kwargs.get('approaching_goal_scaling', 1.0)
-        self.use_veh_veh_shaped = kwargs.get('use_veh_veh_shaped', True)
-        self.use_veh_edge_shaped = kwargs.get('use_veh_edge_shaped', True)
-        self.max_veh_veh_distance = kwargs.get('max_veh_veh_distance', 15.0)
-        self.veh_edge_reward_distance_clip = kwargs.get(
-            'veh_edge_reward_distance_clip', 5.0
-        )
-        self.reset_random_max_retries = int(kwargs.get('reset_random_max_retries', 10))
-        
-        # Cache road data (filled after _initialize_simulation)
-        self._road_graph_cache: Optional[List[Dict]] = None
-        self._load_scenario_impl = load_scenario
-        self._get_vehicle_by_id_impl = get_vehicle_by_id
-        self._load_vehicle_ids_for_scenario_impl = load_vehicle_ids_for_scenario
-        self._initialize_ego_goal_state_impl = initialize_ego_goal_state
-        self._get_goal_point_for_vehicle_impl = get_goal_point_for_vehicle
-        self._get_student_observation_impl = get_student_observation
-        
-        # ========== Observation and action space (Student) ==========
-        self.student_observation_config = build_student_observation_config(
-            max_neighbors=self._max_observable_agents,
-            top_k_road_points=self._top_k_road_points,
-        )
-        self._obs_dim = get_student_obs_dim(self.student_observation_config)
-        if requested_obs_dim is not None and int(requested_obs_dim) != self._obs_dim:
-            warnings.warn(
-                f"obs_dim ({requested_obs_dim}) is ignored for Nocturne student observations; "
-                f"using centralized observation dim {self._obs_dim}."
-            )
-        self.student_accel_discretization = student_accel_discretization
-        self.student_steer_discretization = student_steer_discretization
-        self.student_num_actions = (
-            self.student_accel_discretization * self.student_steer_discretization
-        )
-        
-        self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, 
-            shape=(self._obs_dim,), 
-            dtype=np.float32
-        )
-        self.action_space = gym.spaces.Discrete(self.student_num_actions)
-        
-        # ========== Adversary space definition ==========
-        # Adversary building steps: scenario_id + tilt parameters (or scenario only in 'none' mode)
-        # set action dimension based on the tilting mode
-
-        if self.tilting_mode == 'none':
-            self.adversary_action_dim = 1
-        elif self.tilting_mode in ('ego', 'global'):
-            self.adversary_action_dim = 4
-        elif self.tilting_mode == 'per_vehicle':
-            self.adversary_action_dim = 1 + self.per_vehicle_tilting_length
-        else:
-            raise ValueError(f"Unsupported tilting_mode: {self.tilting_mode}")
-
-        self.adversary_max_steps = 1
-
-        self.random_z_dim = random_z_dim
-        self.passable = True  # Driving scenario default passable
-
-
-        # Adversary action space: continuous action [-1, 1]
-        self.adversary_action_space = gym.spaces.Box(
-            low=-1.0,
-            high=1.0,
-            shape=(self.adversary_action_dim,),
-            dtype=np.float32,
-        )
-
-        # Adversary observation space
-        self.adversary_ts_obs_space = gym.spaces.Box(
-            low=0, 
-            high=self.adversary_max_steps, 
-            shape=(1,), 
-            dtype=np.int32
-        )
-        self.adversary_randomz_obs_space = gym.spaces.Box(
-            low=0, 
-            high=1.0, 
-            shape=(random_z_dim,), 
-            dtype=np.float32
-        )
-        # image: current level parameters
-        self.adversary_image_obs_space = gym.spaces.Box(
-            low=-25.0, 
-            high=max(len(self.scenario_ids), 25),
-            shape=(len(self.level_params_vec),), 
-            dtype=np.float32
-        )
-        self.adversary_observation_space = gym.spaces.Dict({
-            'image': self.adversary_image_obs_space,
-            'time_step': self.adversary_ts_obs_space,
-            'random_z': self.adversary_randomz_obs_space
-        })
-        
-        # ========== Encoding format ==========
-        # Use string array, compatible with BipedalWalker
-        n_u_chars = max(12, len(str(np.iinfo(np.int32).max)))
-        self.encoding_u_chars = np.dtype(('U', n_u_chars))
-        
-        # ========== Metrics tracking ==========
-        self.reset_metrics()
-        
-        # ========== Video recording ==========
-        self.video_recorder: Optional[NocturneVideoRecorder] = None
-        self.recording_video = False
-        self.runtime = NocturneCtrlSimRuntime(self)
+        bootstrap_nocturne_ctrlsim_env(self, config, dependencies)
 
     def _set_process_seed(self, seed: int, reseed_numpy: bool = True) -> None:
         """Set process-level RNG streams used by this environment instance."""
@@ -537,27 +157,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._set_level_seed(level.seed)
         return self.current_level
 
-    def _coerce_level(self, level: Union[ScenarioLevel, str, np.ndarray]) -> ScenarioLevel:
-        """Convert supported level input formats into a ScenarioLevel."""
-        if isinstance(level, ScenarioLevel):
-            return level
-        if isinstance(level, str):
-            return ScenarioLevel.from_level_string(level)
-        if isinstance(level, np.ndarray):
-            if level.dtype.kind == 'U':  # string array unicode
-                return self._decode_string_encoding(level)
-            return ScenarioLevel.from_encoding(level, self.index_to_scenario_id)
-        raise TypeError(f"Unsupported level type for reset/mutation: {type(level)}")
-
-    def _init_level_params_vec(self) -> List[int]:
-        """Build default level parameter vector based on current tilting mode."""
-        if self.tilting_mode == 'per_vehicle':
-            # Vector layout: [scenario_index, goal_tilt, veh_veh_tilt, veh_edge_tilt]
-            return [0, 0, 0, 0] + [0] * self.per_vehicle_tilting_length
-        if self.tilting_mode == 'none':
-            return [0]
-        return [0, 0, 0, 0]
-
     def _resolve_initial_ego_reweight_tilt(
         self,
         *,
@@ -580,15 +179,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
             float(current_tilt.veh_veh_tilt),
             float(current_tilt.veh_edge_tilt),
         )
-
-    def _normalize_per_vehicle_tilting(self, per_vehicle_tilting: Tuple[int, ...]) -> Tuple[int, ...]:
-        """Normalize per-vehicle tilting vector length to match current opponent_k."""
-        normalized = [int(round(float(v))) for v in per_vehicle_tilting]
-        if len(normalized) < self.per_vehicle_tilting_length:
-            normalized.extend([0] * (self.per_vehicle_tilting_length - len(normalized)))
-        elif len(normalized) > self.per_vehicle_tilting_length:
-            normalized = normalized[:self.per_vehicle_tilting_length]
-        return tuple(normalized)
 
     # ========== Visualization helpers (bound from visualization module) ==========
     render = viz.render
@@ -619,7 +209,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.adversary_step_count = 0
         
         # Reset level parameters to default values
-        self.level_params_vec = self._init_level_params_vec()
+        self.level_params_vec = init_level_params_vec(
+            tilting_mode=self.tilting_mode,
+            per_vehicle_tilting_length=self.per_vehicle_tilting_length,
+        )
         
         # Generate new level seed
         self._set_level_seed(self._sample_level_seed())
@@ -628,7 +221,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
 
     def _normalize_adversary_action(self, action: Any) -> np.ndarray:
         """Normalize adversary action into a clipped 1D float vector."""
-        import torch
 
         if torch.is_tensor(action):
             action = action.detach().cpu().numpy()
@@ -693,7 +285,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         if done:
             # Building completed, create ScenarioLevel and initialize environment
-            self._build_level_from_params()
+            level_manager_service.build_level_from_params(self)
         
         return self._build_adversary_obs(), 0, done, {}
 
@@ -723,101 +315,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """Processed action dimension (compatible with AdversarialRunner)."""
         return self.adversary_action_dim
 
-    def _create_level_from_params(self, scenario_id: str) -> ScenarioLevel:
-        """Create a ScenarioLevel for the selected scenario and current tilts."""
-        if self.tilting_mode == 'per_vehicle':
-            per_vehicle_tilting = tuple(
-                int(round(float(v)))
-                for v in self.level_params_vec[4:4 + self.per_vehicle_tilting_length]
-            )
-            per_vehicle_tilting = self._normalize_per_vehicle_tilting(per_vehicle_tilting)
-            return ScenarioLevel(
-                scenario_id=scenario_id,
-                seed=self.level_seed,
-                goal_tilt=0,
-            veh_veh_tilt=0,
-            veh_edge_tilt=0,
-            per_vehicle_tilting=per_vehicle_tilting,
-        )
-        if self.tilting_mode == 'none':
-            return build_zero_tilt_level(
-                scenario_id=scenario_id,
-                seed=self.level_seed,
-                tilting_mode=self.tilting_mode,
-                per_vehicle_tilting_length=self.per_vehicle_tilting_length,
-            )
-        return ScenarioLevel(
-            scenario_id=scenario_id,
-            seed=self.level_seed,
-            goal_tilt=self.level_params_vec[1],
-            veh_veh_tilt=self.level_params_vec[2],
-            veh_edge_tilt=self.level_params_vec[3],
-        )
-
-    def _sync_level_state(self, level: ScenarioLevel) -> ScenarioLevel:
-        """Synchronize level_params_vec and current_level for a candidate level."""
-        level = normalize_level_for_tilting_mode(
-            level=level,
-            tilting_mode=self.tilting_mode,
-            per_vehicle_tilting_length=self.per_vehicle_tilting_length,
-            normalize_per_vehicle_tilting=self._normalize_per_vehicle_tilting,
-        )
-        scenario_idx = self.scenario_id_to_index.get(level.scenario_id, 0)
-        self.level_params_vec = encode_level_params(
-            scenario_idx=scenario_idx,
-            level=level,
-            tilting_mode=self.tilting_mode,
-        )
-        self._set_current_level(level)
-        return level
-
-    def _initialize_level_with_fallback(
-        self,
-        start_idx: int,
-        create_level: Callable[[str], ScenarioLevel],
-        context: str,
-    ) -> ScenarioLevel:
-        """Initialize a level, skipping retryable bad scenarios if needed."""
-        if self._scenario_pool_dirty:
-            self.rebuild_index_mappings()
-
-        num_scenarios = len(self.scenario_ids)
-        last_error: Optional[Exception] = None
-        last_scenario_id: Optional[str] = None
-
-        for offset in range(num_scenarios):
-            scenario_idx = (start_idx + offset) % num_scenarios
-            scenario_id = self._resolve_scenario_id(scenario_idx)
-            level = self._sync_level_state(create_level(scenario_id))
-
-            try:
-                self._initialize_simulation()
-                return level
-            except Exception as error:
-                if not is_retryable_vehicle_map_error(error):
-                    raise
-                last_error = error
-                last_scenario_id = scenario_id
-                if offset < num_scenarios - 1:
-                    print(format_vehicle_map_skip_warning(scenario_id, context, error))
-
-        raise RuntimeError(
-            format_vehicle_map_exhausted_error(
-                num_scenarios=num_scenarios,
-                context=context,
-                last_scenario_id=last_scenario_id,
-                last_error=last_error,
-            )
-        ) from last_error
-
-    def _build_level_from_params(self) -> None:
-        """Build ScenarioLevel from level_params_vec and initialize environment."""
-        self._initialize_level_with_fallback(
-            start_idx=int(self.level_params_vec[0]),
-            create_level=self._create_level_from_params,
-            context="during adversary build",
-        )
-    
     def _initialize_simulation(self):
         """Initialize Nocturne simulation (delegated to runtime)."""
         self.runtime.initialize_simulation()
@@ -839,7 +336,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         last_scenario_id: Optional[str] = None
 
         for attempt in range(1, max_retries + 1):
-            level = self._sample_random_level()
+            level = level_manager_service.sample_random_level(self)
             last_scenario_id = level.scenario_id
             try:
                 return self.reset_to_level(level)
@@ -859,39 +356,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
             f"Last scenario: '{last_scenario_id}'. Last error: {last_error}"
         ) from last_error
 
-    def _sample_random_level(self) -> ScenarioLevel:
-        """Randomly generate level."""
-        scenario_id = self._level_seed_random_state.choice(self.scenario_ids)
-        seed = self._sample_level_seed()
-        runtime_mode = getattr(self, 'opponent_runtime_mode', 'normal')
-
-        # In disable/replay runtime modes, tilting is not used by policy.
-        # Keep sampled levels scenario-only to avoid unnecessary tilt sampling.
-        if runtime_mode != 'normal':
-            return build_zero_tilt_level(
-                scenario_id=scenario_id,
-                seed=seed,
-                tilting_mode=self.tilting_mode,
-                per_vehicle_tilting_length=self.per_vehicle_tilting_length,
-            )
-
-        goal_tilt, veh_veh_tilt, veh_edge_tilt, per_vehicle_tilting = (
-            sample_random_tilt_components(
-                tilting_mode=self.tilting_mode,
-                per_vehicle_tilting_length=self.per_vehicle_tilting_length,
-                tilt_range=self.tilt_range,
-            )
-        )
-
-        return ScenarioLevel(
-            scenario_id=scenario_id,
-            seed=seed,
-            goal_tilt=goal_tilt,
-            veh_veh_tilt=veh_veh_tilt,
-            veh_edge_tilt=veh_edge_tilt,
-            per_vehicle_tilting=per_vehicle_tilting,
-        )
-    
     def reset_to_level(self, level: Union[ScenarioLevel, str, np.ndarray]) -> np.ndarray:
         """
         Load specified level
@@ -907,7 +371,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         Returns:
             student initial observation
         """
-        level = self._coerce_level(level)
+        level = level_manager_service.coerce_level(self, level)
         runtime_mode = getattr(self, 'opponent_runtime_mode', 'normal')
 
         # Keep replay/disable behavior robust even when replayed levels
@@ -921,9 +385,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
             )
 
         if self._scenario_pool_dirty:
-            self.rebuild_index_mappings()
+            scenario_pool_service.rebuild_index_mappings(self)
         start_idx = self.scenario_id_to_index.get(level.scenario_id, 0)
-        self._initialize_level_with_fallback(
+        level_manager_service.initialize_level_with_fallback(
+            self,
             start_idx=start_idx,
             create_level=lambda scenario_id: level.with_scenario_id(scenario_id),
             context="while loading a replayed or provided level",
@@ -979,58 +444,15 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 raise ValueError("Must call reset_to_level first")
             base_level = self.current_level
         else:
-            base_level = self._coerce_level(level)
+            base_level = level_manager_service.coerce_level(self, level)
 
         if self.tilting_mode == 'none':
             return self.reset_to_level(base_level)
 
-        from dataclasses import replace
-
-        mutated = self._mutate_level_internal(base_level)
+        mutated = level_manager_service.mutate_level_internal(self, base_level)
         # Ensure the mutated level carries a fresh seed for subsequent resets.
         mutated = replace(mutated, seed=self._set_level_seed(self._sample_level_seed()))
         return self.reset_to_level(mutated)
-
-    def _mutate_level_internal(
-        self,
-        level: ScenarioLevel
-    ) -> ScenarioLevel:
-        """
-        Execute level mutation
-        
-        Mutation strategy:
-        1. Determine mutation_mode (one/all)
-        2. If one, randomly choose a tilting dimension
-        3. Sample delta(s) from [-mutation_range, mutation_range]
-        4. Apply deltas based on tilting_mode
-
-        Note: only mutate tilt parameters, do not change scenario_id
-        """
-        from dataclasses import replace
-
-        if self.tilting_mode == 'none':
-            return level
-
-        rng = self._mutation_random_state
-        if self.tilting_mode in ('global', 'ego'):
-            return mutate_global_level(
-                level=level,
-                rng=rng,
-                mutation_mode=self.mutation_mode,
-                mutation_range=self.mutation_range,
-                tilt_range=self.tilt_range,
-            )
-
-        return mutate_per_vehicle_level(
-            level=level,
-            rng=rng,
-            mutation_mode=self.mutation_mode,
-            mutation_range=self.mutation_range,
-            tilt_range=self.tilt_range,
-            opponent_k=self.opponent_k,
-            per_vehicle_tilting_length=self.per_vehicle_tilting_length,
-            normalize_per_vehicle_tilting=self._normalize_per_vehicle_tilting,
-        )
     
     # ========== Batch inference two-phase step ==========
 
@@ -1101,7 +523,10 @@ class NocturneCtrlSimAdversarial(gym.Env):
         return encode_level_to_string_array(
             current_level=self.current_level,
             scenario_id_to_index=self.scenario_id_to_index,
-            normalize_per_vehicle_tilting=self._normalize_per_vehicle_tilting,
+            normalize_per_vehicle_tilting=lambda values: normalize_per_vehicle_tilting(
+                values,
+                self.per_vehicle_tilting_length,
+            ),
             per_vehicle_tilting_length=self.per_vehicle_tilting_length,
             level_seed=self.level_seed,
             dtype=self.encoding_u_chars,
@@ -1111,62 +536,15 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """Return encoding list (compatible with vectorized env interface)"""
         return [self.encoding]
 
-    def _decode_string_encoding(self, encoding: np.ndarray) -> ScenarioLevel:
-        """Decode string array encoding to ScenarioLevel."""
-        # Check if the scenario pool mapping needs to be rebuilt
-        if self._scenario_pool_dirty:
-            self.rebuild_index_mappings()
-        return decode_level_from_string_array(
-            encoding=encoding,
-            resolve_scenario_id=self._resolve_scenario_id,
-            normalize_per_vehicle_tilting=self._normalize_per_vehicle_tilting,
-        )
-    
     # ========== Dynamic scenario pool support ==========
     
     def add_scenario(self, scenario_id: str) -> bool:
         """Add new scenario to scenario pool"""
-        if not self.dynamic_scenario_pool:
-            return False
-        
-        if scenario_id in self.scenario_id_to_index:
-            return False
-        
-        if len(self.scenario_ids) >= self.max_scenario_pool_size:
-            old_id = self.scenario_ids.pop(0)
-            old_idx = self.scenario_id_to_index.pop(old_id)
-            del self.index_to_scenario_id[old_idx]
-        
-        new_idx = len(self.scenario_ids)
-        self.scenario_ids.append(scenario_id)
-        self.scenario_id_to_index[scenario_id] = new_idx
-        self.index_to_scenario_id[new_idx] = scenario_id
-        
-        self._scenario_pool_dirty = True
-        return True
+        return scenario_pool_service.add_scenario(self, scenario_id)
     
     def get_scenario_pool_size(self) -> int:
         """Return current scenario pool size"""
-        return len(self.scenario_ids)
-    
-    def rebuild_index_mappings(self):
-        """Rebuild index mappings"""
-        self.scenario_id_to_index = {
-            sid: i for i, sid in enumerate(self.scenario_ids)
-        }
-        self.index_to_scenario_id = {
-            i: sid for i, sid in enumerate(self.scenario_ids)
-        }
-        self._scenario_pool_dirty = False
-
-    def _resolve_scenario_id(self, scenario_idx: int) -> str:
-        """Resolve scenario index to scenario ID with warning and fallback."""
-        if scenario_idx not in self.index_to_scenario_id:
-            warnings.warn(
-                f"Scenario index {scenario_idx} not found in mapping. "
-                f"Falling back to first scenario: {self.scenario_ids[0]}"
-            )
-        return self.index_to_scenario_id.get(scenario_idx, self.scenario_ids[0])
+        return scenario_pool_service.get_scenario_pool_size(self)
     
     # ========== Metrics and information ==========
     def get_complexity_info(self) -> Dict[str, Any]:

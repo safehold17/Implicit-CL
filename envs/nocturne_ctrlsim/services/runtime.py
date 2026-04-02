@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
+from ..level import normalize_per_vehicle_tilting
 from .gt_helpers import (
     build_episode_gt_action_cache,
     get_gt_action,
@@ -144,8 +145,9 @@ class NocturneCtrlSimRuntime:
         if env.tilting_mode == "per_vehicle" and env.current_level is not None:
             actual_n = len(env.opponent_vehicle_ids)
             per = list(
-                env._normalize_per_vehicle_tilting(
-                    env.current_level.per_vehicle_tilting
+                normalize_per_vehicle_tilting(
+                    env.current_level.per_vehicle_tilting,
+                    env.per_vehicle_tilting_length,
                 )
             )
             cutoff = actual_n * 3

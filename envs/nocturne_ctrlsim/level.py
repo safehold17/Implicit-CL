@@ -2,7 +2,7 @@
 Scenario Level data structure.
 """
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import numpy as np
 from typing import Tuple, Dict
 
@@ -187,3 +187,62 @@ class ScenarioLevel:
 
     def __hash__(self):
         return hash(self.to_tuple())
+
+
+def normalize_per_vehicle_tilting(
+    per_vehicle_tilting: Tuple[int, ...],
+    per_vehicle_tilting_length: int,
+) -> Tuple[int, ...]:
+    """Normalize per-vehicle tilting to the configured flattened length."""
+    normalized = [int(round(float(value))) for value in per_vehicle_tilting]
+    if len(normalized) < per_vehicle_tilting_length:
+        normalized.extend([0] * (per_vehicle_tilting_length - len(normalized)))
+    elif len(normalized) > per_vehicle_tilting_length:
+        normalized = normalized[:per_vehicle_tilting_length]
+    return tuple(normalized)
+
+
+def build_zero_tilt_level(
+    scenario_id: str,
+    seed: int,
+    tilting_mode: str,
+    per_vehicle_tilting_length: int,
+) -> ScenarioLevel:
+    """Build a zero-tilt level for the requested tilting mode."""
+    per_vehicle_tilting = (
+        (0,) * per_vehicle_tilting_length
+        if tilting_mode == "per_vehicle"
+        else ()
+    )
+    return ScenarioLevel(
+        scenario_id=scenario_id,
+        seed=seed,
+        goal_tilt=0,
+        veh_veh_tilt=0,
+        veh_edge_tilt=0,
+        per_vehicle_tilting=per_vehicle_tilting,
+    )
+
+
+def normalize_level_for_tilting_mode(
+    level: ScenarioLevel,
+    tilting_mode: str,
+    per_vehicle_tilting_length: int,
+) -> ScenarioLevel:
+    """Normalize a level so its fields match the active tilting mode."""
+    if tilting_mode == "per_vehicle":
+        normalized_per_vehicle_tilting = normalize_per_vehicle_tilting(
+            level.per_vehicle_tilting,
+            per_vehicle_tilting_length,
+        )
+        return replace(level, per_vehicle_tilting=normalized_per_vehicle_tilting)
+
+    if tilting_mode == "none":
+        return build_zero_tilt_level(
+            scenario_id=level.scenario_id,
+            seed=level.seed,
+            tilting_mode=tilting_mode,
+            per_vehicle_tilting_length=per_vehicle_tilting_length,
+        )
+
+    return level
