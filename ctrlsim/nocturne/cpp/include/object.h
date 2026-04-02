@@ -133,6 +133,9 @@ class Object : public ObjectBase {
 
   const sf::Color& color() const { return color_; }
 
+  /** Normalize RGB channels while preserving all-zero input. */
+  static sf::Color NormalizeColorChannels(int32_t r, int32_t g, int32_t b);
+
   sf::RenderTexture* ConeTexture() const { return cone_texture_.get(); }
 
   bool InitConeTexture(int64_t h, int64_t w,

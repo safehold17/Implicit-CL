@@ -190,5 +190,13 @@ TEST(ObjectTest, SteeringMotionTest) {
   EXPECT_FLOAT_EQ(obj.Velocity().y(), speed * std::sin(target_heading));
 }
 
+TEST(ObjectTest, NormalizeColorChannelsHandlesAllZeroInput) {
+  const sf::Color color = Object::NormalizeColorChannels(/*r=*/0, /*g=*/0, /*b=*/0);
+
+  EXPECT_EQ(color.r, 0);
+  EXPECT_EQ(color.g, 0);
+  EXPECT_EQ(color.b, 0);
+}
+
 }  // namespace
 }  // namespace nocturne

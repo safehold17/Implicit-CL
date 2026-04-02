@@ -73,12 +73,19 @@ void Object::InitRandomColor() {
   int32_t r = dis(random_gen_);
   int32_t g = dis(random_gen_);
   int32_t b = dis(random_gen_);
-  // Rescale colors to avoid dark objects.
+  color_ = NormalizeColorChannels(r, g, b);
+}
+
+sf::Color Object::NormalizeColorChannels(int32_t r, int32_t g, int32_t b) {
+  // Preserve the original brightening behavior without dividing by zero.
   const int32_t max_rgb = std::max({r, g, b});
+  if (max_rgb <= 0) {
+    return sf::Color(0, 0, 0);
+  }
   r = r * 255 / max_rgb;
   g = g * 255 / max_rgb;
   b = b * 255 / max_rgb;
-  color_ = sf::Color(r, g, b);
+  return sf::Color(r, g, b);
 }
 
 
@@ -143,4 +150,3 @@ void Object::CreatePhysicsBody()
 
 
 }  // namespace nocturne
-
