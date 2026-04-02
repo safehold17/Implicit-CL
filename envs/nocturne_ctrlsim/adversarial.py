@@ -94,14 +94,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         preprocess_dir: str,
         **kwargs
     ):
-        """
-        Args:
-            scenario_index_path: Scenario index JSON file path
-            opponent_checkpoint
-            scenario_data_dir: Nocturne scenario data directory
-            preprocess_dir: ctrl-sim preprocessed data directory
-            kwargs: optional runtime/environment settings.
-        """
+        """kwargs: runtime/environment settings."""
         super().__init__()
 
         config = build_nocturne_ctrlsim_env_config(
@@ -136,15 +129,12 @@ class NocturneCtrlSimAdversarial(gym.Env):
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed(seed)
-        # Keep mutation randomness process-specific and reproducible.
-        self._mutation_random_state = np.random.RandomState(seed)
-        # Keep level-seed generation reproducible and process-local.
-        self._level_seed_random_state = np.random.RandomState(seed)
+        self.np_random = np.random.RandomState(seed)
 
     def _sample_level_seed(self) -> int:
         """Sample a level seed from process-local RNG in int32 range."""
         int32_max = np.iinfo(np.int32).max
-        return int(self._level_seed_random_state.randint(1, int32_max))
+        return int(self.np_random.randint(1, int32_max))
 
     def _set_level_seed(self, seed: int) -> int:
         """Set the current level seed tracked by the environment."""
@@ -298,8 +288,8 @@ class NocturneCtrlSimAdversarial(gym.Env):
         }
 
     def generate_random_z(self) -> np.ndarray:
-        """Generate random condition vector (for adversary observation)."""
-        return np.random.uniform(size=(self.random_z_dim,)).astype(np.float32)
+        """Generate random condition vector for adversary observation(not used in nocturne-ctrlsim)."""
+        return np.zeros((self.random_z_dim,), dtype=np.float32)
 
     def set_opponent_runtime_mode(self, mode: str) -> str:
         valid_modes = {'disable', 'replay', 'normal'}
@@ -485,15 +475,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
             model_output = teacher.run_batched_forward([opponent_prepared])[0]
         return self.step_complete(model_output)
 
-    def _get_single_env_teacher(self):
-        return self.runtime.get_single_env_teacher()
-
-    def _step_post_actions(
-        self, opponent_actions: Dict[int, Tuple[float, float]]
-    ) -> Tuple[np.ndarray, float, bool, Dict]:
-        """Shared tail delegated to runtime."""
-        return self.runtime.step_post_actions(opponent_actions)
-    
     # ========== Level properties and encoding ==========
     
     @property
@@ -536,16 +517,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """Return encoding list (compatible with vectorized env interface)"""
         return [self.encoding]
 
-    # ========== Dynamic scenario pool support ==========
-    
-    def add_scenario(self, scenario_id: str) -> bool:
-        """Add new scenario to scenario pool"""
-        return scenario_pool_service.add_scenario(self, scenario_id)
-    
-    def get_scenario_pool_size(self) -> int:
-        """Return current scenario pool size"""
-        return scenario_pool_service.get_scenario_pool_size(self)
-    
     # ========== Metrics and information ==========
     def get_complexity_info(self) -> Dict[str, Any]:
         return get_complexity_info(self)

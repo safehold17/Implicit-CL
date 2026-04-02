@@ -288,7 +288,7 @@ class CtrlSimEgoWrapper:
         self.env.current_step += 1
         self.env._last_ego_student_action = (float(accel), float(steer))
         self._apply_ego_action(accel, steer)
-        obs, reward, done, info = self.env._step_post_actions(opponent_actions)
+        obs, reward, done, info = self.env.runtime.step_post_actions(opponent_actions)
         self.ego_adapter.record_all_actions(
             self.env.current_step - 1,
             self.env.vehicles,

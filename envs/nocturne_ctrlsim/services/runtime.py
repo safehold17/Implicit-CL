@@ -70,6 +70,8 @@ class NocturneCtrlSimRuntime:
         env._episode_steps = 0
         env._episode_progress = 0.0
 
+        # Keep the episode boundary aligned with ``level.seed`` for downstream
+        # logic that still implicitly depends on NumPy's global RNG state.
         np.random.seed(level.seed)
 
         env._gt_data_dict = env.data_bridge.get_ground_truth(

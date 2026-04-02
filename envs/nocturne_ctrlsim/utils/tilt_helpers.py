@@ -82,15 +82,16 @@ def sample_random_tilt_components(
     tilting_mode: str,
     per_vehicle_tilting_length: int,
     tilt_range: tuple[float, float],
+    rng: Any,
 ) -> tuple[int, int, int, tuple[int, ...]]:
     """Sample random tilt components for the current tilting mode."""
     zero_per_vehicle = (0,) * per_vehicle_tilting_length
 
     if tilting_mode in ("global", "ego"):
         return (
-            round_clipped_tilt(np.random.uniform(*tilt_range), tilt_range),
-            round_clipped_tilt(np.random.uniform(*tilt_range), tilt_range),
-            round_clipped_tilt(np.random.uniform(*tilt_range), tilt_range),
+            round_clipped_tilt(rng.uniform(*tilt_range), tilt_range),
+            round_clipped_tilt(rng.uniform(*tilt_range), tilt_range),
+            round_clipped_tilt(rng.uniform(*tilt_range), tilt_range),
             zero_per_vehicle,
         )
 
@@ -102,10 +103,12 @@ def sample_random_tilt_components(
         0,
         0,
         tuple(
-            round_clipped_tilt(np.random.uniform(*tilt_range), tilt_range)
+            round_clipped_tilt(rng.uniform(*tilt_range), tilt_range)
             for _ in range(per_vehicle_tilting_length)
         ),
     )
+
+
 def encode_level_params(
     scenario_idx: int,
     level: ScenarioLevel,

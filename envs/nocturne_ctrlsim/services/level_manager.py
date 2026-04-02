@@ -166,7 +166,7 @@ def build_level_from_params(env: Any) -> None:
 
 def sample_random_level(env: Any) -> ScenarioLevel:
     """Sample a random level using the environment's RNG state."""
-    scenario_id = env._level_seed_random_state.choice(env.scenario_ids)
+    scenario_id = env.np_random.choice(env.scenario_ids)
     seed = env._sample_level_seed()
     runtime_mode = getattr(env, "opponent_runtime_mode", "normal")
 
@@ -183,6 +183,7 @@ def sample_random_level(env: Any) -> ScenarioLevel:
             tilting_mode=env.tilting_mode,
             per_vehicle_tilting_length=env.per_vehicle_tilting_length,
             tilt_range=env.tilt_range,
+            rng=env.np_random,
         )
     )
     return ScenarioLevel(
@@ -200,7 +201,7 @@ def mutate_level_internal(env: Any, level: ScenarioLevel) -> ScenarioLevel:
     if env.tilting_mode == "none":
         return level
 
-    rng = env._mutation_random_state
+    rng = env.np_random
     if env.tilting_mode in ("global", "ego"):
         return mutate_global_level(
             level=level,
