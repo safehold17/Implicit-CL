@@ -25,7 +25,7 @@
     "max_grad_norm": [0.5],
     
     "__note2__": ["PLR parameters"],
-    "use_plr": [false],
+    "use_plr": [true],
     "level_replay_prob": [0.5],
     "level_replay_rho": [0.5],
     "level_replay_seed_buffer_size": [11520],

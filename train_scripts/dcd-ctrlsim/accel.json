@@ -36,7 +36,7 @@
     "base_levels": ["batch"],
 
     "__note3__": ["ACCEL parameters"],
-    "use_editor": [false],
+    "use_editor": [true],
     "level_editor_prob": [1.0],
     "level_editor_method": ["random"],
     "mutation_mode": ["all"],
