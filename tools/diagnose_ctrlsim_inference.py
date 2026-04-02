@@ -36,7 +36,7 @@ from ctrlsim_adapter.data_bridge import DataBridge
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
 from batch_inference import ExternalTeacher
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
-from envs.nocturne_ctrlsim.gt_helpers import get_gt_action
+from envs.nocturne_ctrlsim.services.gt_helpers import get_gt_action
 
 
 class DiagnosticResults:

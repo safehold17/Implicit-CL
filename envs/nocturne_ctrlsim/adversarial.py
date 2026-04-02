@@ -18,13 +18,13 @@ import torch
 
 from .level import ScenarioLevel
 
-from .scenario_helpers import (
+from .services.scenario_helpers import (
     get_vehicle_by_id,
     load_scenario,
     remove_background_moving_vehicles,
 )
 
-from .gt_helpers import (
+from .services.gt_helpers import (
     get_goal_point_for_vehicle,
     initialize_ego_goal_state,
 )
@@ -33,9 +33,9 @@ from .student_env_policy import (
     get_student_obs_dim,
     get_student_observation,
 )
-from .runtime import NocturneCtrlSimRuntime
+from .services.runtime import NocturneCtrlSimRuntime
 
-from .simulation_info import (
+from .services.simulation_info import (
     get_complexity_info,
     reset_metrics as sim_reset_metrics,
 )

@@ -23,7 +23,7 @@ from teachDeepRL.teachers.teacher_controller import TeacherController
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-from envs.nocturne_ctrlsim.runtime import split_prepared_pack_batch
+from envs.nocturne_ctrlsim.services.runtime import split_prepared_pack_batch
 
 
 class AdversarialRunner(object):

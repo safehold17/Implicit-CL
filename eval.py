@@ -29,7 +29,7 @@ from envs.registration import make as gym_make
 from envs.box2d import *
 from envs.bipedalwalker import *
 from envs.nocturne_ctrlsim import *  # Nocturne + CtRL-Sim  env
-from envs.nocturne_ctrlsim.runtime import split_prepared_pack_batch
+from envs.nocturne_ctrlsim.services.runtime import split_prepared_pack_batch
 from envs.wrappers import VecMonitor, VecPreprocessImageWrapper, ParallelAdversarialVecEnv, \
 	MultiGridFullyObsWrapper, VecFrameStack, CarRacingWrapper
 from util import DotDict, str2bool, make_agent, create_parallel_env, is_discrete_actions, save_images

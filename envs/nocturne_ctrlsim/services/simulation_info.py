@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 import numpy as np
 
-from .utils.common import clamp01, merge_episode_progress
+from ..utils.common import clamp01, merge_episode_progress
 
 
 def compute_current_progress(env) -> float:

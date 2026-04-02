@@ -18,8 +18,8 @@ from .simulation_info import (
     get_info,
     update_episode_progress,
 )
-from .student_env_policy import apply_student_action
-from .student_reward import compute_student_reward
+from ..student_env_policy import apply_student_action
+from ..student_reward import compute_student_reward
 
 
 def split_prepared_pack_batch(
