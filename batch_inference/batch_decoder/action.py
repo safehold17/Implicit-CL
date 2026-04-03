@@ -7,7 +7,7 @@ Converts action-head outputs into continuous actions while using stateless sampl
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -68,10 +68,19 @@ def decode_action_jobs_batched_impl(
     teacher: Any,
     action_logits: torch.Tensor,
     decode_meta: Dict[str, np.ndarray],
-) -> List[Dict[int, Tuple[float, float]]]:
+) -> Dict[str, Any]:
+    """批量解码 action logits，并返回 flat 结果数组。
+
+    Decode action logits in batch and return the flat result arrays.
+    """
     job_offsets = decode_meta["job_offsets"]
     if decode_meta["job_idx"].size == 0:
-        return [{} for _ in range(int(decode_meta["job_count"][0]))]
+        return {
+            "veh_id": np.zeros((0,), dtype=np.int64),
+            "values": np.zeros((0, 2), dtype=np.float32),
+            "job_offsets": np.asarray(job_offsets, dtype=np.int64),
+            "job_count": int(decode_meta["job_count"][0]),
+        }
 
     device = action_logits.device
     row_batch_idx = decode_meta.get("job_idx_t")
@@ -107,21 +116,15 @@ def decode_action_jobs_batched_impl(
         veh_id=decode_meta["veh_id"],
     )
     accel_t, steer_t = _undiscretize_action_indices(action_idx, teacher)
-
-    action_results_by_job: List[Dict[int, Tuple[float, float]]] = []
-    for start, end in zip(job_offsets[:-1], job_offsets[1:]):
-        per_job_results: Dict[int, Tuple[float, float]] = {}
-        for row_idx in range(int(start), int(end)):
-            veh_id = int(decode_meta["veh_id"][row_idx])
-            per_job_results[veh_id] = (
-                float(accel_t[row_idx]),
-                float(steer_t[row_idx]),
-            )
-        action_results_by_job.append(per_job_results)
-
-    if len(action_results_by_job) != int(decode_meta["job_count"][0]):
-        raise ValueError("Action decode job/result count mismatch.")
-    return action_results_by_job
+    return {
+        "veh_id": np.asarray(decode_meta["veh_id"], dtype=np.int64),
+        "values": torch.stack((accel_t, steer_t), dim=1).detach().cpu().numpy().astype(
+            np.float32,
+            copy=False,
+        ),
+        "job_offsets": np.asarray(job_offsets, dtype=np.int64),
+        "job_count": int(decode_meta["job_count"][0]),
+    }
 
 
 def export_selected_action_logits_by_job_impl(
@@ -174,6 +177,8 @@ def export_selected_action_logits_by_job_impl(
     if len(logits_by_job) != len(selected_job_indices):
         raise ValueError("Selected action-logit export job/result count mismatch.")
     return logits_by_job
+
+
 def decode_action_stage_batched_impl(
     teacher: Any,
     batched_data: Any,
@@ -182,6 +187,10 @@ def decode_action_stage_batched_impl(
     logits_job_indices: Sequence[int] = (),
     cached_scene_enc: Any = None,
 ):
+    """执行 action 阶段前向与 batched 解码。
+
+    Run the action-stage forward pass and batched decode.
+    """
     with torch.inference_mode():
         with teacher.model_forward_context():
             preds = teacher.model(
@@ -189,17 +198,17 @@ def decode_action_stage_batched_impl(
             )
         action_logits = preds["action_preds"].float()
 
-        jobs: List[Dict[str, Any]] = batch_meta["jobs"]
-        action_results_by_job = decode_action_jobs_batched_impl(
+        jobs = batch_meta["jobs"]
+        flat_action_results = decode_action_jobs_batched_impl(
             teacher=teacher,
             action_logits=action_logits,
             decode_meta=batch_meta["decode_meta"]["action"],
         )
         job_count = len(jobs)
-        if len(action_results_by_job) != job_count:
+        if int(flat_action_results["job_count"]) != job_count:
             raise ValueError("Action stage job/result count mismatch.")
         if not return_logits:
-            return action_results_by_job
+            return flat_action_results
 
         selected_logits_by_job = export_selected_action_logits_by_job_impl(
             action_logits=action_logits,
@@ -212,4 +221,4 @@ def decode_action_stage_batched_impl(
 
         if len(action_logits_by_job) != job_count:
             raise ValueError("Action-logit export job/result count mismatch.")
-        return action_results_by_job, action_logits_by_job
+        return flat_action_results, action_logits_by_job

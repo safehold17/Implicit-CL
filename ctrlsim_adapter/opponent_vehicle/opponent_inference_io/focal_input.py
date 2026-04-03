@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from batch_inference.batch_ipc.arrays import pack_ragged_int_lists
+
 from ..step_tensor_context import build_policy_step_tensor_context
 from .prepare_inference_payload import get_control_vehicle_queue
 
@@ -309,7 +311,7 @@ def _select_roads_for_focals_batched(
     return final_road_points, final_road_types
 
 
-def _build_motion_batches_from_plans(
+def _build_flat_focal_layout_from_plans(
     adapter: Any,
     plans: List[Dict[str, Any]],
     ag_states: np.ndarray,
@@ -320,21 +322,43 @@ def _build_motion_batches_from_plans(
     moving_agent_mask: np.ndarray,
     road_points_src: np.ndarray,
     road_types_src: np.ndarray,
-) -> List[Dict[str, Any]]:
-    """基于 focal 计划一次性完成 batched gather 与归一化。
+) -> Dict[str, Any]:
+    """基于 focal 计划构建 flat focal layout。
 
     该函数是新的热点主路径：先把每个 focal 的 `selected_agent_indices` 拼成统一二维索引矩阵，
     再通过 advanced indexing 一次性 gather agent/action/RTG/goal 张量，并在 batch 维上统一完成
-    heading、goal、road 的局部坐标系归一化，最后再拆回现有 `focal_batch` 结构。
+    heading、goal、road 的局部坐标系归一化，最后直接保留 batched motion 张量与
+    flat ragged metadata，而不是重新拆回 Python `focal_batch` 列表。
 
-    Materialize focal batches with one batched gather-and-normalize pass.
+    Build the flat focal layout from the focal plans.
     It stacks each focal plan's `selected_agent_indices` into one 2D index matrix, gathers
     agent/action/RTG/goal tensors via advanced indexing, performs local-frame normalization for
-    headings/goals/roads across the batch dimension, and finally converts the result back into the
-    existing `focal_batch` structure.
+    headings/goals/roads across the batch dimension, and keeps the result as batched motion tensors
+    plus flat ragged metadata instead of rebuilding Python `focal_batch` dicts.
     """
     if not plans:
-        return []
+        return {
+            "focal_ids": np.zeros((0,), dtype=np.int64),
+            "predict_rtgs": np.zeros((0,), dtype=np.bool_),
+            "data_veh_ids_flat": np.zeros((0,), dtype=np.int64),
+            "data_veh_ids_offsets": np.zeros((1,), dtype=np.int64),
+            "veh_ids_in_context_flat": np.zeros((0,), dtype=np.int64),
+            "veh_ids_in_context_offsets": np.zeros((1,), dtype=np.int64),
+            "data_veh_model_indices_flat": np.zeros((0,), dtype=np.int64),
+            "data_veh_model_indices_offsets": np.zeros((1,), dtype=np.int64),
+            "context_veh_model_indices_flat": np.zeros((0,), dtype=np.int64),
+            "context_veh_model_indices_offsets": np.zeros((1,), dtype=np.int64),
+            "motion_data_np": {
+                "agent_states": np.zeros((0, 0, 0, 0), dtype=np.float32),
+                "agent_types": np.zeros((0, 0, 0), dtype=np.int64),
+                "goals": np.zeros((0, 0, 0), dtype=np.float32),
+                "actions": np.zeros((0, 0, 0), dtype=np.int64),
+                "rtgs": np.zeros((0, 0, 0, 0), dtype=np.int64),
+                "moving_agent_mask": np.zeros((0, 0), dtype=np.bool_),
+                "road_points": np.zeros((0, 0, 0, 0), dtype=np.float32),
+                "road_types": np.zeros((0, 0, 0), dtype=np.int64),
+            },
+        }
 
     policy = adapter._policy
     rl_cfg = policy.cfg_rl_waymo
@@ -416,7 +440,12 @@ def _build_motion_batches_from_plans(
         angle_of_rotation=angle_of_rotation,
     )
 
-    focal_batches: List[Dict[str, Any]] = []
+    focal_ids: List[int] = []
+    predict_rtgs_list: List[bool] = []
+    data_veh_rows: List[List[int]] = []
+    context_veh_rows: List[List[int]] = []
+    data_model_index_rows: List[List[int]] = []
+    context_model_index_rows: List[List[int]] = []
     for batch_idx, plan in enumerate(plans):
         valid_indices = selected_indices[batch_idx, selected_mask[batch_idx]]
         new_agent_idx_dict = {
@@ -425,40 +454,68 @@ def _build_motion_batches_from_plans(
         }
         veh_ids_in_context = list(plan["veh_ids_in_context"])
         data_veh_ids = list(plan["grouped_controlled_ids"])
-        focal_batches.append(
-            {
-                "focal_id": int(plan["focal_id"]),
-                "motion_data_np": {
-                    "agent_states": gathered_agent_states[batch_idx],
-                    "agent_types": gathered_agent_types[batch_idx],
-                    "goals": gathered_goals[batch_idx],
-                    "actions": gathered_actions[batch_idx],
-                    "rtgs": gathered_rtgs[batch_idx],
-                    "moving_agent_mask": gathered_moving_mask[batch_idx],
-                    "road_points": gathered_road_points[batch_idx],
-                    "road_types": gathered_road_types[batch_idx],
-                },
-                "new_agent_idx_dict": new_agent_idx_dict,
-                "data_veh_ids": data_veh_ids,
-                "veh_ids_in_context": veh_ids_in_context,
-                "data_veh_model_indices": np.asarray(
-                    [
-                        int(new_agent_idx_dict.get(policy.veh_id_to_idx[int(veh_id)], -1))
-                        for veh_id in data_veh_ids
-                    ],
-                    dtype=np.int64,
-                ),
-                "context_veh_model_indices": np.asarray(
-                    [
-                        int(new_agent_idx_dict.get(policy.veh_id_to_idx[int(veh_id)], -1))
-                        for veh_id in veh_ids_in_context
-                    ],
-                    dtype=np.int64,
-                ),
-                "predict_rtgs": bool(plan["predict_rtgs"]),
-            }
+        focal_ids.append(int(plan["focal_id"]))
+        predict_rtgs_list.append(bool(plan["predict_rtgs"]))
+        data_veh_rows.append(data_veh_ids)
+        context_veh_rows.append(veh_ids_in_context)
+        data_model_index_rows.append(
+            [
+                int(new_agent_idx_dict.get(policy.veh_id_to_idx[int(veh_id)], -1))
+                for veh_id in data_veh_ids
+            ]
         )
-    return focal_batches
+        context_model_index_rows.append(
+            [
+                int(new_agent_idx_dict.get(policy.veh_id_to_idx[int(veh_id)], -1))
+                for veh_id in veh_ids_in_context
+            ]
+        )
+
+    data_veh_ids_flat, data_veh_ids_offsets = pack_ragged_int_lists(data_veh_rows)
+    context_veh_ids_flat, context_veh_ids_offsets = pack_ragged_int_lists(context_veh_rows)
+    data_model_indices_flat, data_model_indices_offsets = pack_ragged_int_lists(
+        data_model_index_rows
+    )
+    context_model_indices_flat, context_model_indices_offsets = pack_ragged_int_lists(
+        context_model_index_rows
+    )
+    return {
+        "focal_ids": np.asarray(focal_ids, dtype=np.int64),
+        "predict_rtgs": np.asarray(predict_rtgs_list, dtype=np.bool_),
+        "data_veh_ids_flat": np.asarray(data_veh_ids_flat, dtype=np.int64),
+        "data_veh_ids_offsets": np.asarray(data_veh_ids_offsets, dtype=np.int64),
+        "veh_ids_in_context_flat": np.asarray(context_veh_ids_flat, dtype=np.int64),
+        "veh_ids_in_context_offsets": np.asarray(
+            context_veh_ids_offsets,
+            dtype=np.int64,
+        ),
+        "data_veh_model_indices_flat": np.asarray(
+            data_model_indices_flat,
+            dtype=np.int64,
+        ),
+        "data_veh_model_indices_offsets": np.asarray(
+            data_model_indices_offsets,
+            dtype=np.int64,
+        ),
+        "context_veh_model_indices_flat": np.asarray(
+            context_model_indices_flat,
+            dtype=np.int64,
+        ),
+        "context_veh_model_indices_offsets": np.asarray(
+            context_model_indices_offsets,
+            dtype=np.int64,
+        ),
+        "motion_data_np": {
+            "agent_states": gathered_agent_states,
+            "agent_types": gathered_agent_types,
+            "goals": gathered_goals,
+            "actions": gathered_actions,
+            "rtgs": gathered_rtgs,
+            "moving_agent_mask": gathered_moving_mask,
+            "road_points": gathered_road_points,
+            "road_types": gathered_road_types,
+        },
+    }
 
 
 def build_focal_batches(
@@ -466,17 +523,20 @@ def build_focal_batches(
     t: int,
     focal_vehicle_ids: Optional[List[int]] = None,
     predict_rtgs: Optional[bool] = None,
-) -> Tuple[List[Dict[str, Any]], List[int]]:
-    """为指定 focal 车辆构建 batch 输入。 / Build batched focal inputs for the specified vehicles."""
+) -> Tuple[Dict[str, Any], List[int]]:
+    """为指定 focal 车辆构建 flat focal layout。
+
+    Build the flat focal layout for the specified focal vehicles.
+    """
     shared_context = build_step_shared_context(adapter, t)
-    focal_batches, dead_ids, _ = build_focal_batches_from_shared_context(
+    focal_layout, dead_ids, _ = build_focal_batches_from_shared_context(
         adapter,
         t,
         shared_context,
         focal_vehicle_ids=focal_vehicle_ids,
         predict_rtgs=predict_rtgs,
     )
-    return focal_batches, dead_ids
+    return focal_layout, dead_ids
 
 
 def build_step_shared_context(
@@ -506,8 +566,11 @@ def build_focal_batches_from_shared_context(
     shared_context: Dict[str, Any],
     focal_vehicle_ids: Optional[List[int]] = None,
     predict_rtgs: Optional[bool] = None,
-) -> Tuple[List[Dict[str, Any]], List[int], np.ndarray]:
-    """基于共享上下文构建 focal batches。 / Build focal batches from a shared step context."""
+) -> Tuple[Dict[str, Any], List[int], np.ndarray]:
+    """基于共享上下文构建 flat focal layout。
+
+    Build the flat focal layout from a shared step context.
+    """
     ag_states = shared_context["ag_states"]
     ag_types = shared_context["ag_types"]
     actions_values = shared_context["actions_values"]
@@ -531,7 +594,7 @@ def build_focal_batches_from_shared_context(
         road_points_src=road_points_src,
         predict_rtgs=predict_rtgs,
     )
-    focal_batches = _build_motion_batches_from_plans(
+    focal_layout = _build_flat_focal_layout_from_plans(
         adapter=adapter,
         plans=plans,
         ag_states=ag_states,
@@ -544,4 +607,4 @@ def build_focal_batches_from_shared_context(
         road_types_src=road_types_src,
     )
 
-    return focal_batches, dead_ids, shared_timesteps
+    return focal_layout, dead_ids, shared_timesteps

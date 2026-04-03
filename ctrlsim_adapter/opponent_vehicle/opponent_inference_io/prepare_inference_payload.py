@@ -265,7 +265,7 @@ def _build_prepared_payload(
 
     from .focal_input import build_focal_batches_from_shared_context
 
-    focal_batches, dead_ids, shared_timesteps = (
+    focal_layout, dead_ids, shared_timesteps = (
         build_focal_batches_from_shared_context(
             adapter,
             t,
@@ -276,7 +276,7 @@ def _build_prepared_payload(
     )
     token_index = t if t < adapter._policy.cfg_rl_waymo.train_context_length else -1
     sampling_seed = resolve_sampling_seed(adapter)
-    if not focal_batches and not dead_ids:
+    if int(np.asarray(focal_layout["focal_ids"], dtype=np.int64).shape[0]) == 0 and not dead_ids:
         return pack_prepared(
             {
                 "status": "skip",
@@ -306,9 +306,8 @@ def _build_prepared_payload(
         },
         "default_tilt": default_tilt,
         "tilt_by_veh_id": tilt_by_veh_id,
-        "veh_id_to_idx": dict(adapter._policy.veh_id_to_idx),
         "shared_timesteps": shared_timesteps,
-        "focal_batches": focal_batches,
+        **focal_layout,
     }
     return pack_prepared(prepared_dict)
 

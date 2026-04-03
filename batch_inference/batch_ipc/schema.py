@@ -9,10 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple, TypedDict
 
-import numpy as np
-
-PREPARED_IPC_FORMAT = "prepared_v3"
-MODEL_OUTPUTS_IPC_FORMAT = "model_outputs_v1"
+PREPARED_IPC_FORMAT = "prepared_v4"
+MODEL_OUTPUTS_IPC_FORMAT = "model_outputs_v2"
 VALID_STATUS_VALUES = {"ok", "skip"}
 INLINE_MOTION_STORAGE = "inline"
 SHM_MOTION_STORAGE = "shm"
@@ -34,15 +32,6 @@ class SamplingPayload(TypedDict):
     nucleus_threshold: float
 
 
-class FocalBatchPayload(TypedDict):
-    focal_id: int
-    motion_data_np: Dict[str, Any]
-    new_agent_idx_dict: Dict[int, int]
-    data_veh_ids: List[int]
-    veh_ids_in_context: List[int]
-    predict_rtgs: bool
-
-
 class PreparedPayload(TypedDict):
     status: str
     step_t: int
@@ -56,9 +45,18 @@ class PreparedPayload(TypedDict):
     sampling: SamplingPayload
     default_tilt: Tuple[int, int, int]
     tilt_by_veh_id: Dict[int, Tuple[int, int, int]]
-    veh_id_to_idx: Dict[int, int]
     shared_timesteps: Any
-    focal_batches: List[FocalBatchPayload]
+    focal_ids: Any
+    predict_rtgs: Any
+    data_veh_ids_flat: Any
+    data_veh_ids_offsets: Any
+    veh_ids_in_context_flat: Any
+    veh_ids_in_context_offsets: Any
+    data_veh_model_indices_flat: Any
+    data_veh_model_indices_offsets: Any
+    context_veh_model_indices_flat: Any
+    context_veh_model_indices_offsets: Any
+    motion_data_np: Dict[str, Any]
 
 
 class ModelOutputsPayload(TypedDict):
@@ -67,7 +65,9 @@ class ModelOutputsPayload(TypedDict):
     step_t: int
     token_index: int
     ego_action_scale: float
-    action_results: Dict[int, Tuple[float, float]]
-    rtg_results: Dict[int, Tuple[float, float, float]]
-    processed_rtg_veh_ids: List[int]
-    dead_ids: List[int]
+    action_veh_ids: Any
+    action_values: Any
+    rtg_veh_ids: Any
+    rtg_values: Any
+    processed_rtg_veh_ids: Any
+    dead_ids: Any

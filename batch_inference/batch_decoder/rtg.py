@@ -7,7 +7,7 @@ Converts model outputs into per-vehicle RTG results while removing per-row sampl
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict
 
 import numpy as np
 import torch
@@ -132,11 +132,23 @@ def decode_rtg_jobs_batched_impl(
     batched_data: MotionData,
     rtg_logits: torch.Tensor,
     decode_meta: Dict[str, np.ndarray],
-) -> Tuple[List[Dict[int, Tuple[float, float, float]]], List[List[int]]]:
+) -> Dict[str, Any]:
+    """批量解码 RTG logits，并返回 flat 结果数组。
+
+    Decode RTG logits in batch and return the flat result arrays.
+    """
     job_offsets = decode_meta["job_offsets"]
     job_count = int(decode_meta["job_count"][0])
     if decode_meta["job_idx"].size == 0:
-        return [{} for _ in range(job_count)], [[] for _ in range(job_count)]
+        empty_offsets = np.zeros((job_count + 1,), dtype=np.int64)
+        return {
+            "veh_id": np.zeros((0,), dtype=np.int64),
+            "values": np.zeros((0, 3), dtype=np.float32),
+            "job_offsets": empty_offsets,
+            "processed_veh_ids": np.zeros((0,), dtype=np.int64),
+            "processed_offsets": empty_offsets,
+            "job_count": job_count,
+        }
 
     device = rtg_logits.device
     env_idx = np.asarray(decode_meta["env_idx"], dtype=np.int64)
@@ -160,7 +172,6 @@ def decode_rtg_jobs_batched_impl(
     for row_idx in range(int(cache_keys_t.shape[0]) - 1, -1, -1):
         unique_row_indices_t[inverse_t[row_idx]] = row_idx
     unique_row_indices = unique_row_indices_t.detach().cpu().numpy()
-    inverse = inverse_t.detach().cpu().numpy()
 
     unique_job_idx = decode_meta.get("job_idx_t")
     unique_idx_in_model = decode_meta.get("idx_in_model_t")
@@ -213,25 +224,25 @@ def decode_rtg_jobs_batched_impl(
     batched_data["agent"].rtgs[write_batch_idx, write_idx_in_model, write_token_index, 1] = write_discrete[:, 1]
     batched_data["agent"].rtgs[write_batch_idx, write_idx_in_model, write_token_index, 2] = write_discrete[:, 2]
 
-    continuous_by_row = {
-        int(row_idx): tuple(float(v) for v in continuous_unique[unique_idx].tolist())
-        for unique_idx, row_idx in enumerate(unique_row_indices.tolist())
+    ordered_unique_indices = np.argsort(unique_row_indices)
+    sorted_row_indices = unique_row_indices[ordered_unique_indices]
+    sorted_job_idx = np.asarray(decode_meta["job_idx"], dtype=np.int64)[sorted_row_indices]
+    sorted_veh_id = np.asarray(decode_meta["veh_id"], dtype=np.int64)[sorted_row_indices]
+    sorted_values = (
+        continuous_unique[torch.as_tensor(ordered_unique_indices, dtype=torch.long, device=continuous_unique.device)]
+        .detach()
+        .cpu()
+        .numpy()
+        .astype(np.float32, copy=False)
+    )
+    per_job_counts = np.bincount(sorted_job_idx, minlength=job_count).astype(np.int64, copy=False)
+    result_offsets = np.zeros((job_count + 1,), dtype=np.int64)
+    result_offsets[1:] = np.cumsum(per_job_counts)
+    return {
+        "veh_id": sorted_veh_id,
+        "values": sorted_values,
+        "job_offsets": result_offsets,
+        "processed_veh_ids": sorted_veh_id.copy(),
+        "processed_offsets": result_offsets.copy(),
+        "job_count": job_count,
     }
-    rtg_results_by_job: List[Dict[int, Tuple[float, float, float]]] = []
-    processed_rtg_veh_ids_by_job: List[List[int]] = []
-    for start, end in zip(job_offsets[:-1], job_offsets[1:]):
-        per_job_results: Dict[int, Tuple[float, float, float]] = {}
-        per_job_processed: List[int] = []
-        for row_idx in range(int(start), int(end)):
-            continuous = continuous_by_row.get(int(row_idx))
-            if continuous is None:
-                continue
-            veh_id_int = int(decode_meta["veh_id"][row_idx])
-            per_job_results[veh_id_int] = continuous
-            per_job_processed.append(veh_id_int)
-        rtg_results_by_job.append(per_job_results)
-        processed_rtg_veh_ids_by_job.append(per_job_processed)
-
-    if len(rtg_results_by_job) != job_count:
-        raise ValueError("RTG decode job/result count mismatch.")
-    return rtg_results_by_job, processed_rtg_veh_ids_by_job

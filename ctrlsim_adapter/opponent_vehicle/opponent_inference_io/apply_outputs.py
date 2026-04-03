@@ -7,7 +7,7 @@ Handles skip states, sparse action reuse, and RNG restoration as the adapter-sid
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 import numpy as np
 
@@ -49,6 +49,24 @@ def _get_rtg_history_vehicle_ids(
     return ordered_ids
 
 
+def _iter_flat_result_rows(
+    veh_ids: Any,
+    values: Any,
+    *,
+    value_width: int,
+) -> Iterator[Tuple[int, np.ndarray]]:
+    """按行遍历 flat 结果数组，返回 `(veh_id, values_row)` 迭代器。
+
+    Iterate over a flat result array row by row and yield `(veh_id, values_row)` pairs.
+    """
+    veh_ids_array = np.asarray(veh_ids, dtype=np.int64).reshape((-1,))
+    values_array = np.asarray(values, dtype=np.float32).reshape((-1, value_width))
+    if veh_ids_array.shape[0] != values_array.shape[0]:
+        raise ValueError("Flat result arrays length mismatch.")
+    for veh_id, value_row in zip(veh_ids_array.tolist(), values_array):
+        yield int(veh_id), value_row
+
+
 def apply_predictions(
     adapter: Any,
     model_outputs: Optional[Dict[str, Any]],
@@ -77,16 +95,20 @@ def apply_predictions(
 
     adapter._ego_action_scale = float(model_outputs.get("ego_action_scale", 1.0))
 
-    action_results = model_outputs["action_results"]
-    rtg_results = model_outputs["rtg_results"]
-    processed_rtg_veh_ids = set(model_outputs["processed_rtg_veh_ids"])
-    dead_ids = set(model_outputs["dead_ids"])
+    action_veh_ids = np.asarray(model_outputs["action_veh_ids"], dtype=np.int64)
+    action_values = np.asarray(model_outputs["action_values"], dtype=np.float32).reshape((-1, 2))
+    rtg_veh_ids = np.asarray(model_outputs["rtg_veh_ids"], dtype=np.int64)
+    rtg_values = np.asarray(model_outputs["rtg_values"], dtype=np.float32).reshape((-1, 3))
+    processed_rtg_veh_ids = set(
+        np.asarray(model_outputs["processed_rtg_veh_ids"], dtype=np.int64).tolist()
+    )
+    dead_ids = set(np.asarray(model_outputs["dead_ids"], dtype=np.int64).tolist())
 
-    for veh_id, (goal_val, veh_val, road_val) in rtg_results.items():
+    for veh_id, rtg_row in _iter_flat_result_rows(rtg_veh_ids, rtg_values, value_width=3):
         veh_data = require_vehicle_data(adapter._vehicle_data_dict, veh_id, "rtg_results", step_t)
-        veh_data["next_rtg_goal"] = goal_val
-        veh_data["next_rtg_veh"] = veh_val
-        veh_data["next_rtg_road"] = road_val
+        veh_data["next_rtg_goal"] = float(rtg_row[0])
+        veh_data["next_rtg_veh"] = float(rtg_row[1])
+        veh_data["next_rtg_road"] = float(rtg_row[2])
 
     if adapter._policy.predict_rtgs:
         zero_rtg = np.zeros(
@@ -123,10 +145,14 @@ def apply_predictions(
             else:
                 veh_data["rtgs"].append(zero_rtg.copy())
 
-    for veh_id, (accel, steer) in action_results.items():
+    action_by_vehicle: Dict[int, Tuple[float, float]] = {}
+    for veh_id, action_row in _iter_flat_result_rows(action_veh_ids, action_values, value_width=2):
+        accel = float(action_row[0])
+        steer = float(action_row[1])
         veh_data = require_vehicle_data(adapter._vehicle_data_dict, veh_id, "action_results", step_t)
         veh_data["next_acceleration"] = accel
         veh_data["next_steering"] = steer
+        action_by_vehicle[veh_id] = (accel, steer)
 
     for veh_id in dead_ids:
         veh_data = require_vehicle_data(adapter._vehicle_data_dict, veh_id, "dead_ids", step_t)
@@ -148,8 +174,8 @@ def apply_predictions(
             actions[veh_id] = (0.0, 0.0)
             continue
 
-        if veh_id in action_results:
-            actions[veh_id] = action_results[veh_id]
+        if veh_id in action_by_vehicle:
+            actions[veh_id] = action_by_vehicle[veh_id]
             continue
         if veh_id in dead_ids:
             actions[veh_id] = (0.0, 0.0)
