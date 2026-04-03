@@ -89,7 +89,7 @@
     "scenario_index_path": ["preparation_file/scenarios_index_filtered_train.json"],
     "scenario_data_dir": ["scenario_data/formatted_json_v2_no_tl_train"],
     "preprocess_dir": ["compressed_preprocessed_data/train"],
-    "opponent_checkpoint": ["checkpoints/model_fp16.ckpt"],
+    "opponent_checkpoint": ["checkpoints/model_finetuning_patched_fp16.ckpt"],
     "vehicle_map_path": ["preparation_file/vehicle_map_filtered_train.json"],
     "log_dir": ["~/logs/dcd"],
 
