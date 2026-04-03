@@ -804,7 +804,7 @@ if __name__ == '__main__':
 
 				evaluator.close()
 	else:
-		print(f'No model path {checkpoint_path}')
+		raise FileNotFoundError(f'No model path {checkpoint_path}')
 
 	output_results = {}
 	for k,_ in stats.items():

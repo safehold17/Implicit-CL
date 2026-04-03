@@ -390,6 +390,10 @@ parser.add_argument(
     default=1,
     help='Log training stats every this many updates.')
 parser.add_argument(
+    '--local_tensorboard',
+    type=str2bool, nargs='?', const=True, default=True,
+    help='Write local TensorBoard event files under log_dir/xpid/tb.')
+parser.add_argument(
     "--checkpoint_interval", 
     type=int, 
     default=5,
@@ -890,7 +894,11 @@ parser.add_argument(
 parser.add_argument(
     '--use_clearml',
     type=str2bool, nargs='?', const=True, default=False,
-    help='Enable ClearML experiment tracking.')
+    help='Execute training remotely on a ClearML agent.')
+parser.add_argument(
+    '--clearml_monitor_only',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Enable local ClearML monitoring without remote execution.')
 parser.add_argument(
     '--clearml_project',
     type=str,

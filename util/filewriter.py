@@ -111,6 +111,7 @@ class FileWriter:
 
         formatter = logging.Formatter("%(message)s")
         self._logger = logging.getLogger("logs/out")
+        self._local_tensorboard = bool(xp_args.get("local_tensorboard", True))
 
         train_full_distribution = xp_args.get('train_full_distribution', False)
         seed_buffer_size = xp_args.get('level_replay_seed_buffer_size', 0)
@@ -224,9 +225,14 @@ class FileWriter:
         self._levelseedswriter = csv.DictWriter(self._levelseedsfile, fieldnames=self.level_seeds_fieldnames)
         self._finaltestfile = open(self.paths["final_test_eval"], "a")
         self._finaltestwriter = csv.DictWriter(self._finaltestfile, fieldnames=self.final_test_eval_fieldnames)
-        self.tensor_board_writer: SummaryWriter = SummaryWriter(
-            log_dir=os.path.join(self.basepath, "tb")
-        )
+        self.tensor_board_writer = None
+        if self._local_tensorboard:
+            self.tensor_board_writer = SummaryWriter(
+                log_dir=os.path.join(self.basepath, "tb")
+            )
+        from util.clearml import get_clearml_logger
+
+        self.clearml_logger = get_clearml_logger()
         self._tb_single_write_metric_map = {
             "train/mean_agent_return": "mean_agent_return",
             "train/agent_value_loss": "agent_value_loss",
@@ -342,7 +348,6 @@ class FileWriter:
 
         self._logwriter.writerow(to_log)
         self._logfile.flush()
-        self.log_to_tensorboard(to_log)
 
     def log_level_weights(self, weights, seeds=None):
         if self.record_seed_diffs and seeds is not None:
@@ -373,19 +378,27 @@ class FileWriter:
         self._finaltestwriter.writerow(to_log)
         self._finaltestfile.flush()
 
-    def log_to_tensorboard(self, stats: Dict) -> None:
+    def report_step_metrics(self, stats: Dict) -> None:
+        if self.tensor_board_writer is None and self.clearml_logger is None:
+            return
+
         process_idx = int(stats.get("process_idx", 0))
         global_step = int(stats["total_student_grad_updates"])
         if process_idx == 0:
             for tag, key in self._tb_single_write_metric_map.items():
                 value = self._get_float_stat(stats, key)
                 if value is not None:
-                    self.tensor_board_writer.add_scalar(tag, value, global_step)
+                    self._report_metric_scalar(tag, global_step, value)
         for tag, key in self._tb_process_avg_metric_map.items():
             value = self._get_float_stat(stats, key)
             if value is not None:
                 self._collect_tb_process_avg(tag, global_step, process_idx, value)
-        self.tensor_board_writer.flush()
+        if self.tensor_board_writer is not None:
+            self.tensor_board_writer.flush()
+
+    def log_to_tensorboard(self, stats: Dict) -> None:
+        """Backwards-compatible alias for metric logging sinks."""
+        self.report_step_metrics(stats)
 
     def close(self, successful: bool = True) -> None:
         if successful:
@@ -400,7 +413,8 @@ class FileWriter:
         for f in [self._logfile, self._fieldfile]:
             f.close()
         self._flush_tb_process_avg_buffers()
-        self.tensor_board_writer.close()
+        if self.tensor_board_writer is not None:
+            self.tensor_board_writer.close()
 
     def _save_metadata(self) -> None:
         with open(self.paths["meta"], "w") as jsonfile:
@@ -460,7 +474,7 @@ class FileWriter:
         if not process_values:
             return
         mean_value = float(np.mean(list(process_values.values())))
-        self.tensor_board_writer.add_scalar(tag, mean_value, step)
+        self._report_metric_scalar(tag, step, mean_value)
 
     def _flush_tb_process_avg_buffers(self):
         for tag, step_buffer in self._tb_process_avg_buffer.items():
@@ -474,6 +488,15 @@ class FileWriter:
         if value is None:
             return None
         return float(value)
+
+    def _report_metric_scalar(self, tag: str, step: int, value: float) -> None:
+        if self.tensor_board_writer is not None:
+            self.tensor_board_writer.add_scalar(tag, value, step)
+
+        if self.clearml_logger is not None:
+            from util.clearml import report_clearml_scalar
+
+            report_clearml_scalar(self.clearml_logger, tag, value, step)
 
     def _append_avg_row(self):
         if not os.path.exists(self.paths["logs"]):

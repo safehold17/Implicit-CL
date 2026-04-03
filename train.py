@@ -45,7 +45,13 @@ def init_clearml(args):
     Returns the ClearML Task object, or None when ClearML is disabled.
     """
     is_clearml_worker = bool(os.environ.get("CLEARML_TASK_ID"))
-    if not args.use_clearml and not is_clearml_worker:
+    if args.use_clearml and args.clearml_monitor_only:
+        raise ValueError(
+            "--use_clearml and --clearml_monitor_only are mutually exclusive"
+        )
+
+    clearml_enabled = args.use_clearml or args.clearml_monitor_only or is_clearml_worker
+    if not clearml_enabled:
         print('Running locally (ClearML disabled)')
         return None
 
@@ -55,7 +61,9 @@ def init_clearml(args):
         task_name=args.clearml_task,
         reuse_last_task_id=False,
         tags=['test run'],
-        output_uri="s3://tks-zx.fzi.de:9000/ri928"
+        output_uri="s3://tks-zx.fzi.de:9000/ri928",
+        auto_connect_frameworks={"tensorboard": False},
+        auto_resource_monitoring=False,
     )
 
     if is_clearml_worker:
@@ -74,18 +82,21 @@ def init_clearml(args):
 
     task.connect(vars(args))
 
-    # An example of configuration of Docker environment for remote execution
-    task.set_base_docker(
-        "tks-zx.fzi.de/hu778/dcd-nocturne",
-        docker_setup_bash_script=[
-            "apt-get install -y libgl1 ffmpeg imagemagick",
-        ],
-        docker_arguments="-e NVIDIA_DRIVER_CAPABILITIES=all --network=host",
-    )
-    # execute on a remote GPU cluster
-    task.execute_remotely('default', clone=False, exit_process=True)
+    if args.use_clearml:
+        # Configure the ClearML agent runtime only for remote execution.
+        task.set_base_docker(
+            "tks-zx.fzi.de/hu778/dcd-nocturne",
+            docker_setup_bash_script=[
+                "apt-get install -y libgl1 ffmpeg imagemagick",
+            ],
+            docker_arguments="-e NVIDIA_DRIVER_CAPABILITIES=all --network=host",
+        )
+        task.execute_remotely('default', clone=False, exit_process=True)
 
-    print('Using ClearML')
+    if args.clearml_monitor_only:
+        print('Using ClearML monitor in local mode')
+    else:
+        print('Using ClearML')
     return task
 
 
@@ -108,8 +119,9 @@ def _build_external_teacher(args, device):
     return teacher
 
 def main(args, clearml_task=None):
-    _ = clearml_task
     display = None
+    filewriter = None
+    training_succeeded = False
 
     from util import ignore_warning
     from util import (
@@ -120,6 +132,7 @@ def main(args, clearml_task=None):
         safe_checkpoint,
         save_images,
     )
+    from util.clearml import finalize_clearml_run
     import envs.multigrid.adversarial
     import envs.box2d
     import envs.nocturne_ctrlsim
@@ -468,6 +481,7 @@ def main(args, clearml_task=None):
                     )
 
                 stats = train_runner.run()
+                filewriter.report_step_metrics(stats)
 
                 # === Perform logging ===
                 if train_runner.num_updates <= last_logged_update_at_restart:
@@ -592,9 +606,14 @@ def main(args, clearml_task=None):
         if evaluator is not None:
             evaluator.close()
         venv.close()
-
-        filewriter.close(successful=True)
+        training_succeeded = True
     finally:
+        if filewriter is not None:
+            finalize_clearml_run(
+                filewriter=filewriter,
+                clearml_task=clearml_task,
+                successful=training_succeeded,
+            )
         if display:
             display.stop()
 
