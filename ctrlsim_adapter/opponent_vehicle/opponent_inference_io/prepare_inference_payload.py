@@ -234,7 +234,7 @@ def resolve_delayed_ego_action_scale(
     """Return the delayed scale exported for the current prepared payload."""
     if owner_focal_id is None:
         return 1.0
-    if not bool(getattr(adapter, "opponent_policy_reweighting_enabled", False)):
+    if not bool(getattr(adapter, "use_policy_reweighting", False)):
         return 1.0
     should_trigger = should_trigger_policy_reweighting_step(
         t=t,

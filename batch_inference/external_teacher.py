@@ -72,8 +72,8 @@ def build_external_teacher_kwargs(
         "checkpoint_path": checkpoint_path,
         "device": device,
         "inference_precision": inference_precision,
-        "opponent_policy_reweighting_enabled": bool(
-            _config_get(config_source, "opponent_policy_reweighting_enabled", False)
+        "use_policy_reweighting": bool(
+            _config_get(config_source, "use_policy_reweighting", False)
         ),
         "policy_reweighting_reward_scale": float(
             _config_get(
@@ -217,7 +217,7 @@ class ExternalTeacher:
         device: str = "cuda",
         base_seed: int = 1,
         inference_precision: str = "fp32",
-        opponent_policy_reweighting_enabled: bool = False,
+        use_policy_reweighting: bool = False,
         policy_reweighting_reward_scale: float = 1.0,
         policy_reweighting_epsilon: float = 1e-6,
         policy_reweighting_error_mean: float = 0.0,
@@ -227,7 +227,7 @@ class ExternalTeacher:
         self.base_seed = base_seed
         self.inference_precision = inference_precision
         self.policy_reweighting_config = AdversarialRTGConfig(
-            enabled=bool(opponent_policy_reweighting_enabled),
+            enabled=bool(use_policy_reweighting),
             reward_scale=float(policy_reweighting_reward_scale),
             epsilon=float(policy_reweighting_epsilon),
             error_mean=float(policy_reweighting_error_mean),

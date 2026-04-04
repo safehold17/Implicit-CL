@@ -38,9 +38,7 @@ def _init_config_state(
 ) -> None:
     """Initialize direct config-backed env attributes."""
     env.use_ego_ctrlsim_kl_loss = config.use_ego_ctrlsim_kl_loss
-    env.opponent_policy_reweighting_enabled = (
-        config.opponent_policy_reweighting_enabled
-    )
+    env.use_policy_reweighting = config.use_policy_reweighting
     env.policy_reweighting_target = config.policy_reweighting_target
     env.reweighting_frequency = config.reweighting_frequency
     env.policy_reweighting_config = config.policy_reweighting_config
@@ -114,7 +112,7 @@ def _init_data_bridge_and_opponent(
         action_repeat_frequency=config.action_repeat_frequency,
         kl_loss_computation_frequency=config.kl_loss_computation_frequency,
         sparse_inference_action_repeat=config.sparse_inference_action_repeat,
-        opponent_policy_reweighting_enabled=config.opponent_policy_reweighting_enabled,
+        use_policy_reweighting=config.use_policy_reweighting,
         policy_reweighting_reward_scale=env.policy_reweighting_config.reward_scale,
         policy_reweighting_epsilon=env.policy_reweighting_config.epsilon,
         policy_reweighting_error_mean=env.policy_reweighting_config.error_mean,

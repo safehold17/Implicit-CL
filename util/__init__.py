@@ -256,8 +256,8 @@ def _make_env(args):
             'use_ego_ctrlsim_kl_loss': getattr(
                 args, 'use_ego_ctrlsim_kl_loss', False
             ),
-            'opponent_policy_reweighting_enabled': getattr(
-                args, 'opponent_policy_reweighting_enabled', False
+            'use_policy_reweighting': getattr(
+                args, 'use_policy_reweighting', False
             ),
             'policy_reweighting_reward_scale': getattr(
                 args, 'policy_reweighting_reward_scale', 1.0

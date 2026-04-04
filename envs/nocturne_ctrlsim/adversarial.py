@@ -154,7 +154,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         opponent_runtime_mode: str,
     ) -> Tuple[float, float, float]:
         """Resolve the runtime tilt used for ego-side RTG mismatch computation."""
-        if not self.opponent_policy_reweighting_enabled:
+        if not self.use_policy_reweighting:
             return (0.0, 0.0, 0.0)
         if opponent_runtime_mode != 'normal':
             return (0.0, 0.0, 0.0)

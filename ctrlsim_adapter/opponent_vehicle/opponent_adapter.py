@@ -61,7 +61,7 @@ class CtrlSimOpponentAdapter:
         action_repeat_frequency: int = 2,
         kl_loss_computation_frequency: int = 2,
         sparse_inference_action_repeat: bool = False,
-        opponent_policy_reweighting_enabled: bool = False,
+        use_policy_reweighting: bool = False,
         policy_reweighting_reward_scale: float = 1.0,
         policy_reweighting_epsilon: float = 1e-6,
         policy_reweighting_error_mean: float = 0.0,
@@ -90,8 +90,8 @@ class CtrlSimOpponentAdapter:
         kl_loss_computation_frequency: cycle length N for ego KL-loss collection.
         sparse_inference_action_repeat: 是否启用动作复用节奏
         sparse_inference_action_repeat: whether to enable the action-reuse cadence.
-        opponent_policy_reweighting_enabled: 是否启用 opponent policy delayed reweighting
-        opponent_policy_reweighting_enabled: whether to enable delayed opponent policy reweighting.
+        use_policy_reweighting: 是否启用 opponent policy delayed reweighting
+        use_policy_reweighting: whether to enable delayed opponent policy reweighting.
         policy_reweighting_reward_scale: policy reweighting scalar multiplier.
         policy_reweighting_epsilon: numerical-stability term for policy reweighting.
         policy_reweighting_error_mean: normalization mean for RTG error.
@@ -119,13 +119,11 @@ class CtrlSimOpponentAdapter:
         self.action_repeat_frequency = int(action_repeat_frequency)
         self.kl_loss_computation_frequency = int(kl_loss_computation_frequency)
         self.sparse_inference_action_repeat = bool(sparse_inference_action_repeat)
-        self.opponent_policy_reweighting_enabled = bool(
-            opponent_policy_reweighting_enabled
-        )
+        self.use_policy_reweighting = bool(use_policy_reweighting)
         self.policy_reweighting_target = str(policy_reweighting_target)
         self.reweighting_frequency = int(reweighting_frequency)
         self.policy_reweighting_config = AdversarialRTGConfig(
-            enabled=self.opponent_policy_reweighting_enabled,
+            enabled=self.use_policy_reweighting,
             reward_scale=float(policy_reweighting_reward_scale),
             epsilon=float(policy_reweighting_epsilon),
             error_mean=float(policy_reweighting_error_mean),

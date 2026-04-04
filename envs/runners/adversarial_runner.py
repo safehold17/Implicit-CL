@@ -760,7 +760,7 @@ class AdversarialRunner(object):
             getattr(self.args, "use_ego_ctrlsim_kl_loss", False)
         )
         use_policy_reweighting = bool(
-            getattr(self.args, "opponent_policy_reweighting_enabled", False)
+            getattr(self.args, "use_policy_reweighting", False)
         )
 
         ego_ctrlsim_logits = [None] * len(ego_ctrlsim_prepared)

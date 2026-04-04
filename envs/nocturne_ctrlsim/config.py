@@ -42,7 +42,7 @@ class NocturneCtrlSimEnvConfig:
     kl_loss_computation_frequency: int
     sparse_inference_action_repeat: bool
     use_ego_ctrlsim_kl_loss: bool
-    opponent_policy_reweighting_enabled: bool
+    use_policy_reweighting: bool
     policy_reweighting_target: str
     reweighting_frequency: int
     policy_reweighting_config: AdversarialRTGConfig
@@ -155,11 +155,11 @@ def build_nocturne_ctrlsim_env_config(
             f"got {policy_reweighting_target}"
         )
 
-    opponent_policy_reweighting_enabled = bool(
-        kwargs.get("opponent_policy_reweighting_enabled", False)
+    use_policy_reweighting = bool(
+        kwargs.get("use_policy_reweighting", False)
     )
     policy_reweighting_config = AdversarialRTGConfig(
-        enabled=opponent_policy_reweighting_enabled,
+        enabled=use_policy_reweighting,
         reward_scale=float(kwargs.get("policy_reweighting_reward_scale", 1.0)),
         epsilon=float(kwargs.get("policy_reweighting_epsilon", 1e-6)),
         error_mean=float(kwargs.get("policy_reweighting_error_mean", 0.0)),
@@ -199,7 +199,7 @@ def build_nocturne_ctrlsim_env_config(
             kwargs.get("sparse_inference_action_repeat", False)
         ),
         use_ego_ctrlsim_kl_loss=bool(kwargs.get("use_ego_ctrlsim_kl_loss", False)),
-        opponent_policy_reweighting_enabled=opponent_policy_reweighting_enabled,
+        use_policy_reweighting=use_policy_reweighting,
         policy_reweighting_target=policy_reweighting_target,
         reweighting_frequency=reweighting_frequency,
         policy_reweighting_config=policy_reweighting_config,

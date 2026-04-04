@@ -224,7 +224,7 @@ class NocturneCtrlSimRuntime:
             ego_id=ego_id,
             include_ego_ctrlsim_prepared=bool(
                 getattr(env, "use_ego_ctrlsim_kl_loss", False)
-                or getattr(env, "opponent_policy_reweighting_enabled", False)
+                or getattr(env, "use_policy_reweighting", False)
             ),
         )
 
