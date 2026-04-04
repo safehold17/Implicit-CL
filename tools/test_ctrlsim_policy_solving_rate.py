@@ -468,12 +468,16 @@ def parse_args() -> argparse.Namespace:
         default="per_vehicle",
     )
     parser.add_argument(
-        "--tilt_range",
+        "--tilt_range_min",
         type=float,
-        nargs=2,
-        default=[-25.0, 25.0],
-        metavar=("MIN", "MAX"),
-        help="Tilt sampling range for Nocturne, formatted as: MIN MAX (e.g., -25 -10).",
+        default=-25.0,
+        help="Minimum tilt sampling value for Nocturne.",
+    )
+    parser.add_argument(
+        "--tilt_range_max",
+        type=float,
+        default=25.0,
+        help="Maximum tilt sampling value for Nocturne.",
     )
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--verbose", action="store_true")
@@ -759,7 +763,7 @@ def write_metrics_csv(output_dir, xpid, episode_metrics):
 def main() -> None:
     args = parse_args()
     base_seed = args.seed if args.seed is not None else int.from_bytes(os.urandom(4), byteorder="little")
-    tilt_range = tuple(sorted((float(args.tilt_range[0]), float(args.tilt_range[1]))))
+    tilt_range = (float(args.tilt_range_min), float(args.tilt_range_max))
     print(f"Tilting mode: {args.tilting_mode}")
     print(f"Tilt range: [{tilt_range[0]}, {tilt_range[1]}]")
     print(f"Checkpoint: {args.checkpoint_path}")

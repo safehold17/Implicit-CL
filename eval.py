@@ -120,12 +120,15 @@ def parse_args():
 		default=100,
 		help='Number of evaluation episodes per xpid per environment.')
 	parser.add_argument(
-		'--tilt_range',
+		'--tilt_range_min',
 		type=int,
-		nargs=2,
-		default=[-25, 25],
-		metavar=('MIN', 'MAX'),
-		help='Absolute tilt range for Nocturne, formatted as: MIN MAX (e.g., -25 25).')
+		default=-25,
+		help='Minimum absolute tilt value for Nocturne.')
+	parser.add_argument(
+		'--tilt_range_max',
+		type=int,
+		default=25,
+		help='Maximum absolute tilt value for Nocturne.')
 	parser.add_argument(
 		'--opponent_vehicle_number',
 		type=int,
@@ -593,7 +596,6 @@ def _collect_nocturne_required_args(flags, cli_args):
 		"student_steer_discretization",
 		"student_num_neighbors",
 		"student_top_k_road",
-		"tilt_range",
 		"use_speed_heading_target",
 		"done_on_position_reached_only",
 	]
@@ -603,6 +605,13 @@ def _collect_nocturne_required_args(flags, cli_args):
 			required[key] = flags[key]
 		elif key in cli_args:
 			required[key] = cli_args[key]
+	if "tilt_range" in flags:
+		required["tilt_range"] = flags["tilt_range"]
+	else:
+		tilt_range_min = flags.get("tilt_range_min", cli_args.get("tilt_range_min"))
+		tilt_range_max = flags.get("tilt_range_max", cli_args.get("tilt_range_max"))
+		if tilt_range_min is not None and tilt_range_max is not None:
+			required["tilt_range"] = (tilt_range_min, tilt_range_max)
 	return required
 
 

@@ -138,6 +138,19 @@ def is_discrete_actions(env, adversary=False):
         return env.action_space.__class__.__name__ == 'Discrete'
 
 
+def get_tilt_range_from_args(args):
+    """Build an internal tilt range tuple from split or legacy args."""
+    legacy_tilt_range = getattr(args, 'tilt_range', None)
+    if legacy_tilt_range is not None:
+        return tuple(legacy_tilt_range)
+
+    tilt_range_min = getattr(args, 'tilt_range_min', None)
+    tilt_range_max = getattr(args, 'tilt_range_max', None)
+    if tilt_range_min is None or tilt_range_max is None:
+        return None
+    return (tilt_range_min, tilt_range_max)
+
+
 def _make_env(args):
     env_kwargs = {'seed': args.seed}
     if args.singleton_env:
@@ -206,7 +219,7 @@ def _make_env(args):
             'tilting_mode': getattr(args, 'tilting_mode', 'per_vehicle'),
             'mutation_mode': getattr(args, 'mutation_mode', 'all'),
             'mutation_range': getattr(args, 'mutation_range', 5.0),
-            'tilt_range': getattr(args, 'tilt_range', None),
+            'tilt_range': get_tilt_range_from_args(args),
             'show_tilting_params': getattr(args, 'show_tilting_params', True),
             'show_vehicle_ids': getattr(args, 'show_vehicle_ids', True),
             'show_ego_vehicle_selection': getattr(args, 'show_ego_vehicle_selection', True),

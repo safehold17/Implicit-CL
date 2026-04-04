@@ -870,12 +870,16 @@ parser.add_argument(
     help="Mutation range for tilting parameters (delta sampled from [-range, range]).",
 )
 parser.add_argument(
-    "--tilt_range",
+    "--tilt_range_min",
     type=int,
-    nargs=2,
-    default=[-25, 25],
-    metavar=("MIN", "MAX"),
-    help="Absolute tilt range for parameters, formatted as: MIN MAX (e.g., -25 25).",
+    default=-25,
+    help="Minimum absolute tilt value for parameters.",
+)
+parser.add_argument(
+    "--tilt_range_max",
+    type=int,
+    default=25,
+    help="Maximum absolute tilt value for parameters.",
 )
 parser.add_argument(
     "--opponent_vehicle_number",

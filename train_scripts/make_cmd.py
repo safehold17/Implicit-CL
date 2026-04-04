@@ -48,9 +48,6 @@ def format_cmd_args(key, value):
     if key.startswith('__'):
         return []
 
-    if isinstance(value, (list, tuple)):
-        return [f'--{key}', *(str(item) for item in value)]
-
     return [f'--{key}={value}']
 
 

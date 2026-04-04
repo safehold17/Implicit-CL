@@ -127,6 +127,7 @@ def main(args, clearml_task=None):
     from util import (
         FileWriter,
         create_parallel_env,
+        get_tilt_range_from_args,
         make_agent,
         make_plr_args,
         safe_checkpoint,
@@ -425,7 +426,7 @@ def main(args, clearml_task=None):
                     preprocess_dir=args.preprocess_dir,
                     vehicle_map_path=args.vehicle_map_path,
                     max_episode_steps=args.nocturne_max_episode_steps,
-                    tilt_range=args.tilt_range,
+                    tilt_range=get_tilt_range_from_args(args),
                 )
 
         # === Train === 

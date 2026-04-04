@@ -45,7 +45,8 @@
 
     "__note4__": ["tilting parameters"],
     "tilting_mode": ["per_vehicle"],
-    "tilt_range": [[-25, 25]],
+    "tilt_range_min": [-25],
+    "tilt_range_max": [25],
 
     "__note5__": ["warmup parameters"],
     "warm_up_level_replay_seed_buffer_size": [10000],
