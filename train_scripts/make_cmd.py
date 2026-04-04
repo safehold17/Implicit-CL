@@ -7,6 +7,41 @@
 import argparse
 import json
 import os
+import sys
+
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+
+INTERNAL_DEFAULT_KEYS = {
+    'num_env_steps',
+    'num_processes',
+    'num_steps',
+    'seed',
+    'use_editor',
+    'use_ego_ctrlsim_kl_loss',
+    'use_policy_reweighting',
+    'use_plr',
+    'tilting_mode',
+}
+
+
+def load_internal_defaults():
+    """Load only the argument defaults needed by make_cmd internals."""
+    from arguments import parser
+
+    defaults = {}
+    for action in parser._actions:
+        if action.dest in INTERNAL_DEFAULT_KEYS:
+            default = action.default
+            if action.type is int and default is not None:
+                default = int(default)
+
+            defaults[action.dest] = default
+
+    return defaults
 
 
 def format_cmd_args(key, value):
@@ -135,141 +170,23 @@ def parse_args():
 
 
 def xpid_from_params(p, prefix=''):
-    ued_algo = p['ued_algo']
-    is_train_env = ued_algo in ['paired', 'flexible_paired', 'minimax']
-
-    env_prefix = ''
-    if p['env_name'].startswith('MultiGrid') or p['env_name'].startswith('Bipedal'):
-        env_prefix = p['env_name']
-    elif p['env_name'].startswith('CarRacing'):
-        env_prefix = f"{p['env_name']}_{p['num_control_points']}pts"
-    if p.get('grayscale', False):
-        env_prefix = f"{env_prefix}_gray"
-
-    prefix_str = '' if prefix == '' else f'-{prefix}'
-
-    rnn_prefix = ''
-    rnn_agent = 'a' if p['recurrent_agent'] else ''
-    rnn_env = 'e' if p['recurrent_adversary_env'] and is_train_env else ''
-    if rnn_agent or rnn_env:
-        rnn_arch = p['recurrent_arch']
-        rnn_hidden = p['recurrent_hidden_size']
-        rnn_prefix = f'-{rnn_arch}{rnn_hidden}{rnn_agent}{rnn_env}'
-
-    ppo_prefix = f"-lr{p['lr']}-epoch{p['ppo_epoch']}-mb{p['num_mini_batch']}-v{p['value_loss_coef']}-gc{p['max_grad_norm']}"
-    
-    if p['use_behavioural_cloning']:
-        ppo_prefix = f"{ppo_prefix}-kl{p['kl_loss_coef']}-klstep{p['kl_update_step']}"
-        if p['use_kl_only_agent']:
-            ppo_prefix = f"{ppo_prefix}-uni"
-
-    if p['env_name'].startswith('CarRacing'):
-        clip_v_prefix = ''
-        if not p['clip_value_loss']:
-            clip_v_prefix = '-no_clipv'
-            ppo_prefix = f"{ppo_prefix}{clip_v_prefix}-gamma-{p['gamma']}-lambda{p['gae_lambda']}-gclip{p['clip_param']}"
-
-    entropy_prefix = f"-henv{p['adv_entropy_coef']}-ha{p['entropy_coef']}"
-
-    plr_prefix = ''
-    if p['use_plr']:
-        if 'level_replay_prob' in p and p['level_replay_prob'] > 0:
-            plr_prefix = f"-plr{p['level_replay_prob']}-rho{p['level_replay_rho']}-n{p['level_replay_seed_buffer_size']}-st{p['staleness_coef']}-{p['level_replay_strategy']}-{p['level_replay_score_transform']}-t{p['level_replay_temperature']}"
-        else:
-            plr_prefix = ''
-
-    editing_prefix = ''
-    if p['use_editor']:
-        editing_prefix = f"-editor{p['level_editor_prob']}-{p['level_editor_method']}-n{p['num_edits']}-base{p['base_levels']}"
-    
-    if p['use_accel_paired']:
-        editing_prefix = f"{editing_prefix}-{p['accel_paired_score_function']}"
-
-    timelimits = '-tl' if p['handle_timelimits'] else ''
-    global_critic = '-global' if p['use_global_critic'] else ''
-
-    noexpgrad = ''
-    if p['no_exploratory_grad_updates']:
-        noexpgrad = '-noexpgrad'
-
-    finetune = ''
-    if p.get('xpid_finetune', None):
-        finetune = f'-ft_{p["xpid_finetune"]}'
-    else:
-        return f'ued{prefix_str}-{env_prefix}-{ued_algo}{finetune}{noexpgrad}{rnn_prefix}{ppo_prefix}{entropy_prefix}{plr_prefix}{editing_prefix}{global_critic}{timelimits}'
+    prefix_str = '' if prefix == '' else f'{prefix}-'
+    return (
+        f'{prefix_str}'
+        f'steps{p["num_env_steps"]}'
+        f'-proc{p["num_processes"]}'
+        f'-roll{p["num_steps"]}'
+        f'-plr{int(bool(p["use_plr"]))}'
+        f'-edit{int(bool(p["use_editor"]))}'
+        f'-tilt{p["tilting_mode"]}'
+        f'-kl{int(bool(p["use_ego_ctrlsim_kl_loss"]))}'
+        f'-prw{int(bool(p["use_policy_reweighting"]))}'
+    )
 
 if __name__ == '__main__':
     args = parse_args()
 
-    # Default parameters
-    params = {
-        'xpid': 'test',
-
-        # Env params
-        'env_name': 'MultiGrid-GoalLastAdversarial-v0',
-        'use_gae': True,
-        'gamma': 0.995,
-        'gae_lambda': 0.95,
-        'seed': 88,
-
-        # CarRacing specific
-        'num_control_points': 12,
-
-        # Model params
-        'recurrent_arch': 'lstm',
-        'recurrent_agent': True,
-        'recurrent_adversary_env': True,
-        'recurrent_hidden_size': 256,
-        'use_global_critic': False,
-
-        # Learning params
-        'lr': 1e-4,
-        'num_steps': 256, # unroll length
-        'num_processes': 32, # number of actor processes
-        'num_env_steps': 1000000000, # total training steps
-        'ppo_epoch': 20,
-        'num_mini_batch': 1,
-        'entropy_coef': 0.,
-        'value_loss_coef': 0.5,
-        'clip_param': 0.2,
-        'clip_value_loss': True,
-        'adv_entropy_coef': 0.,
-        'max_grad_norm': 0.5,
-        'algo': 'ppo',
-        'ued_algo': 'paired',
-
-        # PLR params
-        'use_plr': False,
-        'level_replay_prob': 0.0,
-        'level_replay_rho': 1.0,
-        'level_replay_seed_buffer_size': 5000,
-        'warm_up_level_replay_seed_buffer_size': 4000,
-        'level_replay_score_transform': "rank",
-        'level_replay_temperature': 0.1,
-        'staleness_coef': 0.3,
-        'no_exploratory_grad_updates': False,
-
-        # Editor params
-        'use_editor': False,
-        'level_editor_prob': 0,
-        'level_editor_method': 'random',
-        'num_edits': 0,
-        'base_levels': 'batch',
-        'use_accel_paired': False,
-        'accel_paired_score_function': 'paired',
-        'use_lstm': False,
-        
-        # Behavioural Cloning params
-        'use_behavioural_cloning': False,
-        'kl_loss_coef': 0.0,
-        'kl_update_step': 1,
-        'use_kl_only_agent': False,
-
-        # Logging params
-        'log_interval': 25,
-        'screenshot_interval':1000,  
-        'log_grad_norm': False,
-    }
+    params = load_internal_defaults()
 
     json_filename = args.json
     if not json_filename.endswith('.json'):
