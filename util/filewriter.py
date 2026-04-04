@@ -233,30 +233,24 @@ class FileWriter:
         from util.clearml import get_clearml_logger
 
         self.clearml_logger = get_clearml_logger()
-        self._tb_single_write_metric_map = {
-            "train/mean_agent_return": "mean_agent_return",
-            "train/agent_value_loss": "agent_value_loss",
-            "train/agent_pg_loss": "agent_pg_loss",
-            "train/agent_dist_entropy": "agent_dist_entropy",
-            "train/ego_ctrlsim_kl_loss": "ego_ctrlsim_kl_loss",
-            "train/update_reward": "update_reward",
-            "train/plr_update_reward": "plr_update_reward",
+        self._tb_mode_split_scalar_metric_map = {
+            "mean_agent_return": "mean_agent_return",
+            "agent_value_loss": "agent_value_loss",
+            "agent_pg_loss": "agent_pg_loss",
+            "agent_dist_entropy": "agent_dist_entropy",
+            "ego_ctrlsim_kl_loss": "ego_ctrlsim_kl_loss",
         }
-
-        self._tb_process_avg_metric_map = {
-            "train/progress": "progress",
-            "train/plr_progress": "plr_progress",
-            "env/opponent_vehicle_num": "opponent_vehicle_num",
-            "env/plr_opponent_vehicle_num": "plr_opponent_vehicle_num",
-            "env/veh_goal_avg": "veh_goal_avg",
-            "env/plr_veh_goal_avg": "plr_veh_goal_avg",
-            "env/veh_veh_avg": "veh_veh_avg",
-            "env/plr_veh_veh_avg": "plr_veh_veh_avg",
-            "env/veh_edge_avg": "veh_edge_avg",
-            "env/plr_veh_edge_avg": "plr_veh_edge_avg",
+        self._tb_mode_split_process_metric_keys = {
+            "update_reward": ("episode_reward",),
+            "opponent_num": ("opponent_vehicle_num",),
+            "veh_goal_avg": ("veh_goal_avg",),
+            "veh_veh_avg": ("veh_veh_avg",),
+            "veh_edge_avg": ("veh_edge_avg",),
+            "progress": ("avg_progress", "progress"),
+            "collision": ("collision_occurred", "collision"),
+            "offroad": ("offroad_occurred", "offroad"),
+            "position_reached": ("position_reached_occurred", "position_reached"),
         }
-        self._tb_expected_num_processes = int(xp_args["num_processes"])
-        self._tb_process_avg_buffer = {tag: {} for tag in self._tb_process_avg_metric_map}
 
         if self.seeds and not self.record_seed_diffs:
             self._levelweightsfile.write("# %s\n" % ",".join(self.seeds))
@@ -382,17 +376,13 @@ class FileWriter:
         if self.tensor_board_writer is None and self.clearml_logger is None:
             return
 
-        process_idx = int(stats.get("process_idx", 0))
         global_step = int(stats["total_student_grad_updates"])
-        if process_idx == 0:
-            for tag, key in self._tb_single_write_metric_map.items():
-                value = self._get_float_stat(stats, key)
-                if value is not None:
-                    self._report_metric_scalar(tag, global_step, value)
-        for tag, key in self._tb_process_avg_metric_map.items():
+        mode_name = self._get_tb_mode_name(stats)
+        for metric_name, key in self._tb_mode_split_scalar_metric_map.items():
             value = self._get_float_stat(stats, key)
             if value is not None:
-                self._collect_tb_process_avg(tag, global_step, process_idx, value)
+                self._report_mode_split_metric(metric_name, global_step, value, mode_name)
+        self._report_split_process_metrics(stats, global_step, mode_name)
         if self.tensor_board_writer is not None:
             self.tensor_board_writer.flush()
 
@@ -457,30 +447,53 @@ class FileWriter:
             return result
         return result[:anchor_idx] + to_insert + result[anchor_idx:]
 
-    def _collect_tb_process_avg(self, tag, step, process_idx, value):
-        step_buffer = self._tb_process_avg_buffer[tag]
-        stale_steps = [stale_step for stale_step in step_buffer if stale_step < step]
-        for stale_step in sorted(stale_steps):
-            self._write_tb_process_avg(tag, stale_step, step_buffer.pop(stale_step))
+    @staticmethod
+    def _get_tb_mode_name(stats: Dict) -> str:
+        """Return the TensorBoard mode suffix for the current update."""
+        return "plr_only" if bool(stats.get("level_replay", False)) else "non_plr"
 
-        process_values = step_buffer.setdefault(step, {})
-        process_values[process_idx] = value
+    def _report_mode_split_metric(
+        self,
+        metric_name: str,
+        step: int,
+        value: float,
+        mode_name: str,
+    ) -> None:
+        """Write one metric to the mixed series and the active mode series."""
+        self._report_metric_scalar(f"{metric_name}/mixed", step, value)
+        self._report_metric_scalar(f"{metric_name}/{mode_name}", step, value)
 
-        if len(process_values) >= self._tb_expected_num_processes:
-            self._write_tb_process_avg(tag, step, process_values)
-            step_buffer.pop(step, None)
-
-    def _write_tb_process_avg(self, tag, step, process_values):
-        if not process_values:
+    def _report_split_process_metrics(self, stats: Dict, step: int, mode_name: str) -> None:
+        """Write process-mean metrics under metric_name/{mode} TensorBoard tags."""
+        per_process_stats = stats.get("_tb_per_process_stats")
+        if not per_process_stats:
+            per_process_stats = stats.get("_per_process_stats")
+        if not per_process_stats:
             return
-        mean_value = float(np.mean(list(process_values.values())))
-        self._report_metric_scalar(tag, step, mean_value)
+
+        for metric_name, metric_keys in self._tb_mode_split_process_metric_keys.items():
+            mean_value = self._get_process_metric_mean(per_process_stats, metric_keys)
+            if mean_value is None:
+                continue
+            self._report_mode_split_metric(metric_name, step, mean_value, mode_name)
 
     def _flush_tb_process_avg_buffers(self):
-        for tag, step_buffer in self._tb_process_avg_buffer.items():
-            for step in sorted(step_buffer):
-                self._write_tb_process_avg(tag, step, step_buffer[step])
-            step_buffer.clear()
+        """Compatibility no-op for the legacy close() call path."""
+
+    def _get_process_metric_mean(self, per_process_stats, metric_keys):
+        """Return the mean value for the first available metric key per process row."""
+        values = []
+        for process_stats in per_process_stats:
+            value = None
+            for key in metric_keys:
+                value = self._safe_float(process_stats.get(key))
+                if value is not None:
+                    break
+            if value is not None:
+                values.append(value)
+        if not values:
+            return None
+        return float(np.mean(values))
 
     @staticmethod
     def _get_float_stat(stats: Dict, key: str):

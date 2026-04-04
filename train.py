@@ -215,7 +215,10 @@ def main(args, clearml_task=None):
 
             per_process_stats = stats.get('_per_process_stats')
             if per_process_stats:
-                shared_stats = {k: v for k, v in stats.items() if k != '_per_process_stats'}
+                shared_stats = {
+                    k: v for k, v in stats.items()
+                    if k not in ('_per_process_stats', '_tb_per_process_stats')
+                }
                 for process_stats in per_process_stats:
                     row = shared_stats.copy()
                     row.update(process_stats)

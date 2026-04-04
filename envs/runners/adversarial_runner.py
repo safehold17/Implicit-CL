@@ -1510,15 +1510,21 @@ class AdversarialRunner(object):
         # Only update env-related stats when run generates new envs (not level replay)
         log_replay_complexity = level_replay and args.log_replay_complexity
         per_process_stats = []
+        tb_per_process_stats = []
         nocturne_infos = None
         nocturne_process_infos = None
+        if is_nocturne_env:
+            nocturne_infos = list(nocturne_first_done_infos_for_update)
+            nocturne_process_infos = []
+            for process_idx in range(args.num_processes):
+                process_info = nocturne_first_done_info_by_process.get(process_idx)
+                nocturne_process_infos.append(dict(process_info) if process_info else {})
+            tb_per_process_stats = self._get_nocturne_process_stats(
+                infos=nocturne_process_infos,
+                log_replay_complexity=False,
+            )
+
         if (not level_replay) or log_replay_complexity:
-            if is_nocturne_env:
-                nocturne_infos = list(nocturne_first_done_infos_for_update)
-                nocturne_process_infos = []
-                for process_idx in range(args.num_processes):
-                    process_info = nocturne_first_done_info_by_process.get(process_idx)
-                    nocturne_process_infos.append(dict(process_info) if process_info else {})
 
             stats = self._get_env_stats(agent_info, adversary_agent_info, 
                 log_replay_complexity=log_replay_complexity,
@@ -1566,6 +1572,7 @@ class AdversarialRunner(object):
             'total_episodes': self.total_episodes_collected,
             'total_seeds': self.total_seeds_collected,
             'total_student_grad_updates': self.student_grad_updates,
+            'level_replay': level_replay,
 
             'mean_agent_return': mean_agent_return,
             'agent_value_loss': agent_info['value_loss'],
@@ -1601,5 +1608,7 @@ class AdversarialRunner(object):
 
         if per_process_stats:
             stats['_per_process_stats'] = per_process_stats
+        if tb_per_process_stats:
+            stats['_tb_per_process_stats'] = tb_per_process_stats
 
         return stats
