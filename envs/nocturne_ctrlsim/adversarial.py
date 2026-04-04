@@ -15,38 +15,38 @@ import numpy as np
 import torch
 from dataclasses import replace
 
-from .config import build_nocturne_ctrlsim_env_config
-from .level import (
+from .core.config import build_nocturne_ctrlsim_env_config
+from .core.level import (
     ScenarioLevel,
     build_zero_tilt_level,
     normalize_per_vehicle_tilting,
 )
-from .services.bootstrap import (
+from .core.env_bootstrap import (
     NocturneCtrlSimBootstrapDependencies,
     bootstrap_nocturne_ctrlsim_env,
 )
 
-from .services.scenario_helpers import (
+from .services.scenario_runtime import (
     get_vehicle_by_id,
     load_scenario,
     remove_background_moving_vehicles,
 )
-from .services import level_manager as level_manager_service
 from .services import scenario_pool as scenario_pool_service
 
-from .services.gt_helpers import (
+from .services.ground_truth import (
     get_goal_point_for_vehicle,
     initialize_ego_goal_state,
 )
-from .student_env_policy import get_student_observation
-from .services.runtime import NocturneCtrlSimRuntime
+from .student.observation_action import get_student_observation
+from .core.episode_runtime import NocturneCtrlSimRuntime
+from .core import level as level_service
 
 from .services.simulation_info import (
     get_complexity_info,
     reset_metrics as sim_reset_metrics,
 )
 
-from .utils.vehicle_map_helpers import (
+from .services.vehicle_map import (
     is_retryable_vehicle_map_error,
     load_vehicle_ids_for_scenario,
 )
@@ -275,7 +275,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         if done:
             # Building completed, create ScenarioLevel and initialize environment
-            level_manager_service.build_level_from_params(self)
+            level_service.build_level_from_params(self)
         
         return self._build_adversary_obs(), 0, done, {}
 
@@ -326,7 +326,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         last_scenario_id: Optional[str] = None
 
         for attempt in range(1, max_retries + 1):
-            level = level_manager_service.sample_random_level(self)
+            level = level_service.sample_random_level(self)
             last_scenario_id = level.scenario_id
             try:
                 return self.reset_to_level(level)
@@ -361,7 +361,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         Returns:
             student initial observation
         """
-        level = level_manager_service.coerce_level(self, level)
+        level = level_service.coerce_level(self, level)
         runtime_mode = getattr(self, 'opponent_runtime_mode', 'normal')
 
         # Keep replay/disable behavior robust even when replayed levels
@@ -377,7 +377,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         if self._scenario_pool_dirty:
             scenario_pool_service.rebuild_index_mappings(self)
         start_idx = self.scenario_id_to_index.get(level.scenario_id, 0)
-        level_manager_service.initialize_level_with_fallback(
+        level_service.initialize_level_with_fallback(
             self,
             start_idx=start_idx,
             create_level=lambda scenario_id: level.with_scenario_id(scenario_id),
@@ -434,12 +434,12 @@ class NocturneCtrlSimAdversarial(gym.Env):
                 raise ValueError("Must call reset_to_level first")
             base_level = self.current_level
         else:
-            base_level = level_manager_service.coerce_level(self, level)
+            base_level = level_service.coerce_level(self, level)
 
         if self.tilting_mode == 'none':
             return self.reset_to_level(base_level)
 
-        mutated = level_manager_service.mutate_level_internal(self, base_level)
+        mutated = level_service.mutate_level_internal(self, base_level)
         # Ensure the mutated level carries a fresh seed for subsequent resets.
         mutated = replace(mutated, seed=self._set_level_seed(self._sample_level_seed()))
         return self.reset_to_level(mutated)

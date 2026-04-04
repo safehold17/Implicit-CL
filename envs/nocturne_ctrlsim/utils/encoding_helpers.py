@@ -6,7 +6,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from ..level import ScenarioLevel
+from ..core.level import ScenarioLevel
 
 
 def encode_level_to_string_array(

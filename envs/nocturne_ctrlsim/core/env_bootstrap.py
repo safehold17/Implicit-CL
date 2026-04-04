@@ -10,8 +10,11 @@ from typing import Any
 import gym
 import numpy as np
 
-from ..config import NocturneCtrlSimEnvConfig
-from ..student_env_policy import build_student_observation_config, get_student_obs_dim
+from .config import NocturneCtrlSimEnvConfig
+from ..student.observation_action import (
+    build_student_observation_config,
+    get_student_obs_dim,
+)
 from ..utils.tilt_helpers import init_level_params_vec
 
 

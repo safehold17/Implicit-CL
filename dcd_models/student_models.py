@@ -12,7 +12,7 @@ import torch.nn as nn
 
 from .common import DeviceAwareModule
 from .distributions import Categorical
-from envs.nocturne_ctrlsim.student_env_policy import (
+from envs.nocturne_ctrlsim.student.observation_action import (
     StudentObservationConfig,
     get_student_obs_dim,
     split_student_observation,

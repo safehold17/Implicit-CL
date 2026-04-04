@@ -6,21 +6,21 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-from ..level import normalize_per_vehicle_tilting
-from .gt_helpers import (
+from .level import normalize_per_vehicle_tilting
+from ..services.ground_truth import (
     build_episode_gt_action_cache,
     get_gt_action,
     is_ego_position_reached,
 )
-from .scenario_helpers import remove_background_moving_vehicles
-from .simulation_info import (
+from ..services.scenario_runtime import remove_background_moving_vehicles
+from ..services.simulation_info import (
     check_done,
     compute_current_progress,
     get_info,
     update_episode_progress,
 )
-from ..student_env_policy import apply_student_action
-from ..student_reward import compute_student_reward
+from ..student.observation_action import apply_student_action
+from ..student.student_reward import compute_student_reward
 
 
 def split_prepared_pack_batch(

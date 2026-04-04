@@ -1,4 +1,6 @@
-"""Student-policy related helper functions for Nocturne CtrlSim adversarial env."""
+"""Student observation and action helpers for the Nocturne CtrlSim environment."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List
@@ -7,7 +9,7 @@ import heapq
 import math
 import numpy as np
 
-from .utils.common import (
+from ..utils.common import (
     angle_of_rotation,
     angle_sub,
     is_valid_world_position,
@@ -48,6 +50,7 @@ class StudentObservationConfig:
 
     @property
     def max_controlled_agents(self) -> int:
+        """Return the total number of controlled agents including ego."""
         return self.max_neighbors + 1
 
 
@@ -110,15 +113,7 @@ def split_student_observation(obs_flat, config: StudentObservationConfig):
 
 
 def apply_student_action(env, action: np.ndarray):
-    """
-    Apply student action to ego vehicle.
-
-    Args:
-        action: Discrete student action id.
-
-    Returns:
-        The decoded continuous `(accel, steer)` action, or `None` when ego is absent.
-    """
+    """Apply a discrete student action to the ego vehicle."""
     if env.ego_vehicle is None:
         return None
 
@@ -135,9 +130,8 @@ def apply_student_action(env, action: np.ndarray):
     accel_norm = (2.0 * accel_idx / (accel_bins - 1)) - 1.0
     steer_norm = (2.0 * steer_idx / (steer_bins - 1)) - 1.0
 
-    # Convert normalized action to actual values
-    accel = accel_norm * 10.0  # max acc 10 m/s^2
-    steer = steer_norm * 0.7  # max steer 0.7 rad
+    accel = accel_norm * 10.0
+    steer = steer_norm * 0.7
 
     if accel > 0:
         env.ego_vehicle.acceleration = accel
@@ -178,6 +172,7 @@ def _build_road_feature(
     orientation: float,
     type_idx: int,
 ) -> np.ndarray:
+    """Build a single road-feature vector."""
     road_feat = np.empty(ROAD_FEATURE_DIM, dtype=np.float32)
     road_feat[0] = rel_x
     road_feat[1] = rel_y
@@ -190,24 +185,15 @@ def _build_road_feature(
 
 
 def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
-    """
-    Build Road Graph observation (in gpudrive).
-
-    Returns:
-        road_graph_states: List of road point features (R 13-dimensional vectors)
-    """
+    """Build the road-graph observation in the Gpudrive layout."""
     top_k = env._top_k_road_points
     if top_k <= 0:
         return []
 
     if env._road_graph_cache is None or len(env._road_graph_cache) == 0:
-        # No road data, return empty road graph
         return [np.zeros(ROAD_FEATURE_DIM, dtype=np.float32) for _ in range(top_k)]
 
     angle = angle_of_rotation(ego_heading)
-
-    # Keep only nearest top_k points while scanning all road geometries.
-    # Heap item: (-dist_sq, -point_index, rel_x, rel_y, seg_length, orientation, type_idx)
     topk_heap = []
     point_index = 0
 
@@ -215,13 +201,10 @@ def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
         road_type = road_item["type"]
         geometry = road_item["geometry"]
 
-        # Process different types of geometry data
         if isinstance(geometry, list) and len(geometry) > 0:
-            # Road line (multiple points)
             type_idx = ROAD_TYPE_MAPPING.get(road_type, 0)
             last_idx = len(geometry) - 1
             for i, pt in enumerate(geometry):
-                # Relative position
                 dx = pt["x"] - ego_pos.x
                 dy = pt["y"] - ego_pos.y
                 rel_x, rel_y = to_local(dx, dy, angle)
@@ -231,18 +214,16 @@ def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
                     point_index += 1
                     continue
 
-                # Calculate road segment length
                 if i < last_idx:
                     next_pt = geometry[i + 1]
                     seg_length = math.sqrt(
                         (next_pt["x"] - pt["x"]) ** 2 + (next_pt["y"] - pt["y"]) ** 2
                     )
-                    # Direction: points to next point
                     orientation = math.atan2(
                         next_pt["y"] - pt["y"], next_pt["x"] - pt["x"]
                     )
                 else:
-                    seg_length = 1.0  # Default value
+                    seg_length = 1.0
                     orientation = 0.0
                 orientation = angle_sub(orientation, -angle)
 
@@ -262,7 +243,6 @@ def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
                 point_index += 1
 
         elif isinstance(geometry, dict):
-            # Static object (e.g. stop_sign)
             dx = geometry["x"] - ego_pos.x
             dy = geometry["y"] - ego_pos.y
             rel_x, rel_y = to_local(dx, dy, angle)
@@ -288,7 +268,6 @@ def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
                 heapq.heapreplace(topk_heap, heap_item)
             point_index += 1
 
-    # Convert selected top_k points to features, ordered by distance asc.
     selected_points = sorted(topk_heap, key=lambda item: (-item[0], -item[1]))
     road_graph_states = [
         _build_road_feature(
@@ -301,7 +280,6 @@ def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
         for item in selected_points
     ]
 
-    # Fill missing road points
     for _ in range(top_k - len(road_graph_states)):
         road_graph_states.append(np.zeros(ROAD_FEATURE_DIM, dtype=np.float32))
 
@@ -309,17 +287,15 @@ def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
 
 
 def get_student_observation(env) -> np.ndarray:
-    """Get student policy observation (consistent with gpudrive)."""
+    """Build the flattened student observation."""
     obs_dim = get_student_obs_dim(get_env_student_observation_config(env))
     if env.ego_vehicle is None or env._ego_goal_dict is None:
         return np.zeros(obs_dim, dtype=np.float32)
 
-    # ========== Ego state (6 dimensions) ==========
     ego_pos = env.ego_vehicle.getPosition()
     ego_heading = env.ego_vehicle.getHeading()
     ego_speed = env.ego_vehicle.getSpeed()
 
-    # Relative target position (in ego coordinate system)
     goal_pos = env._ego_goal_dict["pos"]
     angle = angle_of_rotation(ego_heading)
     rel_goal_x, rel_goal_y = to_local(
@@ -327,8 +303,6 @@ def get_student_observation(env) -> np.ndarray:
         goal_pos[1] - ego_pos.y,
         angle,
     )
-
-    # Collision state
     collision_state = 1.0 if env._collision_occurred else 0.0
 
     ego_state = np.array(
@@ -343,24 +317,17 @@ def get_student_observation(env) -> np.ndarray:
         dtype=np.float32,
     )
 
-    # ========== Partner state (K*6 dimensions) ==========
     max_neighbors = getattr(env, "_max_observable_agents", 16)
     partner_states = []
-
-    # Select nearest K neighboring vehicles from all valid scene vehicles.
     selected_vehicles = _select_partner_vehicles(env, ego_pos, max_neighbors)
 
     for veh in selected_vehicles:
         veh_pos = veh.getPosition()
-
-        # Relative position to ego
         rel_pos_x, rel_pos_y = to_local(
             veh_pos.x - ego_pos.x,
             veh_pos.y - ego_pos.y,
             angle,
         )
-
-        # Relative orientation
         rel_orientation = angle_sub(veh.getHeading(), -angle)
 
         partner_state = np.array(
@@ -376,21 +343,16 @@ def get_student_observation(env) -> np.ndarray:
         )
         partner_states.append(partner_state)
 
-    # Fill missing neighbors with zero vector
     for _ in range(max_neighbors - len(selected_vehicles)):
         partner_states.append(np.zeros(6, dtype=np.float32))
 
-    # ========== Road Graph (R*13 dimensions) ==========
     road_graph_states = build_road_graph_obs(env, ego_pos, ego_heading)
 
-    # ========== Concatenate all observations ==========
     obs_parts = [ego_state]
     obs_parts.extend(partner_states)
     obs_parts.extend(road_graph_states)
 
     obs_concat = np.concatenate(obs_parts)
-
-    # Fill or truncate to obs_dim
     if len(obs_concat) < obs_dim:
         obs_final = np.zeros(obs_dim, dtype=np.float32)
         obs_final[: len(obs_concat)] = obs_concat

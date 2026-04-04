@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ..level import ScenarioLevel
+from ..core.level import ScenarioLevel
 
 
 def round_clipped_tilt(value: float, tilt_range: tuple[float, float]) -> int:

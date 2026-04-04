@@ -15,7 +15,7 @@ from ctrlsim_adapter.opponent_vehicle._opponent_state.gt_helpers import (
     resolve_next_gt_state,
 )
 
-from .scenario_helpers import get_vehicle_by_id
+from .scenario_runtime import get_vehicle_by_id
 
 
 def build_episode_gt_action_cache(env) -> None:
