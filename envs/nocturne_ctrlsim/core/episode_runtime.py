@@ -33,10 +33,10 @@ from ..services.simulation_info import (
 )
 from ..student.observation_action import (
     apply_student_action,
-    build_student_road_cache,
     refresh_student_vehicle_cache,
 )
 from ..student.student_reward import compute_student_reward
+from ctrlsim_adapter._data_bridge.scenario import road_data_to_numpy
 
 
 def split_prepared_pack_batch(
@@ -271,12 +271,16 @@ class NocturneCtrlSimRuntime:
             ego_id=env.ego_vehicle.getID() if env.ego_vehicle else None,
         )
         # Build student-side caches used in the hot path:
-        # - static road graph features are valid for the whole episode
+        # - compact road graph arrays are valid for the whole episode
         # - road-edge polylines are reused by shaped reward computation
         # - the vehicle snapshot is refreshed per step but seeded here so the
         #   initial observation after reset can read it immediately
         env._road_graph_cache = env.data_bridge.get_road_data(env.scenario)
-        env._student_road_cache = build_student_road_cache(env._road_graph_cache)
+        # Pre-flatten road geometry once per episode so observation code can
+        # consume a compact numpy representation without a second bridge call.
+        # ``point_indices`` inside this cache preserve deterministic ordering
+        # when multiple road points are equally close to the ego vehicle.
+        env._road_graph_np = road_data_to_numpy(env._road_graph_cache)
         env._student_road_edge_polylines = tuple(
             env.data_bridge.extract_road_edge_polylines(env._road_graph_cache)
         )

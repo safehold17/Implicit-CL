@@ -235,7 +235,7 @@ def _init_observation_and_action_spaces(
 ) -> None:
     """Initialize student/adversary spaces and encoding metadata."""
     env._road_graph_cache = None
-    env._student_road_cache = None
+    env._road_graph_np = None
     env._student_road_edge_polylines = ()
     env._student_vehicle_cache = None
     env.student_observation_config = build_student_observation_config(

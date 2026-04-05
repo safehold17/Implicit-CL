@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import torch
 from algos import PPO, RolloutStorage, ACAgent
 from dcd_models import \
     MultigridNetwork, MultigridGlobalCriticNetwork, \
@@ -317,6 +318,11 @@ def make_agent(name, env, args, device='cpu'):
         student_act_func=vars(args).get('student_act_func', 'tanh'),
         # Nocturne Teacher parameters
         random_teacher=vars(args).get('random_teacher', False))
+
+    # Compile the model for faster forward passes. dynamic=True avoids recompilation
+    # on variable batch sizes. Falls back to eager silently on unsupported patterns.
+    actor_critic = torch.compile(actor_critic, dynamic=True)
+    print(f"[make_agent] Compiled actor_critic '{name}' with torch.compile (dynamic=True).")
 
     algo = None
     storage = None
