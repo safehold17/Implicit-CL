@@ -2,10 +2,12 @@
 Student reward computation for Nocturne CtrlSim adversarial env.
 """
 
+from __future__ import annotations
+
 import numpy as np
 
 from ctrlsim_adapter.ctrlsim_path import ctrlsim_path
-from ..utils.common import is_valid_world_position
+from .observation_action import refresh_student_vehicle_cache
 
 ctrlsim_path()
 
@@ -32,22 +34,20 @@ def _compute_veh_veh_shaped_reward(env, ego_id: int, ego_pos_arr: np.ndarray) ->
     if max_veh_veh_distance <= 0.0:
         return 0.0
 
-    nearest_dist = np.inf
-    for veh in getattr(env, 'vehicles', []):
-        if veh.getID() == ego_id:
-            continue
-        if not getattr(veh, 'physics_simulated', True):
-            continue
-        pos = veh.getPosition()
-        if not is_valid_world_position(pos.x, pos.y):
-            continue
-        dist = float(np.linalg.norm(ego_pos_arr - np.array([pos.x, pos.y])))
-        if dist < nearest_dist:
-            nearest_dist = dist
+    vehicle_cache = getattr(env, '_student_vehicle_cache', None)
+    if vehicle_cache is None:
+        refresh_student_vehicle_cache(env)
+        vehicle_cache = env._student_vehicle_cache
 
-    if not np.isfinite(nearest_dist):
+    partner_mask = vehicle_cache['vehicle_ids'] != int(ego_id)
+    if not np.any(partner_mask):
         return 0.0
-    return float(np.clip(nearest_dist, 0.0, max_veh_veh_distance) / max_veh_veh_distance)
+
+    partner_positions = vehicle_cache['positions'][partner_mask]
+    nearest_dist = float(np.min(np.linalg.norm(partner_positions - ego_pos_arr, axis=1)))
+    return float(
+        np.clip(nearest_dist, 0.0, max_veh_veh_distance) / max_veh_veh_distance
+    )
 
 
 def _extract_road_edge_polylines(env) -> list[np.ndarray]:
@@ -68,6 +68,25 @@ def _extract_road_edge_polylines(env) -> list[np.ndarray]:
     return polylines
 
 
+def _get_student_road_edge_polylines(env) -> tuple[np.ndarray, ...]:
+    """Return cached road-edge polylines, materializing them once per episode."""
+    road_edge_polylines = getattr(env, '_student_road_edge_polylines', ())
+    if road_edge_polylines:
+        return road_edge_polylines
+
+    roads_data = getattr(env, '_road_graph_cache', None)
+    if not roads_data:
+        return ()
+
+    data_bridge = getattr(env, 'data_bridge', None)
+    if data_bridge is not None and hasattr(data_bridge, 'extract_road_edge_polylines'):
+        road_edge_polylines = tuple(data_bridge.extract_road_edge_polylines(roads_data))
+    else:
+        road_edge_polylines = tuple(_extract_road_edge_polylines(env))
+    env._student_road_edge_polylines = road_edge_polylines
+    return road_edge_polylines
+
+
 def _compute_veh_edge_shaped_reward(env, ego_pos_arr: np.ndarray) -> float:
     """Compute CtrlSim-style veh-edge shaped reward in [0, 1]."""
     if not getattr(env, 'use_veh_edge_shaped', True):
@@ -77,7 +96,7 @@ def _compute_veh_edge_shaped_reward(env, ego_pos_arr: np.ndarray) -> float:
     if clip_distance <= 0.0:
         return 0.0
 
-    road_edge_polylines = _extract_road_edge_polylines(env)
+    road_edge_polylines = _get_student_road_edge_polylines(env)
     if len(road_edge_polylines) == 0:
         return 0.0
 

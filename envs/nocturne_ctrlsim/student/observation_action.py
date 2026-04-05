@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import Any
 
-import heapq
 import math
 import numpy as np
 
 from ..utils.common import (
     angle_of_rotation,
-    angle_sub,
     is_valid_world_position,
     to_local,
 )
@@ -141,14 +139,91 @@ def apply_student_action(env, action: np.ndarray):
     return float(accel), float(steer)
 
 
-def _select_partner_vehicles(env, ego_pos, max_neighbors: int) -> List:
-    """Select nearest valid partner vehicles around ego."""
-    ego_vehicle = env.ego_vehicle
-    candidate_vehicles = []
+def _to_local_array(
+    dx: np.ndarray,
+    dy: np.ndarray,
+    angle: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert world-frame offsets into ego-local offsets in batch."""
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    local_x = dx * cos_a + dy * sin_a
+    local_y = -dx * sin_a + dy * cos_a
+    return local_x.astype(np.float32), local_y.astype(np.float32)
+
+
+def _normalize_angle_to_target(
+    current_angles: np.ndarray,
+    target_angle: float,
+) -> np.ndarray:
+    """Return wrapped angle deltas from current angles to a shared target."""
+    diff = (float(target_angle) - current_angles + np.pi) % (2.0 * np.pi) - np.pi
+    return diff.astype(np.float32)
+
+
+def build_student_road_cache(
+    road_graph_data: list[dict[str, Any]] | None,
+) -> dict[str, np.ndarray] | None:
+    """Flatten static road graph data into arrays reused by every step."""
+    if not road_graph_data:
+        return None
+
+    points: list[tuple[float, float]] = []
+    segment_lengths: list[float] = []
+    orientations: list[float] = []
+    type_indices: list[int] = []
+
+    for road_item in road_graph_data:
+        road_type = road_item["type"]
+        geometry = road_item["geometry"]
+
+        if isinstance(geometry, list) and geometry:
+            type_idx = ROAD_TYPE_MAPPING.get(road_type, 0)
+            last_idx = len(geometry) - 1
+            for point_idx, point in enumerate(geometry):
+                points.append((point["x"], point["y"]))
+                if point_idx < last_idx:
+                    next_point = geometry[point_idx + 1]
+                    dx = next_point["x"] - point["x"]
+                    dy = next_point["y"] - point["y"]
+                    segment_lengths.append(math.hypot(dx, dy))
+                    orientations.append(math.atan2(dy, dx))
+                else:
+                    segment_lengths.append(1.0)
+                    orientations.append(0.0)
+                type_indices.append(type_idx)
+            continue
+
+        if isinstance(geometry, dict):
+            points.append((geometry["x"], geometry["y"]))
+            segment_lengths.append(0.0)
+            orientations.append(0.0)
+            type_indices.append(STATIC_ROAD_TYPE_MAPPING.get(road_type, 0))
+
+    if not points:
+        return None
+
+    points_array = np.asarray(points, dtype=np.float32)
+    type_indices_array = np.asarray(type_indices, dtype=np.int64)
+    return {
+        "points": points_array,
+        "segment_lengths": np.asarray(segment_lengths, dtype=np.float32),
+        "orientations": np.asarray(orientations, dtype=np.float32),
+        "type_onehot": ROAD_TYPE_ONEHOT[type_indices_array],
+        "point_indices": np.arange(points_array.shape[0], dtype=np.int64),
+    }
+
+
+def refresh_student_vehicle_cache(env) -> None:
+    """Collect valid per-step vehicle state once for observation and reward."""
+    vehicle_ids: list[int] = []
+    positions: list[tuple[float, float]] = []
+    headings: list[float] = []
+    speeds: list[float] = []
+    lengths: list[float] = []
+    widths: list[float] = []
 
     for veh in getattr(env, "vehicles", []):
-        if veh is ego_vehicle:
-            continue
         if getattr(veh, "physics_simulated", True) is False:
             continue
 
@@ -156,133 +231,91 @@ def _select_partner_vehicles(env, ego_pos, max_neighbors: int) -> List:
         if not is_valid_world_position(veh_pos.x, veh_pos.y):
             continue
 
-        dx = veh_pos.x - ego_pos.x
-        dy = veh_pos.y - ego_pos.y
-        dist = math.hypot(dx, dy)
-        candidate_vehicles.append((dist, veh))
+        vehicle_ids.append(int(veh.getID()))
+        positions.append((veh_pos.x, veh_pos.y))
+        headings.append(float(veh.getHeading()))
+        speeds.append(float(veh.getSpeed()))
+        lengths.append(float(veh.getLength()))
+        widths.append(float(veh.getWidth()))
 
-    candidate_vehicles.sort(key=lambda item: item[0])
-    return [veh for _, veh in candidate_vehicles[:max_neighbors]]
+    if not vehicle_ids:
+        env._student_vehicle_cache = {
+            "vehicle_ids": np.zeros(0, dtype=np.int64),
+            "positions": np.zeros((0, 2), dtype=np.float32),
+            "headings": np.zeros(0, dtype=np.float32),
+            "speeds": np.zeros(0, dtype=np.float32),
+            "lengths": np.zeros(0, dtype=np.float32),
+            "widths": np.zeros(0, dtype=np.float32),
+        }
+        return
+
+    env._student_vehicle_cache = {
+        "vehicle_ids": np.asarray(vehicle_ids, dtype=np.int64),
+        "positions": np.asarray(positions, dtype=np.float32),
+        "headings": np.asarray(headings, dtype=np.float32),
+        "speeds": np.asarray(speeds, dtype=np.float32),
+        "lengths": np.asarray(lengths, dtype=np.float32),
+        "widths": np.asarray(widths, dtype=np.float32),
+    }
 
 
-def _build_road_feature(
-    rel_x: float,
-    rel_y: float,
-    seg_length: float,
-    orientation: float,
-    type_idx: int,
-) -> np.ndarray:
-    """Build a single road-feature vector."""
-    road_feat = np.empty(ROAD_FEATURE_DIM, dtype=np.float32)
-    road_feat[0] = rel_x
-    road_feat[1] = rel_y
-    road_feat[2] = seg_length
-    road_feat[3] = 1.0
-    road_feat[4] = 1.0
-    road_feat[5] = orientation
-    road_feat[6:] = ROAD_TYPE_ONEHOT[type_idx]
-    return road_feat
+def _get_student_vehicle_cache(env) -> dict[str, np.ndarray]:
+    """Return the current step vehicle cache, building it on demand."""
+    vehicle_cache = getattr(env, "_student_vehicle_cache", None)
+    if vehicle_cache is None:
+        refresh_student_vehicle_cache(env)
+        vehicle_cache = env._student_vehicle_cache
+    return vehicle_cache
 
 
-def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
-    """Build the road-graph observation in the Gpudrive layout."""
+def build_road_graph_obs(env, ego_pos, ego_heading: float) -> np.ndarray:
+    """Build the road-graph observation matrix in the Gpudrive layout."""
     top_k = env._top_k_road_points
     if top_k <= 0:
-        return []
+        return np.zeros((0, ROAD_FEATURE_DIM), dtype=np.float32)
 
-    if env._road_graph_cache is None or len(env._road_graph_cache) == 0:
-        return [np.zeros(ROAD_FEATURE_DIM, dtype=np.float32) for _ in range(top_k)]
+    road_cache = getattr(env, "_student_road_cache", None)
+    if road_cache is None:
+        road_cache = build_student_road_cache(getattr(env, "_road_graph_cache", None))
+        env._student_road_cache = road_cache
 
+    road_graph_states = np.zeros((top_k, ROAD_FEATURE_DIM), dtype=np.float32)
+    if road_cache is None:
+        return road_graph_states
+
+    points = road_cache["points"]
     angle = angle_of_rotation(ego_heading)
-    topk_heap = []
-    point_index = 0
+    rel_x, rel_y = _to_local_array(
+        points[:, 0] - float(ego_pos.x),
+        points[:, 1] - float(ego_pos.y),
+        angle,
+    )
+    dist_sq = rel_x * rel_x + rel_y * rel_y
 
-    for road_item in env._road_graph_cache:
-        road_type = road_item["type"]
-        geometry = road_item["geometry"]
+    if points.shape[0] > top_k:
+        selected_indices = np.argpartition(dist_sq, top_k - 1)[:top_k]
+    else:
+        selected_indices = np.arange(points.shape[0], dtype=np.int64)
 
-        if isinstance(geometry, list) and len(geometry) > 0:
-            type_idx = ROAD_TYPE_MAPPING.get(road_type, 0)
-            last_idx = len(geometry) - 1
-            for i, pt in enumerate(geometry):
-                dx = pt["x"] - ego_pos.x
-                dy = pt["y"] - ego_pos.y
-                rel_x, rel_y = to_local(dx, dy, angle)
-                dist_sq = rel_x * rel_x + rel_y * rel_y
-
-                if len(topk_heap) == top_k and dist_sq >= -topk_heap[0][0]:
-                    point_index += 1
-                    continue
-
-                if i < last_idx:
-                    next_pt = geometry[i + 1]
-                    seg_length = math.sqrt(
-                        (next_pt["x"] - pt["x"]) ** 2 + (next_pt["y"] - pt["y"]) ** 2
-                    )
-                    orientation = math.atan2(
-                        next_pt["y"] - pt["y"], next_pt["x"] - pt["x"]
-                    )
-                else:
-                    seg_length = 1.0
-                    orientation = 0.0
-                orientation = angle_sub(orientation, -angle)
-
-                heap_item = (
-                    -dist_sq,
-                    -point_index,
-                    rel_x,
-                    rel_y,
-                    seg_length,
-                    orientation,
-                    type_idx,
-                )
-                if len(topk_heap) < top_k:
-                    heapq.heappush(topk_heap, heap_item)
-                else:
-                    heapq.heapreplace(topk_heap, heap_item)
-                point_index += 1
-
-        elif isinstance(geometry, dict):
-            dx = geometry["x"] - ego_pos.x
-            dy = geometry["y"] - ego_pos.y
-            rel_x, rel_y = to_local(dx, dy, angle)
-            dist_sq = rel_x * rel_x + rel_y * rel_y
-
-            if len(topk_heap) == top_k and dist_sq >= -topk_heap[0][0]:
-                point_index += 1
-                continue
-
-            type_idx = STATIC_ROAD_TYPE_MAPPING.get(road_type, 0)
-            heap_item = (
-                -dist_sq,
-                -point_index,
-                rel_x,
-                rel_y,
-                0.0,
-                0.0,
-                type_idx,
-            )
-            if len(topk_heap) < top_k:
-                heapq.heappush(topk_heap, heap_item)
-            else:
-                heapq.heapreplace(topk_heap, heap_item)
-            point_index += 1
-
-    selected_points = sorted(topk_heap, key=lambda item: (-item[0], -item[1]))
-    road_graph_states = [
-        _build_road_feature(
-            rel_x=item[2],
-            rel_y=item[3],
-            seg_length=item[4],
-            orientation=item[5],
-            type_idx=item[6],
+    sort_order = np.lexsort(
+        (
+            road_cache["point_indices"][selected_indices],
+            dist_sq[selected_indices],
         )
-        for item in selected_points
-    ]
+    )
+    selected_indices = selected_indices[sort_order]
 
-    for _ in range(top_k - len(road_graph_states)):
-        road_graph_states.append(np.zeros(ROAD_FEATURE_DIM, dtype=np.float32))
-
+    num_selected = int(selected_indices.shape[0])
+    road_graph_states[:num_selected, 0] = rel_x[selected_indices]
+    road_graph_states[:num_selected, 1] = rel_y[selected_indices]
+    road_graph_states[:num_selected, 2] = road_cache["segment_lengths"][selected_indices]
+    road_graph_states[:num_selected, 3] = 1.0
+    road_graph_states[:num_selected, 4] = 1.0
+    road_graph_states[:num_selected, 5] = _normalize_angle_to_target(
+        road_cache["orientations"][selected_indices],
+        -angle,
+    )
+    road_graph_states[:num_selected, 6:] = road_cache["type_onehot"][selected_indices]
     return road_graph_states
 
 
@@ -318,45 +351,46 @@ def get_student_observation(env) -> np.ndarray:
     )
 
     max_neighbors = getattr(env, "_max_observable_agents", 16)
-    partner_states = []
-    selected_vehicles = _select_partner_vehicles(env, ego_pos, max_neighbors)
+    partner_states = np.zeros((max_neighbors, PARTNER_FEAT_DIM), dtype=np.float32)
+    vehicle_cache = _get_student_vehicle_cache(env)
+    vehicle_ids = vehicle_cache["vehicle_ids"]
+    partner_mask = vehicle_ids != int(env.ego_vehicle.getID())
 
-    for veh in selected_vehicles:
-        veh_pos = veh.getPosition()
-        rel_pos_x, rel_pos_y = to_local(
-            veh_pos.x - ego_pos.x,
-            veh_pos.y - ego_pos.y,
+    if np.any(partner_mask) and max_neighbors > 0:
+        partner_positions = vehicle_cache["positions"][partner_mask]
+        partner_dx = partner_positions[:, 0] - float(ego_pos.x)
+        partner_dy = partner_positions[:, 1] - float(ego_pos.y)
+        partner_dist_sq = partner_dx * partner_dx + partner_dy * partner_dy
+        sorted_partner_indices = np.argsort(partner_dist_sq, kind="stable")[:max_neighbors]
+        selected_count = int(sorted_partner_indices.shape[0])
+        rel_pos_x, rel_pos_y = _to_local_array(
+            partner_dx[sorted_partner_indices],
+            partner_dy[sorted_partner_indices],
             angle,
         )
-        rel_orientation = angle_sub(veh.getHeading(), -angle)
-
-        partner_state = np.array(
-            [
-                veh.getSpeed(),
-                rel_pos_x,
-                rel_pos_y,
-                rel_orientation,
-                veh.getLength(),
-                veh.getWidth(),
-            ],
-            dtype=np.float32,
+        partner_headings = vehicle_cache["headings"][partner_mask][sorted_partner_indices]
+        partner_states[:selected_count, 0] = vehicle_cache["speeds"][partner_mask][
+            sorted_partner_indices
+        ]
+        partner_states[:selected_count, 1] = rel_pos_x
+        partner_states[:selected_count, 2] = rel_pos_y
+        partner_states[:selected_count, 3] = _normalize_angle_to_target(
+            partner_headings,
+            -angle,
         )
-        partner_states.append(partner_state)
-
-    for _ in range(max_neighbors - len(selected_vehicles)):
-        partner_states.append(np.zeros(6, dtype=np.float32))
+        partner_states[:selected_count, 4] = vehicle_cache["lengths"][partner_mask][
+            sorted_partner_indices
+        ]
+        partner_states[:selected_count, 5] = vehicle_cache["widths"][partner_mask][
+            sorted_partner_indices
+        ]
 
     road_graph_states = build_road_graph_obs(env, ego_pos, ego_heading)
-
-    obs_parts = [ego_state]
-    obs_parts.extend(partner_states)
-    obs_parts.extend(road_graph_states)
-
-    obs_concat = np.concatenate(obs_parts)
-    if len(obs_concat) < obs_dim:
-        obs_final = np.zeros(obs_dim, dtype=np.float32)
-        obs_final[: len(obs_concat)] = obs_concat
-    else:
-        obs_final = obs_concat[:obs_dim]
-
-    return obs_final
+    obs_concat = np.concatenate(
+        [
+            ego_state,
+            partner_states.reshape(-1),
+            road_graph_states.reshape(-1),
+        ]
+    )
+    return obs_concat[:obs_dim]
