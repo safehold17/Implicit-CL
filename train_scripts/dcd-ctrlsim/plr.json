@@ -3,8 +3,8 @@
     "env_name": ["Nocturne-CtrlSim-v0"],
     "ued_algo": ["domain_randomization"],
     "num_processes": [32],
-    "num_env_steps": [16384000],
-    "seed": [123],
+    "num_env_steps": [40960000],
+    "seed": [2026],
 
     "__note1__": ["learning parameters"],
     "lr": [3e-4],
@@ -60,8 +60,8 @@
     "log_plr_buffer_stats": [false],
     "screenshot_interval": [10000],
     "log_interval": [10000],
-    "checkpoint_interval": [100],
-    "archive_interval": [100],
+    "checkpoint_interval": [400],
+    "archive_interval": [400],
 
     "__note7__": ["student reward setup"],
     "use_approaching_goal" : [true],
