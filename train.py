@@ -161,7 +161,10 @@ def main(args, clearml_task=None):
             args.xpid = "lr-%s" % time.strftime("%Y%m%d-%H%M%S")
         log_dir = os.path.expandvars(os.path.expanduser(args.log_dir))
         filewriter = FileWriter(
-            xpid=args.xpid, xp_args=args.__dict__, rootdir=log_dir
+            xpid=args.xpid,
+            xp_args=args.__dict__,
+            rootdir=log_dir,
+            clearml_task=clearml_task,
         )
         screenshot_dir = os.path.join(log_dir, args.xpid, 'screenshots')
         if not os.path.exists(screenshot_dir):

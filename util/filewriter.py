@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import time
-from typing import Dict
+from typing import Any, Dict
 
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
@@ -76,7 +76,9 @@ class FileWriter:
         rootdir: str = "~/logs",
         symlink_to_latest: bool = True,
         seeds=None,
+        clearml_task: Any = None,
     ):
+        """Create a local file writer with optional tensorboard and ClearML logging."""
         if not xpid:
             # Make unique id.
             xpid = "{proc}_{unixtime}".format(
@@ -232,7 +234,7 @@ class FileWriter:
             )
         from util.clearml import get_clearml_logger
 
-        self.clearml_logger = get_clearml_logger()
+        self.clearml_logger = get_clearml_logger(clearml_task)
         self._tb_mode_split_scalar_metric_map = {
             "mean_agent_return": "mean_agent_return",
             "agent_value_loss": "agent_value_loss",

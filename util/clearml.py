@@ -50,20 +50,10 @@ def upload_clearml_artifact(
 
 
 def get_clearml_logger(clearml_task: Any = None) -> Any:
-    """Return the active ClearML logger when a task is available."""
+    """Return the ClearML logger only when an explicit task is available."""
     if clearml_task is not None:
         return clearml_task.get_logger()
-
-    try:
-        from clearml import Logger
-    except Exception:
-        return None
-
-    try:
-        return Logger.current_logger()
-    except Exception:
-        log.warning("Failed to access ClearML logger", exc_info=True)
-        return None
+    return None
 
 
 def report_clearml_scalar(
