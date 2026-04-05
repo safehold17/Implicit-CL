@@ -60,8 +60,8 @@
     "log_plr_buffer_stats": [false],
     "screenshot_interval": [10000],
     "log_interval": [10000],
-    "checkpoint_interval": [400],
-    "archive_interval": [400],
+    "checkpoint_interval": [500],
+    "archive_interval": [500],
 
     "__note7__": ["student reward setup"],
     "use_approaching_goal" : [true],
