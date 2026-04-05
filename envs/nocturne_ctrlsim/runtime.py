@@ -20,6 +20,7 @@ from .simulation_info import (
 )
 from .student_env_policy import apply_student_action
 from .student_reward import compute_student_reward
+from ctrlsim_adapter._data_bridge.scenario import road_data_to_numpy
 
 
 def split_prepared_pack_batch(
@@ -201,6 +202,11 @@ class NocturneCtrlSimRuntime:
             ego_id=env.ego_vehicle.getID() if env.ego_vehicle else None,
         )
         env._road_graph_cache = env.data_bridge.get_road_data(env.scenario)
+        # Pre-flatten road geometry into numpy arrays (computed once per episode
+        # reset) so that build_road_graph_obs can use vectorized numpy instead
+        # of a Python for-loop over list-of-dicts on every step.
+        # Reuse _road_graph_cache to avoid a second C++ get_road_data call.
+        env._road_graph_np = road_data_to_numpy(env._road_graph_cache)
 
     def step_prepare(self, action: np.ndarray) -> Dict[str, Optional[Dict]]:
         env = self.env

@@ -249,6 +249,8 @@ def main(args, clearml_task=None):
         device = torch.device("cuda:0" if args.cuda else "cpu")
         if 'cuda' in device.type:
             torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True   # ~3x faster matmul on Ampere+
+            torch.backends.cudnn.allow_tf32 = True          # TF32 for cuDNN convolutions too
             print('Using CUDA\n')
 
         # Set initial opponent runtime mode before env construction.

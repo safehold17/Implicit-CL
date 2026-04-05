@@ -18,7 +18,60 @@ import gym
 
 from torch.utils.data.sampler import \
     BatchSampler, SubsetRandomSampler, SequentialSampler
-from lempel_ziv_complexity import lempel_ziv_complexity 
+from lempel_ziv_complexity import lempel_ziv_complexity
+
+
+def _gae_parallel_scan(
+    rewards: torch.Tensor,      # (T, N, 1)
+    value_preds: torch.Tensor,  # (T+1, N, 1)
+    masks: torch.Tensor,        # (T+1, N, 1)
+    gamma: float,
+    gae_lambda: float,
+) -> torch.Tensor:
+    """
+    GAE returns via parallel associative scan — O(log T) depth instead of O(T).
+
+    Represents each timestep as a linear function f_t(x) = a[t]*x + b[t], where
+      a[t] = gamma * lambda * mask[t+1]   (discount factor)
+      b[t] = delta[t]                     (TD residual)
+
+    Composes right-to-left with operator (a1,b1) ∘ (a2,b2) = (a1*a2, b1 + a1*b2).
+    Since the boundary condition is gae[T] = 0, the result for each t is the b
+    component of the fully composed suffix transform.
+
+    Doubling trick: each round doubles the look-ahead stride, so ceil(log2(T)) rounds
+    suffice regardless of how large T is.  Handles episode boundaries (mask=0) correctly
+    — they set a[t]=0, capping composition at that boundary.
+    """
+    T = rewards.shape[0]
+
+    # a[t] = C[t], b[t] = delta[t]
+    a = (gamma * gae_lambda) * masks[1:]  # (T, N, 1)
+    b = rewards + gamma * value_preds[1:] * masks[1:] - value_preds[:-1]  # (T, N, 1)
+
+    # Suffix scan using the doubling trick.
+    # After k rounds, (a[t], b[t]) encodes the composed transform for [t, t + 2^k).
+    stride = 1
+    while stride < T:
+        # Build shifted views: element at position t looks ahead by `stride`
+        a_shifted = torch.cat(
+            [a[stride:], a.new_ones(stride, *a.shape[1:])], dim=0
+        )  # identity a = 1 for out-of-bounds
+        b_shifted = torch.cat(
+            [b[stride:], b.new_zeros(stride, *b.shape[1:])], dim=0
+        )  # identity b = 0 for out-of-bounds
+
+        # Compose: (a, b) ∘ (a_shifted, b_shifted) = (a*a_s, b + a*b_s)
+        b = b + a * b_shifted
+        a = a * a_shifted
+        stride <<= 1
+
+    # b[t] = gae[t]; add baseline to get returns
+    return b + value_preds[:-1]
+
+
+# Compile once at import time so every call after the first warm-up is fast.
+_gae_parallel_scan = torch.compile(_gae_parallel_scan, dynamic=True)
 
 def to_tensor(a):
     if isinstance(a, dict):
@@ -282,12 +335,9 @@ class RolloutStorage(object):
             self.denorm_value_preds = self.model.popart.denormalize(value_preds) # denormalize all value predictions
             value_preds = self.denorm_value_preds
 
-        for step in reversed(range(self.rewards.size(0))):
-            delta = self.rewards[step] + \
-                gamma*value_preds[step + 1]*self.masks[step + 1] - value_preds[step]
-
-            gae = delta + gamma * gae_lambda * self.masks[step + 1] * gae
-            self.returns[step] = gae + value_preds[step]
+        self.returns[:-1] = _gae_parallel_scan(
+            self.rewards, value_preds, self.masks, gamma, gae_lambda
+        )
 
     def compute_discounted_returns(self,
                                    returns_buffer, 

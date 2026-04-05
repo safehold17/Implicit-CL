@@ -57,19 +57,25 @@ class PPO():
 
         self.max_grad_norm = max_grad_norm
 
-        self.optimizer = optim.Adam(actor_critic.parameters(), lr=lr, eps=eps)
-        # `.parameters()` is a method provided by `nn.Module` in PyTorch that returns an iterator over all trainable parameters of a model.
+        # fused=True fuses the Adam update into a single CUDA kernel (PyTorch >= 2.0, CUDA only).
+        # Falls back to the standard multi-kernel Adam on CPU or older PyTorch.
+        _fused_available = (
+            torch.cuda.is_available()
+            and 'fused' in torch.optim.Adam.__init__.__code__.co_varnames
+        )
+        self.optimizer = optim.Adam(
+            actor_critic.parameters(), lr=lr, eps=eps,
+            **({"fused": True} if _fused_available else {})
+        )
 
         self.log_grad_norm = log_grad_norm
 
     def _grad_norm(self):
-        total_norm = 0
-        for p in self.actor_critic.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)  #Compute the L2 norm of the gradient of a single parameter.
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** (1. / 2)
-        return total_norm
+        # clip_grad_norm_ computes the total norm as a byproduct and returns it,
+        # avoiding a separate O(num_params) loop of .item() GPU-CPU syncs.
+        return nn.utils.clip_grad_norm_(
+            self.actor_critic.parameters(), float('inf')
+        ).item()
 
     def _get_ego_ctrlsim_kl_coef(self, current_update, total_updates):
         """Return the current ego_ctrlsim KL coefficient."""
@@ -117,6 +123,15 @@ class PPO():
         if self.log_grad_norm:
             grad_norms = []
 
+        # Pre-compute rollout-level ego validity once to avoid one GPU-CPU sync
+        # per mini-batch (ppo_epoch * num_mini_batch syncs → 1 sync total).
+        _rollout_has_valid_ego = (
+            self.use_ego_ctrlsim_kl_loss
+            and ego_ctrlsim_kl_coef > 0.0
+            and rollouts.ego_ctrlsim_valid is not None
+            and bool(rollouts.ego_ctrlsim_valid.any().item())
+        )
+
         for e in range(self.ppo_epoch):
         # The `feed_forward_generator` flattens the rollout into independent samples and randomly forms mini-batches for training a feedforward policy.
         # The `recurrent_generator` samples complete time sequences on a per-environment basis and provides the corresponding initial hidden states for training RNN/LSTM-based policies.
@@ -137,7 +152,8 @@ class PPO():
                             adv_targ, ego_ctrlsim_action_logits_batch, ego_ctrlsim_valid_batch = sample
 
                 has_valid_ego_ctrlsim_teacher = (
-                    ego_ctrlsim_action_logits_batch is not None
+                    _rollout_has_valid_ego
+                    and ego_ctrlsim_action_logits_batch is not None
                     and ego_ctrlsim_valid_batch is not None
                     and bool(ego_ctrlsim_valid_batch.any().item())
                 )
@@ -152,6 +168,8 @@ class PPO():
                     and (ego_ctrlsim_kl_coef > 0.0)
                     and (discard_grad is False)
                 )
+
+                self.optimizer.zero_grad(set_to_none=True)
 
                 # 一旦需要任一 KL 项，就必须返回当前 student 的完整分布对象
                 # Once any KL term is active, request the current full student distribution.
@@ -226,8 +244,6 @@ class PPO():
                     )
                     ego_ctrlsim_kl_loss = ego_ctrlsim_kl_div.mean()  # mean KL loss over the valid subset of the mini-batch
 
-                self.optimizer.zero_grad()  # clear the existing gradients before backpropagation
-
                 # 在标准 PPO loss 上叠加两个互相独立的 KL 正则项
                 # Add the two independent KL regularizers on top of the standard PPO loss.
                 loss = (value_loss*self.value_loss_coef + action_loss - dist_entropy*self.entropy_coef)
@@ -238,13 +254,17 @@ class PPO():
 
                 loss.backward()  # compute the gradients of the combined loss with respect to the model parameters
 
-                if self.log_grad_norm:
+                if self.max_grad_norm is not None and self.max_grad_norm > 0:
+                    # clip_grad_norm_ returns the pre-clip total norm — reuse it
+                    # for logging so we don't need a second O(n_params) pass.
+                    clipped_norm = nn.utils.clip_grad_norm_(
+                        self.actor_critic.parameters(), self.max_grad_norm
+                    )
+                    if self.log_grad_norm:
+                        grad_norms.append(clipped_norm.item())
+                elif self.log_grad_norm:
                     grad_norms.append(self._grad_norm())
 
-                if self.max_grad_norm is not None and self.max_grad_norm > 0:
-                    nn.utils.clip_grad_norm_(self.actor_critic.parameters(),
-                                            self.max_grad_norm)
-                    
                 if not discard_grad:
                     self.optimizer.step()  # update the model parameters using the computed gradients
                                 

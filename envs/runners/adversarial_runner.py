@@ -687,8 +687,8 @@ class AdversarialRunner(object):
         level_samplers = self.all_level_samplers
 
         if self.args.reject_unsolvable_seeds:
-            solvable = np.array(solvable, dtype=np.bool)
-            seeds = np.array(seeds, dtype=np.int)[solvable]
+            solvable = np.array(solvable, dtype='bool')
+            seeds = np.array(seeds, dtype=np.int64)[solvable]
             solvable = solvable[solvable]
 
         for level_sampler in level_samplers:
@@ -805,15 +805,15 @@ class AdversarialRunner(object):
         first_non_none = next(logits for logits in logits_list if logits is not None)
         action_dim = int(np.asarray(first_non_none).shape[0])
         batch = np.zeros((len(logits_list), action_dim), dtype=np.float32)
-        valid = np.zeros((len(logits_list), 1), dtype=np.bool_)
+        valid = np.zeros((len(logits_list), 1), dtype='bool')
         for idx, logits in enumerate(logits_list):
             if logits is None:
                 continue
             batch[idx] = np.asarray(logits, dtype=np.float32)
             valid[idx, 0] = True
         return (
-            torch.tensor(batch, dtype=torch.float32),
-            torch.tensor(valid, dtype=torch.bool),
+            torch.from_numpy(batch),   # zero-copy; batch is float32 already
+            torch.from_numpy(valid),   # zero-copy; valid is bool already
         )
 
     def agent_rollout(self, 
@@ -845,7 +845,10 @@ class AdversarialRunner(object):
                 self._update_plr_with_current_unseen_levels(parent_seeds=fixed_seeds)
                 return
             if level_replay: # Get replay levels
-                self.current_level_seeds = [level_sampler.sample_replay_level() for _ in range(args.num_processes)]
+                self.current_level_seeds = [
+                    level_sampler.sample_replay_level()
+                    for _ in range(args.num_processes)
+                ]
                 levels = [self.level_store.get_level(seed) for seed in self.current_level_seeds]
                 self._pending_replay_obs = self.ued_venv.reset_to_level_batch(levels)
                 return self.current_level_seeds
@@ -889,7 +892,7 @@ class AdversarialRunner(object):
 
         if level_sampler and level_replay:
             rollout_info.update({
-                'solved_idx': np.zeros(args.num_processes, dtype=np.bool)
+                'solved_idx': np.zeros(args.num_processes, dtype='bool')
             })
             
         for step in range(num_steps):
@@ -941,7 +944,7 @@ class AdversarialRunner(object):
                             infos[i]['truncated'] = True
                             infos[i]['truncated_obs'] = get_obs_at_index(obs, i)
 
-                done = np.ones_like(done, dtype=np.float)
+                done = np.ones_like(done, dtype=np.float64)
 
             if level_sampler and level_replay:
                 next_level_seeds = [s for s in self.current_level_seeds]
@@ -1010,14 +1013,19 @@ class AdversarialRunner(object):
                     set_obs_at_index(obs, obs_i, env_idx)
 
             # If done then clean the history of observations.
-            masks = torch.FloatTensor(
-                [[0.0] if done_ else [1.0] for done_ in done])
-            bad_masks = torch.FloatTensor(
-                [[0.0] if 'truncated' in info.keys() else [1.0]
-                 for info in infos])
-            cliffhanger_masks = torch.FloatTensor(
-                [[0.0] if 'cliffhanger' in info.keys() else [1.0]
-                 for info in infos])
+            # Use from_numpy (zero-copy) for `done` which is already a numpy
+            # bool array; avoid list-of-lists construction for all three masks.
+            masks = torch.from_numpy(
+                (1.0 - done.astype(np.float32))[:, None]
+            )
+            bad_masks = torch.as_tensor(
+                [0.0 if 'truncated' in info else 1.0 for info in infos],
+                dtype=torch.float32,
+            ).unsqueeze(1)
+            cliffhanger_masks = torch.as_tensor(
+                [0.0 if 'cliffhanger' in info else 1.0 for info in infos],
+                dtype=torch.float32,
+            ).unsqueeze(1)
 
             # Need to store level seeds alongside non-env agent steps
             current_level_seeds = None

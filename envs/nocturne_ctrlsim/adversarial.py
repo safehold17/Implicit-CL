@@ -409,6 +409,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         
         # Cache road data (filled after _initialize_simulation)
         self._road_graph_cache: Optional[List[Dict]] = None
+        self._road_graph_np: Optional[Dict] = None  # vectorized numpy form of _road_graph_cache
         self._load_scenario_impl = load_scenario
         self._get_vehicle_by_id_impl = get_vehicle_by_id
         self._load_vehicle_ids_for_scenario_impl = load_vehicle_ids_for_scenario

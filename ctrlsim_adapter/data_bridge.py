@@ -265,6 +265,20 @@ class DataBridge:
                 - 'type': Road type ('road_line', 'road_edge', 'lane', etc.)
         """
         return _scenario.get_road_data_for_scenario(self, scenario)
+
+    def get_road_data_np(self, scenario) -> Dict[str, np.ndarray]:
+        """
+        Pre-flatten road geometry into numpy arrays for vectorized per-step obs.
+
+        Returns a dict with:
+          'pts_xy'    : float32 (N, 2)  — world-space x/y of each road point
+          'seg_len'   : float32 (N,)    — segment length at each point
+          'seg_orient': float32 (N,)    — segment orientation (radians, world frame)
+          'type_idx'  : int32   (N,)    — road type index (into ROAD_TYPE_MAPPING)
+          'is_line'   : bool    (N,)    — True for polyline points, False for static objs
+        """
+        road_data = _scenario.get_road_data_for_scenario(self, scenario)
+        return _scenario.road_data_to_numpy(road_data)
     
     def extract_road_edge_polylines(self, road_data: List[Dict]) -> List[np.ndarray]:
         """

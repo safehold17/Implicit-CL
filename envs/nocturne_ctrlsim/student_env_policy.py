@@ -14,6 +14,9 @@ from .utils.common import (
     to_local,
 )
 
+# Pre-built one-hot matrix for road type indices — shared across all calls.
+_ROAD_TYPE_ONEHOT_NP = np.eye(7, dtype=np.float32)
+
 EGO_FEAT_DIM = 6
 PARTNER_FEAT_DIM = 6
 ROAD_FEATURE_DIM = 13
@@ -148,27 +151,40 @@ def apply_student_action(env, action: np.ndarray):
 
 
 def _select_partner_vehicles(env, ego_pos, max_neighbors: int) -> List:
-    """Select nearest valid partner vehicles around ego."""
+    """Select nearest valid partner vehicles around ego.
+
+    Uses numpy argsort for distance ranking instead of a Python sort,
+    avoiding a Python-level comparison loop when there are many vehicles.
+    """
     ego_vehicle = env.ego_vehicle
-    candidate_vehicles = []
+    valid_vehs = []
+    xs = []
+    ys = []
 
     for veh in getattr(env, "vehicles", []):
         if veh is ego_vehicle:
             continue
         if getattr(veh, "physics_simulated", True) is False:
             continue
-
         veh_pos = veh.getPosition()
         if not is_valid_world_position(veh_pos.x, veh_pos.y):
             continue
+        valid_vehs.append(veh)
+        xs.append(veh_pos.x)
+        ys.append(veh_pos.y)
 
-        dx = veh_pos.x - ego_pos.x
-        dy = veh_pos.y - ego_pos.y
-        dist = math.hypot(dx, dy)
-        candidate_vehicles.append((dist, veh))
+    if not valid_vehs:
+        return []
 
-    candidate_vehicles.sort(key=lambda item: item[0])
-    return [veh for _, veh in candidate_vehicles[:max_neighbors]]
+    xs_np = np.array(xs, dtype=np.float32)
+    ys_np = np.array(ys, dtype=np.float32)
+    dist_sq = (xs_np - ego_pos.x) ** 2 + (ys_np - ego_pos.y) ** 2
+
+    k = min(max_neighbors, len(valid_vehs))
+    # argpartition is O(N) vs O(N log N) sort; then sort only the top-k slice
+    top_idx = np.argpartition(dist_sq, k - 1)[:k] if k < len(valid_vehs) else np.arange(k)
+    top_idx = top_idx[np.argsort(dist_sq[top_idx])]
+    return [valid_vehs[i] for i in top_idx]
 
 
 def _build_road_feature(
@@ -308,18 +324,115 @@ def build_road_graph_obs(env, ego_pos, ego_heading: float) -> List[np.ndarray]:
     return road_graph_states
 
 
+def build_road_graph_obs_np(road_graph_np: dict, ego_pos, ego_heading: float, top_k: int) -> np.ndarray:
+    """
+    Vectorized road graph observation using pre-flattened numpy arrays.
+
+    Replaces the Python loop + heapq in build_road_graph_obs() with
+    fully vectorized numpy ops. Computes top-k nearest road points in
+    O(N) via argpartition instead of O(N log N) heapq insertion.
+
+    Args:
+        road_graph_np: dict returned by road_data_to_numpy() (populated at
+                       scenario reset via env._road_graph_np)
+                       keys: pts_xy (N,2), seg_len (N,), seg_orient (N,),
+                             type_idx (N,), is_line (N,)
+        ego_pos:       Nocturne position object with .x / .y
+        ego_heading:   ego heading in radians (world frame)
+        top_k:         number of road points to return
+
+    Returns:
+        out: float32 array of shape (top_k * ROAD_FEATURE_DIM,) — already flat,
+             ready to be written directly into the obs buffer.
+    """
+    out = np.zeros(top_k * ROAD_FEATURE_DIM, dtype=np.float32)
+
+    pts_xy = road_graph_np["pts_xy"]        # (N, 2)
+    N = len(pts_xy)
+    if N == 0:
+        return out
+
+    # --- Transform all road points to ego-local frame (vectorized) ---
+    angle = float(angle_of_rotation(ego_heading))
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+
+    ego_xy = np.array([ego_pos.x, ego_pos.y], dtype=np.float32)
+    delta = pts_xy - ego_xy                         # (N, 2)
+    rel_x =  delta[:, 0] * cos_a + delta[:, 1] * sin_a   # (N,)
+    rel_y = -delta[:, 0] * sin_a + delta[:, 1] * cos_a   # (N,)
+    dist_sq = rel_x * rel_x + rel_y * rel_y               # (N,)
+
+    # --- Top-k selection via argpartition (O(N) average) ---
+    k = min(top_k, N)
+    if k < N:
+        top_idx = np.argpartition(dist_sq, k - 1)[:k]
+    else:
+        top_idx = np.arange(N)
+    # Sort the top-k slice by ascending distance
+    top_idx = top_idx[np.argsort(dist_sq[top_idx])]
+
+    # --- Build feature rows for selected points ---
+    seg_len    = road_graph_np["seg_len"][top_idx]     # (k,)
+    seg_orient = road_graph_np["seg_orient"][top_idx]  # (k,)
+    type_idx   = road_graph_np["type_idx"][top_idx]    # (k,)
+    is_line    = road_graph_np["is_line"][top_idx]     # (k,) bool
+
+    # Rotate segment orientation into ego frame for polyline points only.
+    # Static objects (stop_sign, crosswalk, speed_bump) always have orientation=0.0
+    # in the original code — angle_sub is never applied to them there.
+    # Mirrors: polyline → angle_sub(world_orient, -angle); static → 0.0
+    seg_orient_local = np.where(
+        is_line,
+        np.mod(-angle - seg_orient + math.pi, 2 * math.pi) - math.pi,
+        0.0,
+    )                                                  # (k,)
+
+    # Each row: [rel_x, rel_y, seg_len, 1.0, 1.0, orientation, *one_hot(type)]
+    # ROAD_FEATURE_DIM = 13: indices 0-5 scalar, 6-12 one-hot (7 classes)
+    rows = np.zeros((k, ROAD_FEATURE_DIM), dtype=np.float32)
+    rows[:, 0] = rel_x[top_idx]
+    rows[:, 1] = rel_y[top_idx]
+    rows[:, 2] = seg_len
+    rows[:, 3] = 1.0
+    rows[:, 4] = 1.0
+    rows[:, 5] = seg_orient_local
+    rows[:, 6:] = _ROAD_TYPE_ONEHOT_NP[type_idx]  # (k, 7) via advanced indexing
+
+    out[:k * ROAD_FEATURE_DIM] = rows.ravel()
+    return out
+
+
 def get_student_observation(env) -> np.ndarray:
-    """Get student policy observation (consistent with gpudrive)."""
-    obs_dim = get_student_obs_dim(get_env_student_observation_config(env))
+    """Get student policy observation (consistent with gpudrive).
+
+    Uses a pre-allocated per-env buffer (env._obs_buffer) to avoid
+    allocating a new array each step.  Falls back to allocating when
+    the buffer is absent (e.g. first call before reset).
+
+    Road graph uses the vectorized numpy path (build_road_graph_obs_np)
+    when env._road_graph_np is available (set at scenario reset), and
+    falls back to the original Python/heapq path otherwise.
+    """
+    config = get_env_student_observation_config(env)
+    obs_dim = get_student_obs_dim(config)
+
+    # --- Use or create a pre-allocated output buffer (opt 4) ---
+    obs = getattr(env, "_obs_buffer", None)
+    if obs is None or obs.shape[0] != obs_dim:
+        obs = np.zeros(obs_dim, dtype=np.float32)
+        env._obs_buffer = obs
+    else:
+        obs[:] = 0.0
+
     if env.ego_vehicle is None or env._ego_goal_dict is None:
-        return np.zeros(obs_dim, dtype=np.float32)
+        return obs
 
     # ========== Ego state (6 dimensions) ==========
     ego_pos = env.ego_vehicle.getPosition()
     ego_heading = env.ego_vehicle.getHeading()
     ego_speed = env.ego_vehicle.getSpeed()
 
-    # Relative target position (in ego coordinate system)
     goal_pos = env._ego_goal_dict["pos"]
     angle = angle_of_rotation(ego_heading)
     rel_goal_x, rel_goal_y = to_local(
@@ -328,73 +441,50 @@ def get_student_observation(env) -> np.ndarray:
         angle,
     )
 
-    # Collision state
     collision_state = 1.0 if env._collision_occurred else 0.0
 
-    ego_state = np.array(
-        [
-            ego_speed,
-            env.ego_vehicle.getLength(),
-            env.ego_vehicle.getWidth(),
-            rel_goal_x,
-            rel_goal_y,
-            collision_state,
-        ],
-        dtype=np.float32,
-    )
+    obs[0] = ego_speed
+    obs[1] = env.ego_vehicle.getLength()
+    obs[2] = env.ego_vehicle.getWidth()
+    obs[3] = rel_goal_x
+    obs[4] = rel_goal_y
+    obs[5] = collision_state
 
     # ========== Partner state (K*6 dimensions) ==========
     max_neighbors = getattr(env, "_max_observable_agents", 16)
-    partner_states = []
-
-    # Select nearest K neighboring vehicles from all valid scene vehicles.
     selected_vehicles = _select_partner_vehicles(env, ego_pos, max_neighbors)
 
-    for veh in selected_vehicles:
+    partner_start = EGO_FEAT_DIM
+    for slot, veh in enumerate(selected_vehicles):
         veh_pos = veh.getPosition()
-
-        # Relative position to ego
         rel_pos_x, rel_pos_y = to_local(
             veh_pos.x - ego_pos.x,
             veh_pos.y - ego_pos.y,
             angle,
         )
-
-        # Relative orientation
         rel_orientation = angle_sub(veh.getHeading(), -angle)
+        base = partner_start + slot * PARTNER_FEAT_DIM
+        obs[base + 0] = veh.getSpeed()
+        obs[base + 1] = rel_pos_x
+        obs[base + 2] = rel_pos_y
+        obs[base + 3] = rel_orientation
+        obs[base + 4] = veh.getLength()
+        obs[base + 5] = veh.getWidth()
+    # unfilled partner slots stay zero (buffer was zeroed above)
 
-        partner_state = np.array(
-            [
-                veh.getSpeed(),
-                rel_pos_x,
-                rel_pos_y,
-                rel_orientation,
-                veh.getLength(),
-                veh.getWidth(),
-            ],
-            dtype=np.float32,
-        )
-        partner_states.append(partner_state)
-
-    # Fill missing neighbors with zero vector
-    for _ in range(max_neighbors - len(selected_vehicles)):
-        partner_states.append(np.zeros(6, dtype=np.float32))
-
-    # ========== Road Graph (R*13 dimensions) ==========
-    road_graph_states = build_road_graph_obs(env, ego_pos, ego_heading)
-
-    # ========== Concatenate all observations ==========
-    obs_parts = [ego_state]
-    obs_parts.extend(partner_states)
-    obs_parts.extend(road_graph_states)
-
-    obs_concat = np.concatenate(obs_parts)
-
-    # Fill or truncate to obs_dim
-    if len(obs_concat) < obs_dim:
-        obs_final = np.zeros(obs_dim, dtype=np.float32)
-        obs_final[: len(obs_concat)] = obs_concat
+    # ========== Road Graph (R*13 dimensions) — vectorized path ==========
+    top_k = getattr(env, "_top_k_road_points", 64)
+    road_start = EGO_FEAT_DIM + max_neighbors * PARTNER_FEAT_DIM
+    road_graph_np = getattr(env, "_road_graph_np", None)
+    if road_graph_np is not None and len(road_graph_np["pts_xy"]) > 0:
+        road_flat = build_road_graph_obs_np(road_graph_np, ego_pos, ego_heading, top_k)
+        end = road_start + len(road_flat)
+        obs[road_start:end] = road_flat
     else:
-        obs_final = obs_concat[:obs_dim]
+        # Fallback: original Python/heapq path
+        road_graph_states = build_road_graph_obs(env, ego_pos, ego_heading)
+        for i, feat in enumerate(road_graph_states):
+            base = road_start + i * ROAD_FEATURE_DIM
+            obs[base: base + ROAD_FEATURE_DIM] = feat
 
-    return obs_final
+    return obs

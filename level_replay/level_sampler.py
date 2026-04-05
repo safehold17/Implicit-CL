@@ -76,11 +76,11 @@ class LevelSampler():
         self._init_seed_index(seeds)
 
         self.unseen_seed_weights = np.array([1.]*N)
-        self.seed_scores = np.array([0.]*N, dtype=np.float)
-        self.partial_seed_scores = np.zeros((num_actors, N), dtype=np.float)
-        self.partial_seed_max_scores = np.ones((num_actors, N), dtype=np.float)*float('-inf')
+        self.seed_scores = np.array([0.]*N, dtype=np.float64)
+        self.partial_seed_scores = np.zeros((num_actors, N), dtype=np.float64)
+        self.partial_seed_max_scores = np.ones((num_actors, N), dtype=np.float64)*float('-inf')
         self.partial_seed_steps = np.zeros((num_actors, N), dtype=np.int32)
-        self.seed_staleness = np.array([0.]*N, dtype=np.float)
+        self.seed_staleness = np.array([0.]*N, dtype=np.float64)
 
         self.running_sample_count = 0
 
@@ -91,7 +91,7 @@ class LevelSampler():
         # Handle grounded value losses
         self.grounded_values = None
         if self.strategy.startswith('grounded'):
-            self.grounded_values = np.array([np.NINF]*N, dtype=np.float)
+            self.grounded_values = np.array([np.NINF]*N, dtype=np.float64)
 
         # Only used for infinite seed setting
         self.sample_full_distribution = sample_full_distribution
@@ -135,7 +135,7 @@ class LevelSampler():
         """
         self.track_solvable = True
         self.staging_seed2solvable = {}
-        self.seed_solvable = np.ones(self.seed_buffer_size, dtype=np.bool)
+        self.seed_solvable = np.ones(self.seed_buffer_size, dtype=np.bool_)
 
     @property
     def _proportion_filled(self):
@@ -509,12 +509,28 @@ class LevelSampler():
         if not self._has_working_seed_buffer:
             return
 
-        level_seeds = rollouts.level_seeds
-        policy_logits = rollouts.action_log_dist
+        # Transfer all rollout tensors to CPU once so every subsequent .item(),
+        # .mean(), .max() call inside the score functions is a cheap CPU op
+        # rather than a GPU-CPU synchronisation point.
+        level_seeds = rollouts.level_seeds.cpu()
+        policy_logits = rollouts.action_log_dist.cpu()
         total_steps, num_actors = policy_logits.shape[:2]
-        done = ~(rollouts.masks > 0)
-        # early_done = ~(rollouts.bad_masks > 0)
-        cliffhanger = ~(rollouts.cliffhanger_masks > 0)
+        done = (~(rollouts.masks > 0)).cpu()
+        cliffhanger = (~(rollouts.cliffhanger_masks > 0)).cpu()
+
+        if self.requires_value_buffers:
+            _returns_cpu = rollouts.returns.cpu()
+            _rewards_cpu = rollouts.rewards.cpu()
+            if hasattr(rollouts, 'alt_returns') and rollouts.alt_returns is not None:
+                _alt_returns_cpu = rollouts.alt_returns.cpu()
+            else:
+                _alt_returns_cpu = None
+            if rollouts.use_popart:
+                _value_preds_cpu = rollouts.denorm_value_preds.cpu()
+            else:
+                _value_preds_cpu = rollouts.value_preds.cpu()
+        else:
+            _returns_cpu = _rewards_cpu = _alt_returns_cpu = _value_preds_cpu = None
 
         for actor_index in range(num_actors):
             start_t = 0
@@ -538,15 +554,11 @@ class LevelSampler():
                     score_function_kwargs['external_scores'] = external_scores[actor_index]
 
                 if self.requires_value_buffers:
-                    score_function_kwargs['returns'] = rollouts.returns[start_t:t,actor_index]
+                    score_function_kwargs['returns'] = _returns_cpu[start_t:t,actor_index]
                     if self.strategy == 'alt_advantage_abs':
-                        score_function_kwargs['alt_returns'] = rollouts.alt_returns[start_t:t,actor_index]
-                    score_function_kwargs['rewards'] = rollouts.rewards[start_t:t,actor_index]
-
-                    if rollouts.use_popart:
-                        score_function_kwargs['value_preds'] = rollouts.denorm_value_preds[start_t:t,actor_index]
-                    else:
-                        score_function_kwargs['value_preds'] = rollouts.value_preds[start_t:t,actor_index]
+                        score_function_kwargs['alt_returns'] = _alt_returns_cpu[start_t:t,actor_index]
+                    score_function_kwargs['rewards'] = _rewards_cpu[start_t:t,actor_index]
+                    score_function_kwargs['value_preds'] = _value_preds_cpu[start_t:t,actor_index]
 
                 # Only perform score updates on non-cliffhanger episodes ending in 'done'
                 if not cliffhanger[t,actor_index]:
@@ -555,7 +567,7 @@ class LevelSampler():
                     if self.grounded_values is not None:
                         seed_idx = self.seed2index.get(seed_t, None)
                         score_function_kwargs['seed_idx'] = seed_idx
-                        grounded_value_ = rollouts.rewards[start_t:t].sum(0)[actor_index]
+                        grounded_value_ = _rewards_cpu[start_t:t].sum(0)[actor_index].item()
                         if seed_idx is not None:
                             grounded_value = max(self.grounded_values[seed_idx], grounded_value_)
                         else:
@@ -585,15 +597,11 @@ class LevelSampler():
                     score_function_kwargs['external_scores'] = external_scores[actor_index]
 
                 if self.requires_value_buffers:
-                    score_function_kwargs['returns'] = rollouts.returns[start_t:,actor_index]
+                    score_function_kwargs['returns'] = _returns_cpu[start_t:,actor_index]
                     if self.strategy == 'alt_advantage_abs':
-                        score_function_kwargs['alt_returns'] = rollouts.alt_returns[start_t:,actor_index]
-                    score_function_kwargs['rewards'] = rollouts.rewards[start_t:,actor_index]
-
-                    if rollouts.use_popart:
-                        score_function_kwargs['value_preds'] = rollouts.denorm_value_preds[start_t:t,actor_index]
-                    else:
-                        score_function_kwargs['value_preds'] = rollouts.value_preds[start_t:,actor_index]
+                        score_function_kwargs['alt_returns'] = _alt_returns_cpu[start_t:,actor_index]
+                    score_function_kwargs['rewards'] = _rewards_cpu[start_t:,actor_index]
+                    score_function_kwargs['value_preds'] = _value_preds_cpu[start_t:,actor_index]
 
                 score, max_score = score_function(**score_function_kwargs)
                 num_steps = len(episode_logits)
@@ -607,11 +615,12 @@ class LevelSampler():
         if not self._has_working_seed_buffer:
             return
 
-        # Reset partial updates, since weights have changed, and thus logits are now stale
-        for actor_index in range(self.partial_seed_scores.shape[0]):
-            for seed_idx in range(self.partial_seed_scores.shape[1]):
-                if self.partial_seed_scores[actor_index][seed_idx] != 0:
-                    self.update_seed_score(actor_index, self.seeds[seed_idx], 0, float('-inf'), 0)
+        # Original: O(num_actors × num_seeds) Python loop.
+        # Replace with a single np.where call to find the ~num_actors active entries,
+        # then only iterate over those.
+        active_actors, active_seed_idxs = np.where(self.partial_seed_scores != 0)
+        for actor_idx, seed_idx in zip(active_actors.tolist(), active_seed_idxs.tolist()):
+            self.update_seed_score(actor_idx, int(self.seeds[seed_idx]), 0, float('-inf'), 0)
 
         self.partial_seed_scores.fill(0)
         self.partial_seed_steps.fill(0)
@@ -691,7 +700,7 @@ class LevelSampler():
         sample_weights = self.sample_weights()
 
         if np.isclose(np.sum(sample_weights), 0):
-            sample_weights = np.ones_like(self.seeds, dtype=np.float)/len(self.seeds)
+            sample_weights = np.ones_like(self.seeds, dtype=np.float64)/len(self.seeds)
             sample_weights = sample_weights*(1-self.unseen_seed_weights)
             sample_weights /= np.sum(sample_weights)
         elif np.sum(sample_weights, 0) != 1.0:
@@ -757,7 +766,7 @@ class LevelSampler():
         if z > 0:
             weights /= z
         else:
-            weights = np.ones_like(weights, dtype=np.float)/len(weights)
+            weights = np.ones_like(weights, dtype=np.float64)/len(weights)
             weights = weights * (1-self.unseen_seed_weights)
             weights /= np.sum(weights)
 
