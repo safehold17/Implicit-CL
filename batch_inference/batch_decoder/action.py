@@ -20,6 +20,8 @@ from .sampling import (
 )
 
 
+# Action decode uses its own stateless-sampling namespace, distinct from both
+# baseline RTG decode and the ego side-channel RTG sample.
 _ACTION_STAGE_TAG = 1
 
 
@@ -91,6 +93,29 @@ def decode_action_jobs_batched_impl(
         row_idx_in_model = torch.as_tensor(decode_meta["idx_in_model"], dtype=torch.long, device=device)
         row_token_index = torch.as_tensor(decode_meta["token_index"], dtype=torch.long, device=device)
     flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index]
+    if getattr(teacher, "policy_reweighting_target", "rtg") == "action":
+        delayed_scale = torch.as_tensor(
+            decode_meta.get(
+                "delayed_scale",
+                np.ones((flat_logits.shape[0],), dtype=np.float32),
+            ),
+            dtype=flat_logits.dtype,
+            device=device,
+        )
+        delayed_active = torch.as_tensor(
+            decode_meta.get(
+                "delayed_active",
+                np.zeros((flat_logits.shape[0],), dtype=np.bool_),
+            ),
+            dtype=torch.bool,
+            device=device,
+        )
+        effective_scale = torch.where(
+            delayed_active,
+            delayed_scale,
+            torch.ones_like(delayed_scale),
+        )
+        flat_logits = flat_logits * effective_scale.unsqueeze(-1)
 
     temperatures = decode_meta.get("temperature_t")
     if temperatures is None:

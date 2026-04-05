@@ -64,8 +64,6 @@ class CtrlSimOpponentAdapter:
         use_policy_reweighting: bool = False,
         policy_reweighting_reward_scale: float = 1.0,
         policy_reweighting_epsilon: float = 1e-6,
-        policy_reweighting_error_mean: float = 0.0,
-        policy_reweighting_error_sigma: float = 1.0,
         policy_reweighting_target: str = "rtg",
         reweighting_frequency: int = 1,
         load_on_init: bool = True,
@@ -94,8 +92,6 @@ class CtrlSimOpponentAdapter:
         use_policy_reweighting: whether to enable delayed opponent policy reweighting.
         policy_reweighting_reward_scale: policy reweighting scalar multiplier.
         policy_reweighting_epsilon: numerical-stability term for policy reweighting.
-        policy_reweighting_error_mean: normalization mean for RTG error.
-        policy_reweighting_error_sigma: normalization sigma for RTG error.
         policy_reweighting_target: delayed reweighting target, either rtg or action.
         reweighting_frequency: cadence for active policy reweighting steps.
         load_on_init: 是否在初始化时立即加载模型/数据集
@@ -126,8 +122,6 @@ class CtrlSimOpponentAdapter:
             enabled=self.use_policy_reweighting,
             reward_scale=float(policy_reweighting_reward_scale),
             epsilon=float(policy_reweighting_epsilon),
-            error_mean=float(policy_reweighting_error_mean),
-            error_sigma=float(policy_reweighting_error_sigma),
         )
         self.sparse_inference_cfg = SparseInferenceConfig(
             enabled=self.sparse_inference_action_repeat,

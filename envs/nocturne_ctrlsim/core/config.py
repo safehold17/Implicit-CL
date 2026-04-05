@@ -162,8 +162,6 @@ def build_nocturne_ctrlsim_env_config(
         enabled=use_policy_reweighting,
         reward_scale=float(kwargs.get("policy_reweighting_reward_scale", 1.0)),
         epsilon=float(kwargs.get("policy_reweighting_epsilon", 1e-6)),
-        error_mean=float(kwargs.get("policy_reweighting_error_mean", 0.0)),
-        error_sigma=float(kwargs.get("policy_reweighting_error_sigma", 1.0)),
     )
 
     return NocturneCtrlSimEnvConfig(

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+from stable_baselines3.common.running_mean_std import RunningMeanStd
 
 from ctrlsim_adapter.ctrlsim_path import ctrlsim_path
 
@@ -26,7 +27,10 @@ from .batch_decoder.action import (
 from .batch_decoder.forward_batch import batch_predict_rtgs_mode as _batch_predict_rtgs_mode
 from .batch_decoder.forward_batch import forward_job_batch_impl
 from .batch_decoder import rtg as rtg_impl
-from .batch_decoder.rtg import sample_tilted_rtg_side_channel_impl
+from .batch_decoder.rtg import (
+    _SIDE_CHANNEL_RTG_STAGE_TAG,
+    sample_tilted_rtg_side_channel_impl,
+)
 from .batch_ipc import pack_model_outputs, release_prepared_payload, unpack_prepared
 from .batch_ipc.prepared import (
     get_prepared_focal_count,
@@ -36,6 +40,8 @@ from .batch_ipc.prepared import (
 )
 from ctrlsim_adapter.policy_reweighting_helpers import (
     AdversarialRTGConfig,
+    AdversarialRTGRunningStats,
+    compute_ego_action_error,
     compute_ego_action_scale,
     recover_current_ego_rtg,
 )
@@ -75,6 +81,9 @@ def build_external_teacher_kwargs(
         "use_policy_reweighting": bool(
             _config_get(config_source, "use_policy_reweighting", False)
         ),
+        "policy_reweighting_target": str(
+            _config_get(config_source, "policy_reweighting_target", "rtg")
+        ),
         "policy_reweighting_reward_scale": float(
             _config_get(
                 policy_reweighting_config,
@@ -87,20 +96,6 @@ def build_external_teacher_kwargs(
                 policy_reweighting_config,
                 "epsilon",
                 _config_get(config_source, "policy_reweighting_epsilon", 1e-6),
-            )
-        ),
-        "policy_reweighting_error_mean": float(
-            _config_get(
-                policy_reweighting_config,
-                "error_mean",
-                _config_get(config_source, "policy_reweighting_error_mean", 0.0),
-            )
-        ),
-        "policy_reweighting_error_sigma": float(
-            _config_get(
-                policy_reweighting_config,
-                "error_sigma",
-                _config_get(config_source, "policy_reweighting_error_sigma", 1.0),
             )
         ),
     }
@@ -218,21 +213,20 @@ class ExternalTeacher:
         base_seed: int = 1,
         inference_precision: str = "fp32",
         use_policy_reweighting: bool = False,
+        policy_reweighting_target: str = "rtg",
         policy_reweighting_reward_scale: float = 1.0,
         policy_reweighting_epsilon: float = 1e-6,
-        policy_reweighting_error_mean: float = 0.0,
-        policy_reweighting_error_sigma: float = 1.0,
     ) -> None:
         self.device = device
         self.base_seed = base_seed
         self.inference_precision = inference_precision
+        self.policy_reweighting_target = str(policy_reweighting_target)
         self.policy_reweighting_config = AdversarialRTGConfig(
             enabled=bool(use_policy_reweighting),
             reward_scale=float(policy_reweighting_reward_scale),
             epsilon=float(policy_reweighting_epsilon),
-            error_mean=float(policy_reweighting_error_mean),
-            error_sigma=float(policy_reweighting_error_sigma),
         )
+        self._policy_reweighting_error_rms = RunningMeanStd(shape=())
 
         (
             self._autocast_enabled,
@@ -450,15 +444,48 @@ class ExternalTeacher:
             sampling_seed=int(np.asarray(decode_meta["sampling_seed"], dtype=np.uint64)[row_idx]),
             step_t=int(np.asarray(decode_meta["step_t"], dtype=np.int64)[row_idx]),
             veh_id=int(ego_id),
-            stage_tag=1,
+            stage_tag=_SIDE_CHANNEL_RTG_STAGE_TAG,
         )
-        return compute_ego_action_scale(
+        error_value = compute_ego_action_error(
+            current_rtg=current_rtg,
+            next_rtg=np.asarray(next_rtg, dtype=np.float32),
+            tilted_current_rtg=np.asarray(tilted_current_rtg, dtype=np.float32),
+        )
+        running_stats = self._get_policy_reweighting_running_stats()
+        scale = compute_ego_action_scale(
             config=self.policy_reweighting_config,
             current_rtg=current_rtg,
             next_rtg=np.asarray(next_rtg, dtype=np.float32),
             tilted_current_rtg=np.asarray(tilted_current_rtg, dtype=np.float32),
             ego_reweight_tilt=ego_reweight_tilt,
+            running_stats=running_stats,
         )
+        self._update_policy_reweighting_error_stats(error_value)
+        return scale
+
+    def _get_policy_reweighting_error_rms(self) -> RunningMeanStd:
+        """Return the shared running-stat accumulator for RTG mismatch error."""
+        rms = getattr(self, "_policy_reweighting_error_rms", None)
+        if rms is None:
+            rms = RunningMeanStd(shape=())
+            self._policy_reweighting_error_rms = rms
+        return rms
+
+    def _get_policy_reweighting_running_stats(self) -> AdversarialRTGRunningStats:
+        """Read the current online normalization statistics for RTG error."""
+        rms = self._get_policy_reweighting_error_rms()
+        return AdversarialRTGRunningStats(
+            error_mean=float(np.asarray(rms.mean).reshape(())),
+            error_sigma=float(np.sqrt(np.asarray(rms.var).reshape(()))),
+            error_count=float(rms.count),
+        )
+
+    def _update_policy_reweighting_error_stats(self, error_value: float) -> None:
+        """Update the shared RTG-error running statistics with one new sample."""
+        if not self.policy_reweighting_config.enabled:
+            return
+        rms = self._get_policy_reweighting_error_rms()
+        rms.update(np.asarray([error_value], dtype=np.float64))
 
     def _compute_ego_action_scales_by_job(
         self,

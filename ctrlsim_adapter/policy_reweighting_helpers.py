@@ -21,15 +21,15 @@ class AdversarialRTGConfig:
     enabled: bool
     reward_scale: float
     epsilon: float
+
+
+@dataclass(frozen=True, slots=True)
+class AdversarialRTGRunningStats:
+    """Running statistics used to normalize RTG mismatch online."""
+
     error_mean: float
     error_sigma: float
-
-    def __post_init__(self) -> None:
-        """Validate the normalization scale."""
-        if self.error_sigma <= 0:
-            raise ValueError(
-                f"error_sigma must be > 0, got {self.error_sigma}"
-            )
+    error_count: float
 
 
 def should_trigger_policy_reweighting_step(
@@ -136,33 +136,14 @@ def compute_target_next_rtg(
     return tilted - delta
 
 
-def compute_scale_from_error(
-    error_value: float,
-    config: AdversarialRTGConfig,
-) -> float:
-    """Convert a normalized RTG error into a scalar reweighting factor."""
-    error_norm = (float(error_value) - config.error_mean) / config.error_sigma
-    sigmoid = 1.0 / (1.0 + math.exp(-error_norm))
-    return float(
-        config.reward_scale * math.sqrt(sigmoid + config.epsilon)
-    )
-
-
-def compute_ego_action_scale(
+def compute_ego_action_error(
     *,
-    config: AdversarialRTGConfig,
     current_rtg: np.ndarray,
     next_rtg: np.ndarray,
     tilted_current_rtg: np.ndarray,
-    ego_reweight_tilt: tuple[float, float, float],
     error_weights: np.ndarray | None = None,
 ) -> float:
-    """Compute the delayed reweighting scale from RTG mismatch."""
-    if not config.enabled:
-        return 1.0
-    if all(float(value) == 0.0 for value in ego_reweight_tilt):
-        return 1.0
-
+    """Compute the RTG mismatch error prior to running-stat normalization."""
     current = np.asarray(current_rtg, dtype=np.float32)
     next_value = np.asarray(next_rtg, dtype=np.float32)
     tilted = np.asarray(tilted_current_rtg, dtype=np.float32)
@@ -178,8 +159,53 @@ def compute_ego_action_scale(
         weights = np.ones_like(next_value, dtype=np.float32)
     else:
         weights = np.asarray(error_weights, dtype=np.float32)
+    return float(np.sum(np.square(weights * (next_value - target_next_rtg))))
 
-    error_value = float(
-        np.sum(np.square(weights * (next_value - target_next_rtg)))
+
+def compute_scale_from_error(
+    error_value: float,
+    config: AdversarialRTGConfig,
+    running_stats: AdversarialRTGRunningStats,
+) -> float:
+    """Convert RTG error into a scalar using online running statistics."""
+    if float(running_stats.error_count) < 2.0:
+        return 1.0
+    if float(running_stats.error_sigma) <= 0.0:
+        return 1.0
+
+    error_norm = (
+        float(error_value) - float(running_stats.error_mean)
+    ) / float(running_stats.error_sigma)
+    sigmoid = 1.0 / (1.0 + math.exp(-error_norm))
+    return float(
+        config.reward_scale * math.sqrt(sigmoid + config.epsilon)
     )
-    return compute_scale_from_error(error_value, config)
+
+
+def compute_ego_action_scale(
+    *,
+    config: AdversarialRTGConfig,
+    current_rtg: np.ndarray,
+    next_rtg: np.ndarray,
+    tilted_current_rtg: np.ndarray,
+    ego_reweight_tilt: tuple[float, float, float],
+    running_stats: AdversarialRTGRunningStats,
+    error_weights: np.ndarray | None = None,
+) -> float:
+    """Compute the delayed reweighting scale from RTG mismatch."""
+    if not config.enabled:
+        return 1.0
+    if all(float(value) == 0.0 for value in ego_reweight_tilt):
+        return 1.0
+
+    error_value = compute_ego_action_error(
+        current_rtg=current_rtg,
+        next_rtg=next_rtg,
+        tilted_current_rtg=tilted_current_rtg,
+        error_weights=error_weights,
+    )
+    return compute_scale_from_error(
+        error_value=error_value,
+        config=config,
+        running_stats=running_stats,
+    )

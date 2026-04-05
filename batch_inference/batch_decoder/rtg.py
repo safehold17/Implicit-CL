@@ -18,7 +18,9 @@ from utils.data import MotionData
 from .sampling import build_row_keys, build_stateless_uniforms, sample_categorical_from_uniform
 
 _RTG_STAGE_TAG = 0
-_SIDE_CHANNEL_RTG_STAGE_TAG = 1
+# Keep the side-channel RTG sample in its own stateless-sampling namespace so
+# it never collides with baseline RTG decode or action decode tickets.
+_SIDE_CHANNEL_RTG_STAGE_TAG = 2
 
 
 def _build_flat_tilt_logits(
@@ -172,6 +174,7 @@ def decode_rtg_jobs_batched_impl(
     for row_idx in range(int(cache_keys_t.shape[0]) - 1, -1, -1):
         unique_row_indices_t[inverse_t[row_idx]] = row_idx
     unique_row_indices = unique_row_indices_t.detach().cpu().numpy()
+    inverse = inverse_t.detach().cpu().numpy()
 
     unique_job_idx = decode_meta.get("job_idx_t")
     unique_idx_in_model = decode_meta.get("idx_in_model_t")
@@ -196,6 +199,40 @@ def decode_rtg_jobs_batched_impl(
         dtype=flat_rtg_logits.dtype,
         device=device,
     )
+    if getattr(teacher, "policy_reweighting_target", "rtg") == "rtg":
+        delayed_scale_all = np.asarray(
+            decode_meta.get(
+                "delayed_scale",
+                np.ones((decode_meta["job_idx"].shape[0],), dtype=np.float32),
+            ),
+            dtype=np.float32,
+        )
+        delayed_active_all = np.asarray(
+            decode_meta.get(
+                "delayed_active",
+                np.zeros((decode_meta["job_idx"].shape[0],), dtype=np.bool_),
+            ),
+            dtype=np.bool_,
+        )
+        unique_delayed_scale = np.ones(
+            (unique_row_indices.shape[0],),
+            dtype=np.float32,
+        )
+        unique_delayed_active = np.zeros(
+            (unique_row_indices.shape[0],),
+            dtype=np.bool_,
+        )
+        for row_idx, unique_idx in enumerate(inverse):
+            if not delayed_active_all[row_idx]:
+                continue
+            unique_delayed_scale[int(unique_idx)] = float(delayed_scale_all[row_idx])
+            unique_delayed_active[int(unique_idx)] = True
+        unique_scale_t = torch.as_tensor(
+            np.where(unique_delayed_active, unique_delayed_scale, 1.0),
+            dtype=flat_rtg_logits.dtype,
+            device=device,
+        )
+        flat_rtg_logits = flat_rtg_logits * unique_scale_t.view(-1, 1, 1)
     discrete_unique = _sample_rtg_indices(
         teacher=teacher,
         flat_rtg_logits=flat_rtg_logits,

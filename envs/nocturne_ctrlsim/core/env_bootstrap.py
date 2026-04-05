@@ -118,8 +118,6 @@ def _init_data_bridge_and_opponent(
         use_policy_reweighting=config.use_policy_reweighting,
         policy_reweighting_reward_scale=env.policy_reweighting_config.reward_scale,
         policy_reweighting_epsilon=env.policy_reweighting_config.epsilon,
-        policy_reweighting_error_mean=env.policy_reweighting_config.error_mean,
-        policy_reweighting_error_sigma=env.policy_reweighting_config.error_sigma,
         policy_reweighting_target=config.policy_reweighting_target,
         reweighting_frequency=config.reweighting_frequency,
         load_on_init=(config.opponent_runtime_mode == "normal"),

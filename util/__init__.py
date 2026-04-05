@@ -278,12 +278,6 @@ def _make_env(args):
             'policy_reweighting_epsilon': getattr(
                 args, 'policy_reweighting_epsilon', 1e-6
             ),
-            'policy_reweighting_error_mean': getattr(
-                args, 'policy_reweighting_error_mean', 0.0
-            ),
-            'policy_reweighting_error_sigma': getattr(
-                args, 'policy_reweighting_error_sigma', 1.0
-            ),
             'policy_reweighting_target': getattr(
                 args, 'policy_reweighting_target', 'rtg'
             ),

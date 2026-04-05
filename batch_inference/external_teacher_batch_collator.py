@@ -214,6 +214,8 @@ def build_decode_metadata(
     action_temperature_parts: List[np.ndarray] = []
     action_nucleus_sampling_parts: List[np.ndarray] = []
     action_nucleus_threshold_parts: List[np.ndarray] = []
+    action_delayed_scale_parts: List[np.ndarray] = []
+    action_delayed_active_parts: List[np.ndarray] = []
     action_job_offsets = [0]
 
     rtg_job_idx_parts: List[np.ndarray] = []
@@ -226,6 +228,8 @@ def build_decode_metadata(
     rtg_goal_tilt_parts: List[np.ndarray] = []
     rtg_veh_tilt_parts: List[np.ndarray] = []
     rtg_road_tilt_parts: List[np.ndarray] = []
+    rtg_delayed_scale_parts: List[np.ndarray] = []
+    rtg_delayed_active_parts: List[np.ndarray] = []
     rtg_job_offsets = [0]
 
     for batch_idx, job in enumerate(jobs):
@@ -235,6 +239,8 @@ def build_decode_metadata(
         step_t = int(prepared["step_t"])
         sampling_seed = int(prepared["sampling_seed"])
         sampling = prepared["sampling"]
+        delayed_scale = float(prepared.get("delayed_ego_action_scale", 1.0))
+        is_opponent_job = str(job.get("job_type", "opponent")) == "opponent"
 
         data_veh_ids = get_prepared_focal_data_veh_ids(prepared, focal_idx)
         data_model_indices = get_prepared_focal_data_model_indices(prepared, focal_idx)
@@ -281,6 +287,20 @@ def build_decode_metadata(
                     dtype=np.float32,
                 )
             )
+            action_delayed_scale_parts.append(
+                np.full(
+                    (valid_action_count,),
+                    delayed_scale if is_opponent_job else 1.0,
+                    dtype=np.float32,
+                )
+            )
+            action_delayed_active_parts.append(
+                np.full(
+                    (valid_action_count,),
+                    bool(is_opponent_job),
+                    dtype=np.bool_,
+                )
+            )
 
         if not get_prepared_focal_predict_rtgs(prepared, focal_idx):
             rtg_job_offsets.append(rtg_job_offsets[-1])
@@ -305,6 +325,8 @@ def build_decode_metadata(
         veh_tilt = np.zeros((valid_rtg_count,), dtype=np.int64)
         road_tilt = np.zeros((valid_rtg_count,), dtype=np.int64)
         data_vehicle_mask = np.isin(valid_context_veh_ids, data_veh_ids)
+        delayed_scale_per_row = np.ones((valid_rtg_count,), dtype=np.float32)
+        delayed_active_per_row = np.zeros((valid_rtg_count,), dtype=np.bool_)
         if np.any(data_vehicle_mask):
             for row_idx, veh_id in enumerate(valid_context_veh_ids[data_vehicle_mask]):
                 goal_val, veh_val, road_val = tilt_by_veh_id.get(int(veh_id), default_tilt)
@@ -312,6 +334,9 @@ def build_decode_metadata(
                 goal_tilt[target_idx] = int(goal_val)
                 veh_tilt[target_idx] = int(veh_val)
                 road_tilt[target_idx] = int(road_val)
+                if is_opponent_job:
+                    delayed_scale_per_row[target_idx] = delayed_scale
+                    delayed_active_per_row[target_idx] = True
 
         rtg_job_idx_parts.append(np.full((valid_rtg_count,), batch_idx, dtype=np.int64))
         rtg_env_idx_parts.append(
@@ -329,6 +354,8 @@ def build_decode_metadata(
         rtg_goal_tilt_parts.append(goal_tilt)
         rtg_veh_tilt_parts.append(veh_tilt)
         rtg_road_tilt_parts.append(road_tilt)
+        rtg_delayed_scale_parts.append(delayed_scale_per_row)
+        rtg_delayed_active_parts.append(delayed_active_per_row)
 
     return {
         "action": {
@@ -347,6 +374,14 @@ def build_decode_metadata(
                 action_nucleus_threshold_parts,
                 dtype=np.float32,
             ),
+            "delayed_scale": _concat_or_empty(
+                action_delayed_scale_parts,
+                dtype=np.float32,
+            ),
+            "delayed_active": _concat_or_empty(
+                action_delayed_active_parts,
+                dtype=np.bool_,
+            ),
             "job_offsets": np.asarray(action_job_offsets, dtype=np.int64),
             "job_count": np.asarray([len(jobs)], dtype=np.int64),
         },
@@ -361,6 +396,14 @@ def build_decode_metadata(
             "goal_tilt": _concat_or_empty(rtg_goal_tilt_parts, dtype=np.int64),
             "veh_tilt": _concat_or_empty(rtg_veh_tilt_parts, dtype=np.int64),
             "road_tilt": _concat_or_empty(rtg_road_tilt_parts, dtype=np.int64),
+            "delayed_scale": _concat_or_empty(
+                rtg_delayed_scale_parts,
+                dtype=np.float32,
+            ),
+            "delayed_active": _concat_or_empty(
+                rtg_delayed_active_parts,
+                dtype=np.bool_,
+            ),
             "job_offsets": np.asarray(rtg_job_offsets, dtype=np.int64),
             "job_count": np.asarray([len(jobs)], dtype=np.int64),
         },
