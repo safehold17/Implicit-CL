@@ -63,7 +63,7 @@ def init_clearml(args):
         tags=['test run'],
         output_uri="s3://tks-zx.fzi.de:9000/ri928",
         auto_connect_frameworks={"tensorboard": False},
-        auto_resource_monitoring=False,
+        auto_resource_monitoring=True,
     )
 
     if is_clearml_worker:
