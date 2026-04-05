@@ -319,6 +319,8 @@ def make_agent(name, env, args, device='cpu'):
         # Nocturne Teacher parameters
         random_teacher=vars(args).get('random_teacher', False))
 
+    actor_critic = actor_critic.to(device)
+
     # Compile the model for faster forward passes. dynamic=True avoids recompilation
     # on variable batch sizes. Falls back to eager silently on unsupported patterns.
     actor_critic = torch.compile(actor_critic, dynamic=True)

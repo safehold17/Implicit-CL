@@ -215,6 +215,7 @@ class Evaluator(object):
 					'vehicle_map_path',
 					'max_episode_steps',
 					'done_on_position_reached_only',
+					'goal_pos_tolerance',
 					'device',
 					'student_num_neighbors',
 					'student_top_k_road',
@@ -598,6 +599,7 @@ def _collect_nocturne_required_args(flags, cli_args):
 		"student_top_k_road",
 		"use_speed_heading_target",
 		"done_on_position_reached_only",
+		"goal_pos_tolerance",
 	]
 	required = {}
 	for key in keys:

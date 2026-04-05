@@ -908,6 +908,12 @@ parser.add_argument(
     help="Whether Nocturne check_done should use position_reached as the success condition.",
 )
 parser.add_argument(
+    "--goal_pos_tolerance",
+    type=float,
+    default=2.0,
+    help="Goal position tolerance in meters for student and opponent vehicles.",
+)
+parser.add_argument(
     "--remove_background_vehicles",
     type=str2bool,
     nargs="?",

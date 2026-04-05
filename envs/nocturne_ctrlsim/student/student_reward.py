@@ -132,11 +132,12 @@ def compute_student_reward(env) -> float:
         return 0.0
 
     ego_id = env.ego_vehicle.getID()
+    goal_pos_tolerance = getattr(env, "goal_pos_tolerance", 2.0)
 
     # Use CtrlSim's reward config
     rew_cfg = {
         'position_target': True,
-        'position_target_tolerance': 1.0,
+        'position_target_tolerance': goal_pos_tolerance,
         'speed_target': True,
         'speed_target_tolerance': 1.0,
         'heading_target': True,
@@ -187,7 +188,7 @@ def compute_student_reward(env) -> float:
     goal_improve = max(0.0, best_goal_distance - float(dist_to_goal))
     env._best_goal_distance = min(best_goal_distance, float(dist_to_goal))
 
-    position_achieved_current = dist_to_goal < 1.0  # position_target_tolerance
+    position_achieved_current = dist_to_goal < goal_pos_tolerance
     speed_achieved_current = abs(ego_speed - goal_speed) < 1.0  # speed_target_tolerance
     heading_achieved_current = abs(_angle_diff(ego_heading, goal_heading)) < 0.3  # heading_target_tolerance
     reward_history = []

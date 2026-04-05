@@ -198,6 +198,7 @@ def get_gt_action(env, veh_id: int, t: int, veh=None) -> Optional[Tuple[float, f
 
 
 def is_ego_position_reached(env) -> bool:
+    """Return whether ego is within the configured goal-position tolerance."""
     if env.ego_vehicle is None or env._ego_goal_dict is None:
         return False
 
@@ -207,4 +208,5 @@ def is_ego_position_reached(env) -> bool:
     if goal_pos is None:
         return False
     dist_to_goal = np.linalg.norm(goal_pos - ego_pos_arr)
-    return dist_to_goal < 1.0
+    goal_pos_tolerance = float(getattr(env, "goal_pos_tolerance", 2.0))
+    return dist_to_goal < goal_pos_tolerance

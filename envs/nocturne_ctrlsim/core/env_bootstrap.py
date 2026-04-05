@@ -145,6 +145,7 @@ def _init_environment_attributes(
 
     env.max_episode_steps = max_episode_steps
     env.done_on_position_reached_only = config.done_on_position_reached_only
+    env.goal_pos_tolerance = config.goal_pos_tolerance
     env.device = config.device
     env.opponent_k = config.opponent_k
     env.per_vehicle_tilting_length = 3 * env.opponent_k
