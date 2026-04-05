@@ -3,7 +3,7 @@
     "env_name": ["Nocturne-CtrlSim-v0"],
     "ued_algo": ["domain_randomization"],
     "num_processes": [32],
-    "num_env_steps": [32768000],
+    "num_env_steps": [16384000],
     "seed": [123],
 
     "__note1__": ["learning parameters"],
@@ -12,7 +12,7 @@
     "use_gae": [true],
     "gae_lambda": [0.95],
     "handle_timelimits": [false],
-    "num_steps": [512],
+    "num_steps": [256],
     "ppo_epoch": [10],
     "num_mini_batch": [32],
     "recurrent_agent": [false],
@@ -82,7 +82,7 @@
     "__note9__": ["KL loss parameters"],
     "use_ego_ctrlsim_kl_loss": [false],
     "ego_ctrlsim_kl_schedule": ["constant"],
-    "kl_loss_coef": [0.2],
+    "kl_loss_coef": [0.25],
     "kl_loss_computation_frequency": [2],
     "ego_ctrlsim_kl_init_coef" : [0.5],
     "ego_ctrlsim_kl_min_coef": [0.0],
@@ -96,7 +96,9 @@
     "log_dir": ["~/logs/dcd"],
 
     "__note11__": ["clearml"],
-    "use_clearml": ["true"],
-    "clearml_task": ["dcd-ctrlsim"]
+    "use_clearml": [true],
+    "clearml_task": ["dcd-ctrlsim"],
+    "clearml_monitor_only": [false],
+    "local_tensorboard": [false]
   }
 }

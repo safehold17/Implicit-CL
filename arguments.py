@@ -401,7 +401,7 @@ parser.add_argument(
 parser.add_argument(
     "--num_edits",
     type=int,
-    default=0.0,
+    default=1,
     help="Number of edits to make each time a level is mutated.",
 )
 parser.add_argument(
