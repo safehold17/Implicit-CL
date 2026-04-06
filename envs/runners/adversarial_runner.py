@@ -178,9 +178,25 @@ class AdversarialRunner(object):
             self._plr_args = plr_args
         return self._init_or_reset_plr_state(self._plr_args)
 
+    def _get_opponent_runtime_mode(self) -> str:
+        """Return the current opponent runtime mode tracked by the runner."""
+        if hasattr(self, 'opponent_runtime_mode'):
+            return str(self.opponent_runtime_mode)
+        return str(getattr(self.args, 'opponent_runtime_mode', 'normal'))
+
     @property
     def plr_runtime_enabled(self) -> bool:
-        return bool(self.args.use_plr and self.plr_active)
+        return bool(
+            self.args.use_plr
+            and self.plr_active
+            and self._get_opponent_runtime_mode() == 'normal'
+        )
+
+    def set_opponent_runtime_mode(self, mode: str) -> str:
+        """Update the opponent runtime mode used by PLR runtime gates."""
+        self.opponent_runtime_mode = str(mode)
+        self.args.opponent_runtime_mode = self.opponent_runtime_mode
+        return self.opponent_runtime_mode
 
     def set_plr_active(self, active: bool) -> bool:
         self.plr_active = bool(active)

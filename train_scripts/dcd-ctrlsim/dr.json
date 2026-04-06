@@ -49,7 +49,6 @@
     "tilt_range_max": [25],
 
     "__note5__": ["warmup parameters"],
-    "warm_up_level_replay_seed_buffer_size": [10000],
     "warmup_opponent_disable_ratio": [0.0],
     "warmup_opponent_replay_ratio": [0.1],
 

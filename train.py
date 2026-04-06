@@ -295,23 +295,12 @@ def main(args, clearml_task=None):
 
         # === Create runner ===
         plr_args = None
-        warmup_plr_args = None
-        normal_plr_args = None
         if args.use_plr:
-            warmup_plr_args = make_plr_args(
+            plr_args = make_plr_args(
                 args,
                 venv.observation_space,
                 venv.action_space,
-                use_warmup_buffer=True,
             )
-            normal_plr_args = make_plr_args(
-                args,
-                venv.observation_space,
-                venv.action_space,
-                use_warmup_buffer=False,
-            )
-            initial_use_warmup_buffer = args.opponent_runtime_mode in ('disable', 'replay')
-            plr_args = warmup_plr_args if initial_use_warmup_buffer else normal_plr_args
         train_runner = AdversarialRunner(
             args=args,
             venv=venv,
@@ -329,6 +318,7 @@ def main(args, clearml_task=None):
                 else None
             ),
         )
+        train_runner.set_opponent_runtime_mode(args.opponent_runtime_mode)
 
         # === Configure checkpointing ===
         timer = timeit.default_timer
@@ -454,33 +444,13 @@ def main(args, clearml_task=None):
                 completed_env_steps_before_update = j * env_steps_per_update
 
                 target_mode = resolve_opponent_runtime_mode_by_steps(completed_env_steps_before_update)
-                previous_mode_by_steps = resolve_opponent_runtime_mode_by_steps(
-                    max(completed_env_steps_before_update - env_steps_per_update, 0)
-                )
-                entering_normal_stage = (
-                    args.use_plr
-                    and target_mode == 'normal'
-                    and completed_env_steps_before_update > 0
-                    and previous_mode_by_steps in ('disable', 'replay')
-                )
-                if entering_normal_stage:
-                    if train_runner.reset_plr_buffers(plr_args=normal_plr_args):
-                        logging.getLogger("logs/out").info(
-                            (
-                                "Reset PLR buffers at env_step=%d (update=%d) "
-                                "when stage switches from %s to normal."
-                            ),
-                            completed_env_steps_before_update,
-                            j,
-                            previous_mode_by_steps,
-                        )
-
                 if target_mode != current_opponent_runtime_mode:
                     venv.remote_attr(
                         'set_opponent_runtime_mode',
                         data=target_mode,
                         flatten=True,
                     )
+                    train_runner.set_opponent_runtime_mode(target_mode)
                     current_opponent_runtime_mode = target_mode
                     logging.getLogger("logs/out").info(
                         "Opponent runtime mode to %s at env_step=%d (update=%d).",
