@@ -12,7 +12,7 @@ import numpy as np
 
 from .config import NocturneCtrlSimEnvConfig
 from ..student.observation_action import (
-    build_student_observation_config,
+    StudentObservationConfig,
     get_student_obs_dim,
 )
 from ..utils.tilt_helpers import init_level_params_vec
@@ -239,9 +239,9 @@ def _init_observation_and_action_spaces(
     env._road_graph_np = None
     env._student_road_edge_polylines = ()
     env._student_vehicle_cache = None
-    env.student_observation_config = build_student_observation_config(
-        max_neighbors=env._max_observable_agents,
-        top_k_road_points=env._top_k_road_points,
+    env.student_observation_config = StudentObservationConfig(
+        max_neighbors=int(env._max_observable_agents),
+        top_k_road_points=int(env._top_k_road_points),
     )
     env._obs_dim = get_student_obs_dim(env.student_observation_config)
     if config.requested_obs_dim is not None and int(config.requested_obs_dim) != env._obs_dim:

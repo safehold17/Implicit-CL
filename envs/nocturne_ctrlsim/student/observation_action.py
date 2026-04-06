@@ -37,31 +37,12 @@ class StudentObservationConfig:
         return self.max_neighbors + 1
 
 
-def build_student_observation_config(
-    max_neighbors: int = 16,
-    top_k_road_points: int = 64,
-) -> StudentObservationConfig:
-    """Build the canonical student observation config."""
-    return StudentObservationConfig(
-        max_neighbors=int(max_neighbors),
-        top_k_road_points=int(top_k_road_points),
-    )
-
-
 def get_student_obs_dim(config: StudentObservationConfig) -> int:
     """Return the flattened student observation dimension."""
     return (
         config.ego_feat_dim
         + config.max_neighbors * config.partner_feat_dim
         + config.top_k_road_points * config.road_graph_feat_dim
-    )
-
-
-def get_env_student_observation_config(env) -> StudentObservationConfig:
-    """Build the student observation config from env state."""
-    return build_student_observation_config(
-        max_neighbors=getattr(env, "_max_observable_agents", 16),
-        top_k_road_points=getattr(env, "_top_k_road_points", 64),
     )
 
 
@@ -104,7 +85,7 @@ def apply_student_action(env, action: np.ndarray):
     steer_bins = int(env.student_steer_discretization)
     num_actions = int(accel_bins * steer_bins)
 
-    action_id = int(np.asarray(action).reshape(-1)[0])
+    action_id = int(np.asarray(action).reshape(-1).item())
     action_id = int(np.clip(action_id, 0, num_actions - 1))
 
     accel_idx = action_id // steer_bins
@@ -303,7 +284,9 @@ def build_road_graph_obs_np(
     rows[:, 0] = rel_x[selected_indices]
     rows[:, 1] = rel_y[selected_indices]
     rows[:, 2] = road_graph_np["seg_len"][selected_indices]
-    rows[:, 3] = 1.0
+    
+    # Legacy constant channels for compatibility with current 13-dim road feature layout.
+    rows[:, 3] = 1.0 
     rows[:, 4] = 1.0
 
     selected_is_line = road_graph_np["is_line"][selected_indices]
@@ -330,7 +313,7 @@ def get_student_observation(env) -> np.ndarray:
     is fully zeroed before each write so any unfilled partner or road slots
     remain the correct padding value.
     """
-    config = get_env_student_observation_config(env)
+    config = env.student_observation_config
     obs_dim = get_student_obs_dim(config)
 
     obs = getattr(env, "_obs_buffer", None)
