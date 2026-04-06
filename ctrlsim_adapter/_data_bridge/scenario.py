@@ -113,7 +113,7 @@ def extract_road_edge_polylines(bridge: Any, road_data: List[Dict]) -> List[np.n
     for road in road_data:
         if road["type"] == "road_edge":
             geometry = road["geometry"]
-            if isinstance(geometry, list):
+            if isinstance(geometry, list) and len(geometry) >= 2:
                 polyline = np.array([[pt["x"], pt["y"]] for pt in geometry])
                 road_edge_polylines.append(polyline)
     return road_edge_polylines

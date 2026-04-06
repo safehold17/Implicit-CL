@@ -50,24 +50,6 @@ def _compute_veh_veh_shaped_reward(env, ego_id: int, ego_pos_arr: np.ndarray) ->
     )
 
 
-def _extract_road_edge_polylines(env) -> list[np.ndarray]:
-    """Extract road-edge polylines from cached road graph."""
-    roads_data = getattr(env, '_road_graph_cache', None)
-    if not roads_data:
-        return []
-
-    polylines = []
-    for road in roads_data:
-        if road.get('type') != 'road_edge':
-            continue
-        geometry = road.get('geometry')
-        if not isinstance(geometry, list) or len(geometry) < 2:
-            continue
-        polyline = np.array([[pt['x'], pt['y']] for pt in geometry], dtype=np.float32)
-        polylines.append(polyline)
-    return polylines
-
-
 def _get_student_road_edge_polylines(env) -> tuple[np.ndarray, ...]:
     """Return cached road-edge polylines, materializing them once per episode."""
     road_edge_polylines = getattr(env, '_student_road_edge_polylines', ())
@@ -78,11 +60,9 @@ def _get_student_road_edge_polylines(env) -> tuple[np.ndarray, ...]:
     if not roads_data:
         return ()
 
-    data_bridge = getattr(env, 'data_bridge', None)
-    if data_bridge is not None and hasattr(data_bridge, 'extract_road_edge_polylines'):
-        road_edge_polylines = tuple(data_bridge.extract_road_edge_polylines(roads_data))
-    else:
-        road_edge_polylines = tuple(_extract_road_edge_polylines(env))
+    road_edge_polylines = tuple(
+        env.data_bridge.extract_road_edge_polylines(roads_data)
+    )
     env._student_road_edge_polylines = road_edge_polylines
     return road_edge_polylines
 
