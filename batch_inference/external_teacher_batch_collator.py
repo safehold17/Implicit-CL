@@ -526,9 +526,10 @@ def attach_decode_meta_tensors(
     decode_meta: Dict[str, Dict[str, np.ndarray]],
     device: str,
 ) -> None:
-    """将解码元数据中的关键数组搬运到目标设备上。
+    """将解码元数据中的关键数组搬运到目标设备上，并提供 torch-only decode 所需缓存。
 
-    Move the key decode metadata arrays onto the target device.
+    Move key decode metadata arrays onto the target device and expose the
+    tensor caches required by the torch-only decode path.
     """
     action_meta = decode_meta["action"]
     action_meta["job_idx_t"] = torch.as_tensor(
@@ -561,6 +562,16 @@ def attach_decode_meta_tensors(
         dtype=torch.float32,
         device=device,
     )
+    action_meta["delayed_scale_t"] = torch.as_tensor(
+        np.asarray(action_meta["delayed_scale"], dtype=np.float32),
+        dtype=torch.float32,
+        device=device,
+    )
+    action_meta["delayed_active_t"] = torch.as_tensor(
+        np.asarray(action_meta["delayed_active"], dtype=np.bool_),
+        dtype=torch.bool,
+        device=device,
+    )
 
     rtg_meta = decode_meta["rtg"]
     rtg_meta["job_idx_t"] = torch.as_tensor(
@@ -591,6 +602,31 @@ def attach_decode_meta_tensors(
     rtg_meta["road_tilt_t"] = torch.as_tensor(
         np.asarray(rtg_meta["road_tilt"], dtype=np.float32),
         dtype=torch.float32,
+        device=device,
+    )
+    rtg_meta["env_idx_t"] = torch.as_tensor(
+        np.asarray(rtg_meta["env_idx"], dtype=np.int64),
+        dtype=torch.long,
+        device=device,
+    )
+    rtg_meta["veh_id_t"] = torch.as_tensor(
+        np.asarray(rtg_meta["veh_id"], dtype=np.int64),
+        dtype=torch.long,
+        device=device,
+    )
+    rtg_meta["step_t_t"] = torch.as_tensor(
+        np.asarray(rtg_meta["step_t"], dtype=np.int64),
+        dtype=torch.long,
+        device=device,
+    )
+    rtg_meta["delayed_scale_t"] = torch.as_tensor(
+        np.asarray(rtg_meta["delayed_scale"], dtype=np.float32),
+        dtype=torch.float32,
+        device=device,
+    )
+    rtg_meta["delayed_active_t"] = torch.as_tensor(
+        np.asarray(rtg_meta["delayed_active"], dtype=np.bool_),
+        dtype=torch.bool,
         device=device,
     )
 

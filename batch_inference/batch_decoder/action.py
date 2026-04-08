@@ -92,24 +92,32 @@ def decode_action_jobs_batched_impl(
         row_batch_idx = torch.as_tensor(decode_meta["job_idx"], dtype=torch.long, device=device)
         row_idx_in_model = torch.as_tensor(decode_meta["idx_in_model"], dtype=torch.long, device=device)
         row_token_index = torch.as_tensor(decode_meta["token_index"], dtype=torch.long, device=device)
-    flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index]
+    flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index].to(dtype=torch.float32)
     if getattr(teacher, "policy_reweighting_target", "rtg") == "action":
-        delayed_scale = torch.as_tensor(
-            decode_meta.get(
-                "delayed_scale",
-                np.ones((flat_logits.shape[0],), dtype=np.float32),
-            ),
-            dtype=flat_logits.dtype,
-            device=device,
-        )
-        delayed_active = torch.as_tensor(
-            decode_meta.get(
-                "delayed_active",
-                np.zeros((flat_logits.shape[0],), dtype=np.bool_),
-            ),
-            dtype=torch.bool,
-            device=device,
-        )
+        delayed_scale = decode_meta.get("delayed_scale_t")
+        if delayed_scale is None:
+            delayed_scale = torch.as_tensor(
+                decode_meta.get(
+                    "delayed_scale",
+                    np.ones((flat_logits.shape[0],), dtype=np.float32),
+                ),
+                dtype=torch.float32,
+                device=device,
+            )
+        else:
+            delayed_scale = delayed_scale.to(device=device, dtype=torch.float32)
+        delayed_active = decode_meta.get("delayed_active_t")
+        if delayed_active is None:
+            delayed_active = torch.as_tensor(
+                decode_meta.get(
+                    "delayed_active",
+                    np.zeros((flat_logits.shape[0],), dtype=np.bool_),
+                ),
+                dtype=torch.bool,
+                device=device,
+            )
+        else:
+            delayed_active = delayed_active.to(device=device, dtype=torch.bool)
         effective_scale = torch.where(
             delayed_active,
             delayed_scale,
@@ -119,30 +127,39 @@ def decode_action_jobs_batched_impl(
 
     temperatures = decode_meta.get("temperature_t")
     if temperatures is None:
-        temperatures = torch.as_tensor(decode_meta["temperature"], dtype=flat_logits.dtype, device=device)
+        temperatures = torch.as_tensor(decode_meta["temperature"], dtype=torch.float32, device=device)
+    else:
+        temperatures = temperatures.to(device=device, dtype=torch.float32)
     nucleus_sampling = decode_meta.get("nucleus_sampling_t")
     if nucleus_sampling is None:
         nucleus_sampling = torch.as_tensor(decode_meta["nucleus_sampling"], dtype=torch.bool, device=device)
+    else:
+        nucleus_sampling = nucleus_sampling.to(device=device, dtype=torch.bool)
     nucleus_thresholds = decode_meta.get("nucleus_threshold_t")
     if nucleus_thresholds is None:
         nucleus_thresholds = torch.as_tensor(
             decode_meta["nucleus_threshold"],
-            dtype=flat_logits.dtype,
+            dtype=torch.float32,
             device=device,
         )
+    else:
+        nucleus_thresholds = nucleus_thresholds.to(device=device, dtype=torch.float32)
+    sampling_seed = decode_meta["sampling_seed"]
+    step_t = decode_meta["step_t"]
+    veh_id = decode_meta["veh_id"]
 
     action_idx = _sample_action_indices(
         flat_logits=flat_logits,
         temperatures=temperatures,
         nucleus_sampling=nucleus_sampling,
         nucleus_thresholds=nucleus_thresholds,
-        sampling_seed=decode_meta["sampling_seed"],
-        step_t=decode_meta["step_t"],
-        veh_id=decode_meta["veh_id"],
+        sampling_seed=sampling_seed,
+        step_t=step_t,
+        veh_id=veh_id,
     )
     accel_t, steer_t = _undiscretize_action_indices(action_idx, teacher)
     return {
-        "veh_id": np.asarray(decode_meta["veh_id"], dtype=np.int64),
+        "veh_id": np.asarray(veh_id, dtype=np.int64),
         "values": torch.stack((accel_t, steer_t), dim=1).detach().cpu().numpy().astype(
             np.float32,
             copy=False,
@@ -183,7 +200,7 @@ def export_selected_action_logits_by_job_impl(
             device=device,
         )
 
-    flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index]
+    flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index].to(dtype=torch.float32)
     job_offsets = decode_meta["job_offsets"]
 
     logits_by_job: Dict[int, torch.Tensor] = {}
@@ -219,9 +236,14 @@ def decode_action_stage_batched_impl(
     with torch.inference_mode():
         with teacher.model_forward_context():
             preds = teacher.model(
-                batched_data, eval=True, cached_scene_enc=cached_scene_enc
+                batched_data,
+                eval=True,
+                cached_scene_enc=cached_scene_enc,
+                need_action=True,
+                need_rtg=False,
+                need_state=False,
             )
-        action_logits = preds["action_preds"].float()
+        action_logits = preds["action_preds"]
 
         jobs = batch_meta["jobs"]
         flat_action_results = decode_action_jobs_batched_impl(

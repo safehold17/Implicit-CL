@@ -18,8 +18,6 @@ _SPLITMIX64_MUL2 = np.uint64(0x94D049BB133111EB)
 _DRAW_OFFSET = np.uint64(0xD6E8FEB86659FD93)
 _STEP_MIX = np.uint64(0xA0761D6478BD642F)
 _VEHICLE_MIX = np.uint64(0xE7037ED1A0B428DB)
-
-
 def _splitmix64(values: np.ndarray) -> np.ndarray:
     x = (values.astype(np.uint64, copy=False) + _SPLITMIX64_GAMMA) & _UINT64_MASK
     x ^= x >> np.uint64(30)

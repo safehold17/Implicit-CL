@@ -38,20 +38,53 @@ class CtRLSim(pl.LightningModule):
             print("Resampling real data indices")
 
 
-    def forward(self, data, eval=False, return_enc=False, cached_scene_enc=None):
-        """
+    def forward(
+        self,
+        data,
+        eval=False,
+        return_enc=False,
+        cached_scene_enc=None,
+        need_action=True,
+        need_rtg=True,
+        need_state=True,
+    ):
+        """按需执行 CtRLSim 前向，并可复用缓存场景编码。
+
+        Run the CtRLSim forward pass with optional head selection while
+        reusing a cached scene encoding when available.
+
         Args:
-            cached_scene_enc: when provided (second/action pass), skips the expensive
-                map encoder + transformer encoder and recomputes only RTG token embeddings.
-                A single torch.compile(model) covers both the full pass (cached_scene_enc=None)
-                and the cheap RTG-update pass (cached_scene_enc=<prior scene_enc>).
+            cached_scene_enc: 第二次 action pass 传入上一轮缓存编码时，跳过
+                map encoder 和 transformer encoder，只重算 RTG token。
+                When provided during the second action pass, skips the map
+                encoder and transformer encoder and recomputes only RTG tokens.
+            need_action: 是否需要 action head 输出。
+                Whether to materialize the action head.
+            need_rtg: 是否需要 RTG head 输出。
+                Whether to materialize the RTG head.
+            need_state: 是否需要 future-state head 输出。
+                Whether to materialize the future-state head.
         """
         if cached_scene_enc is not None:
             updated_enc = self.encoder.forward_with_new_rtgs(data, eval, cached_scene_enc)
-            return self.decoder(data, updated_enc, eval)
+            return self.decoder(
+                data,
+                updated_enc,
+                eval,
+                need_action=need_action,
+                need_rtg=need_rtg,
+                need_state=need_state,
+            )
 
         scene_enc = self.encoder(data, eval)
-        pred = self.decoder(data, scene_enc, eval)
+        pred = self.decoder(
+            data,
+            scene_enc,
+            eval,
+            need_action=need_action,
+            need_rtg=need_rtg,
+            need_state=need_state,
+        )
         if return_enc:
             return pred, scene_enc
         return pred
@@ -291,6 +324,5 @@ class CtRLSim(pl.LightningModule):
         return [optimizer], {"scheduler": scheduler,
                              "interval": "step",
                              "frequency": 1}
-
 
 

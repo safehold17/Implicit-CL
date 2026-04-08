@@ -126,14 +126,21 @@ def forward_job_batch_impl(
     try:
         with torch.inference_mode():
             with teacher.model_forward_context():
-                preds, scene_enc = teacher.model(batched_data, eval=True, return_enc=True)
+                preds, scene_enc = teacher.model(
+                    batched_data,
+                    eval=True,
+                    return_enc=True,
+                    need_action=False,
+                    need_rtg=True,
+                    need_state=False,
+                )
     except RuntimeError as exc:
         print(
             "[forward_batch] teacher_forward_error "
             f"exc={type(exc).__name__}: {exc}"
         )
         raise
-    rtg_logits = preds["rtg_preds"].float()
+    rtg_logits = preds["rtg_preds"]
 
     batch_jobs = batch_meta["jobs"]
     flat_rtg_results = decode_rtg_jobs_batched_fn(

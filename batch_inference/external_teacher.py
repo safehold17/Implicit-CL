@@ -604,8 +604,14 @@ class ExternalTeacher:
     ):
         with torch.inference_mode():
             with self.model_forward_context():
-                preds = self.model(batched_data, eval=True)
-            rtg_logits = preds["rtg_preds"].float()
+                preds = self.model(
+                    batched_data,
+                    eval=True,
+                    need_action=False,
+                    need_rtg=True,
+                    need_state=False,
+                )
+            rtg_logits = preds["rtg_preds"]
             flat_rtg_results = decode_rtg_jobs_batched_fn(
                 teacher=self,
                 batched_data=batched_data,

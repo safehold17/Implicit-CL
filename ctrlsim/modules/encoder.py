@@ -217,20 +217,26 @@ class Encoder(nn.Module):
             initial_existence_mask = initial_existence_mask[:, :, 0].bool()
 
         if self.cfg_model.decision_transformer:
-            stacked_embeddings = torch.stack(
+            stacked_embeddings_template = torch.stack(
                 (rtg_embeddings, state_embeddings, action_embeddings), dim=1
-            ).permute(0, 2, 1, 3).reshape(batch_size, seq_len*self.cfg_rl_waymo.max_num_agents*3, self.cfg_model.hidden_dim)
+            ).permute(0, 2, 1, 3)
+            rtg_slot_index = 0
         elif self.cfg_model.trajeglish:
-            stacked_embeddings = action_embeddings.unsqueeze(1).permute(0, 2, 1, 3).reshape(batch_size, 1*seq_len*self.cfg_rl_waymo.max_num_agents, self.cfg_model.hidden_dim)
+            stacked_embeddings_template = action_embeddings.unsqueeze(1).permute(0, 2, 1, 3)
+            rtg_slot_index = None
         elif self.cfg_model.il:
-            stacked_embeddings = torch.stack(
+            stacked_embeddings_template = torch.stack(
                 (state_embeddings, action_embeddings), dim=1
-            ).permute(0, 2, 1, 3).reshape(batch_size, seq_len*self.cfg_rl_waymo.max_num_agents*2, self.cfg_model.hidden_dim)
+            ).permute(0, 2, 1, 3)
+            rtg_slot_index = None
         else:
-            stacked_embeddings = torch.stack(
+            stacked_embeddings_template = torch.stack(
                 (state_embeddings, rtg_embeddings, action_embeddings), dim=1
-            ).permute(0, 2, 1, 3).reshape(batch_size, seq_len*self.cfg_rl_waymo.max_num_agents*3, self.cfg_model.hidden_dim)
-        stacked_embeddings = self.embed_ln(stacked_embeddings)
+            ).permute(0, 2, 1, 3)
+            rtg_slot_index = 1
+        stacked_embeddings = self.embed_ln(
+            stacked_embeddings_template.reshape(batch_size, -1, self.cfg_model.hidden_dim)
+        )
 
         if self.cfg_model.use_map:
             polyline_embeddings, valid_mask = self.map_encoder(data)
@@ -252,48 +258,39 @@ class Encoder(nn.Module):
             encoder_embeddings = self.transformer_encoder(initial_state_embeddings, src_key_padding_mask=src_key_padding_mask)
         
         return {
-            'state_embeddings': state_embeddings,
-            'action_embeddings': action_embeddings,
             'stacked_embeddings': stacked_embeddings,
+            'stacked_embeddings_template': stacked_embeddings_template,
             'encoder_embeddings': encoder_embeddings,
             'src_key_padding_mask': src_key_padding_mask,
             'existence_mask_flat': existence_mask,
+            'positional_embeddings': timestep_embeddings + agent_id_embeddings,
+            'rtg_slot_index': rtg_slot_index,
         }
 
     def forward_with_new_rtgs(self, data, eval, scene_enc):
-        """
-        Recompute only the RTG embeddings and rebuild stacked_embeddings.
-        Returns:
-            Updated scene_enc dict compatible with Decoder.forward.
+        """仅重算 RTG 槽位，并复用缓存的 positional/template 编码。
+
+        Recompute only the RTG slot while reusing the cached positional
+        embeddings and pre-LN stacked template from the first pass.
         """
         agent_states = data['agent'].agent_states
         batch_size = agent_states.shape[0]
         seq_len = agent_states.shape[2]
 
         rtgs = data['agent'].rtgs
-        timesteps = data['agent'].timesteps
-        agent_ids = torch.arange(self.cfg_rl_waymo.max_num_agents).to(agent_states.device)
-        agent_ids = agent_ids.unsqueeze(0).unsqueeze(2).repeat(batch_size, 1, agent_states.shape[2])
-
         rtgs = rtgs.transpose(1, 2)
-        timesteps = timesteps.transpose(1, 2)
-        agent_ids = agent_ids.transpose(1, 2)
-
         rtgs = rtgs.reshape(batch_size, seq_len * self.cfg_rl_waymo.max_num_agents, self.cfg_model.num_reward_components)
-        timesteps = timesteps.reshape(batch_size, seq_len * self.cfg_rl_waymo.max_num_agents)
-        agent_ids = agent_ids.reshape(batch_size, seq_len * self.cfg_rl_waymo.max_num_agents)
 
         if self.cfg_model.decision_transformer:
             rtgs = rtgs.float()
 
-        timestep_embeddings = self.embed_timestep(timesteps)
-        agent_id_embeddings = self.embed_agent_id(agent_ids)
+        positional_embeddings = scene_enc['positional_embeddings']
 
         if self.cfg_model.decision_transformer:
             rtg_goal_embeddings = self.embed_rtg_goal(rtgs[:, :, 0:1])
             rtg_veh_embeddings = self.embed_rtg_veh(rtgs[:, :, 1:2])
             rtg_road_embeddings = self.embed_rtg_road(rtgs[:, :, 2:3])
-            rtg_embeddings = self.embed_rtg(torch.cat([rtg_goal_embeddings, rtg_veh_embeddings, rtg_road_embeddings], dim=-1)) + timestep_embeddings + agent_id_embeddings
+            rtg_embeddings = self.embed_rtg(torch.cat([rtg_goal_embeddings, rtg_veh_embeddings, rtg_road_embeddings], dim=-1)) + positional_embeddings
         else:
             rtg_goal_idx = sanitize_embedding_indices(
                 rtgs[:, :, 0], field_name="rtg_goal", min_value=0,
@@ -310,32 +307,24 @@ class Encoder(nn.Module):
             rtg_goal_embeddings = self.embed_rtg_goal(rtg_goal_idx)
             rtg_veh_embeddings = self.embed_rtg_veh(rtg_veh_idx)
             rtg_road_embeddings = self.embed_rtg_road(rtg_road_idx)
-            rtg_embeddings = self.embed_rtg(torch.cat([rtg_goal_embeddings, rtg_veh_embeddings, rtg_road_embeddings], dim=-1)) + timestep_embeddings + agent_id_embeddings
+            rtg_embeddings = self.embed_rtg(torch.cat([rtg_goal_embeddings, rtg_veh_embeddings, rtg_road_embeddings], dim=-1)) + positional_embeddings
 
         existence_mask = scene_enc['existence_mask_flat']
         rtg_embeddings = rtg_embeddings * existence_mask.float()
-
-        state_embeddings = scene_enc['state_embeddings']
-        action_embeddings = scene_enc['action_embeddings']
-
-        if self.cfg_model.decision_transformer:
-            stacked_embeddings = torch.stack(
-                (rtg_embeddings, state_embeddings, action_embeddings), dim=1
-            ).permute(0, 2, 1, 3).reshape(batch_size, seq_len * self.cfg_rl_waymo.max_num_agents * 3, self.cfg_model.hidden_dim)
-        elif self.cfg_model.trajeglish:
-            stacked_embeddings = action_embeddings.unsqueeze(1).permute(0, 2, 1, 3).reshape(batch_size, seq_len * self.cfg_rl_waymo.max_num_agents, self.cfg_model.hidden_dim)
-        elif self.cfg_model.il:
-            stacked_embeddings = torch.stack(
-                (state_embeddings, action_embeddings), dim=1
-            ).permute(0, 2, 1, 3).reshape(batch_size, seq_len * self.cfg_rl_waymo.max_num_agents * 2, self.cfg_model.hidden_dim)
-        else:
-            stacked_embeddings = torch.stack(
-                (state_embeddings, rtg_embeddings, action_embeddings), dim=1
-            ).permute(0, 2, 1, 3).reshape(batch_size, seq_len * self.cfg_rl_waymo.max_num_agents * 3, self.cfg_model.hidden_dim)
-        stacked_embeddings = self.embed_ln(stacked_embeddings)
+        stacked_embeddings_template = scene_enc['stacked_embeddings_template'].clone()
+        rtg_slot_index = scene_enc['rtg_slot_index']
+        if rtg_slot_index is not None:
+            stacked_embeddings_template[:, :, rtg_slot_index, :] = rtg_embeddings
+        stacked_embeddings = self.embed_ln(
+            stacked_embeddings_template.reshape(batch_size, -1, self.cfg_model.hidden_dim)
+        )
 
         return {
             'stacked_embeddings': stacked_embeddings,
+            'stacked_embeddings_template': scene_enc['stacked_embeddings_template'],
             'encoder_embeddings': scene_enc['encoder_embeddings'],
             'src_key_padding_mask': scene_enc['src_key_padding_mask'],
+            'existence_mask_flat': existence_mask,
+            'positional_embeddings': positional_embeddings,
+            'rtg_slot_index': rtg_slot_index,
         }

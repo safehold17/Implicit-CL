@@ -101,7 +101,7 @@ def sample_tilted_rtg_side_channel_impl(
     stage_tag: int = _SIDE_CHANNEL_RTG_STAGE_TAG,
 ) -> np.ndarray:
     """Sample a tilted RTG side-channel without mutating baseline RTG writeback."""
-    logits_3 = rtg_logits_row.reshape(
+    logits_3 = rtg_logits_row.to(dtype=torch.float32).reshape(
         teacher.rtg_discretization,
         teacher.num_reward_components,
     )
@@ -153,28 +153,37 @@ def decode_rtg_jobs_batched_impl(
         }
 
     device = rtg_logits.device
-    env_idx = np.asarray(decode_meta["env_idx"], dtype=np.int64)
-    veh_id = np.asarray(decode_meta["veh_id"], dtype=np.int64)
-    key_scale = max(1, int(veh_id.max(initial=0)) + 1)
-    cache_keys_t = torch.as_tensor(
-        env_idx * key_scale + veh_id,
-        dtype=torch.long,
-        device=device,
-    )
+    env_idx_t = decode_meta.get("env_idx_t")
+    if env_idx_t is None:
+        env_idx_t = torch.as_tensor(decode_meta["env_idx"], dtype=torch.long, device=device)
+    else:
+        env_idx_t = env_idx_t.to(device=device, dtype=torch.long)
+    veh_id_t = decode_meta.get("veh_id_t")
+    if veh_id_t is None:
+        veh_id_t = torch.as_tensor(decode_meta["veh_id"], dtype=torch.long, device=device)
+    else:
+        veh_id_t = veh_id_t.to(device=device, dtype=torch.long)
+    key_scale = max(1, int(veh_id_t.max().item()) + 1)
+    cache_keys_t = env_idx_t * key_scale + veh_id_t
     unique_cache_keys, inverse_t = torch.unique(
         cache_keys_t,
         sorted=True,
         return_inverse=True,
     )
-    unique_row_indices_t = torch.empty(
+    unique_row_indices_t = torch.full(
         (unique_cache_keys.shape[0],),
+        fill_value=cache_keys_t.shape[0],
         dtype=torch.long,
         device=device,
     )
-    for row_idx in range(int(cache_keys_t.shape[0]) - 1, -1, -1):
-        unique_row_indices_t[inverse_t[row_idx]] = row_idx
-    unique_row_indices = unique_row_indices_t.detach().cpu().numpy()
-    inverse = inverse_t.detach().cpu().numpy()
+    row_indices_t = torch.arange(cache_keys_t.shape[0], dtype=torch.long, device=device)
+    unique_row_indices_t.scatter_reduce_(
+        0,
+        inverse_t,
+        row_indices_t,
+        reduce="amin",
+        include_self=True,
+    )
 
     unique_job_idx = decode_meta.get("job_idx_t")
     unique_idx_in_model = decode_meta.get("idx_in_model_t")
@@ -186,60 +195,98 @@ def decode_rtg_jobs_batched_impl(
     unique_job_idx = unique_job_idx[unique_row_indices_t]
     unique_idx_in_model = unique_idx_in_model[unique_row_indices_t]
     unique_token_index = unique_token_index[unique_row_indices_t]
-    flat_rtg_logits = rtg_logits[unique_job_idx, unique_idx_in_model, unique_token_index].reshape(
-        -1,
-        teacher.rtg_discretization,
-        teacher.num_reward_components,
-    )
+    flat_rtg_logits = rtg_logits[
+        unique_job_idx,
+        unique_idx_in_model,
+        unique_token_index,
+    ].reshape(-1, teacher.rtg_discretization, teacher.num_reward_components).to(dtype=torch.float32)
+    goal_tilt_t = decode_meta.get("goal_tilt_t")
+    if goal_tilt_t is None:
+        goal_tilt_t = torch.as_tensor(decode_meta["goal_tilt"], dtype=torch.float32, device=device)
+    else:
+        goal_tilt_t = goal_tilt_t.to(device=device, dtype=torch.float32)
+    veh_tilt_t = decode_meta.get("veh_tilt_t")
+    if veh_tilt_t is None:
+        veh_tilt_t = torch.as_tensor(decode_meta["veh_tilt"], dtype=torch.float32, device=device)
+    else:
+        veh_tilt_t = veh_tilt_t.to(device=device, dtype=torch.float32)
+    road_tilt_t = decode_meta.get("road_tilt_t")
+    if road_tilt_t is None:
+        road_tilt_t = torch.as_tensor(decode_meta["road_tilt"], dtype=torch.float32, device=device)
+    else:
+        road_tilt_t = road_tilt_t.to(device=device, dtype=torch.float32)
     flat_tilt_logits = _build_flat_tilt_logits(
         teacher=teacher,
-        goal_tilt=decode_meta["goal_tilt"][unique_row_indices],
-        veh_tilt=decode_meta["veh_tilt"][unique_row_indices],
-        road_tilt=decode_meta["road_tilt"][unique_row_indices],
+        goal_tilt=goal_tilt_t[unique_row_indices_t],
+        veh_tilt=veh_tilt_t[unique_row_indices_t],
+        road_tilt=road_tilt_t[unique_row_indices_t],
         dtype=flat_rtg_logits.dtype,
         device=device,
     )
     if getattr(teacher, "policy_reweighting_target", "rtg") == "rtg":
-        delayed_scale_all = np.asarray(
-            decode_meta.get(
-                "delayed_scale",
-                np.ones((decode_meta["job_idx"].shape[0],), dtype=np.float32),
-            ),
-            dtype=np.float32,
-        )
-        delayed_active_all = np.asarray(
-            decode_meta.get(
-                "delayed_active",
-                np.zeros((decode_meta["job_idx"].shape[0],), dtype=np.bool_),
-            ),
-            dtype=np.bool_,
-        )
-        unique_delayed_scale = np.ones(
-            (unique_row_indices.shape[0],),
-            dtype=np.float32,
-        )
-        unique_delayed_active = np.zeros(
-            (unique_row_indices.shape[0],),
-            dtype=np.bool_,
-        )
-        for row_idx, unique_idx in enumerate(inverse):
-            if not delayed_active_all[row_idx]:
-                continue
-            unique_delayed_scale[int(unique_idx)] = float(delayed_scale_all[row_idx])
-            unique_delayed_active[int(unique_idx)] = True
-        unique_scale_t = torch.as_tensor(
-            np.where(unique_delayed_active, unique_delayed_scale, 1.0),
-            dtype=flat_rtg_logits.dtype,
+        delayed_scale_t = decode_meta.get("delayed_scale_t")
+        if delayed_scale_t is None:
+            delayed_scale_t = torch.as_tensor(
+                decode_meta.get(
+                    "delayed_scale",
+                    np.ones((cache_keys_t.shape[0],), dtype=np.float32),
+                ),
+                dtype=torch.float32,
+                device=device,
+            )
+        else:
+            delayed_scale_t = delayed_scale_t.to(device=device, dtype=torch.float32)
+        delayed_active_t = decode_meta.get("delayed_active_t")
+        if delayed_active_t is None:
+            delayed_active_t = torch.as_tensor(
+                decode_meta.get(
+                    "delayed_active",
+                    np.zeros((cache_keys_t.shape[0],), dtype=np.bool_),
+                ),
+                dtype=torch.bool,
+                device=device,
+            )
+        else:
+            delayed_active_t = delayed_active_t.to(device=device, dtype=torch.bool)
+        unique_scale_t = torch.ones(
+            (unique_row_indices_t.shape[0],),
+            dtype=torch.float32,
             device=device,
         )
+        active_row_indices = torch.nonzero(delayed_active_t, as_tuple=False).flatten()
+        if active_row_indices.numel() > 0:
+            active_unique_indices = inverse_t[active_row_indices]
+            unique_active_row_indices = torch.full(
+                (unique_row_indices_t.shape[0],),
+                fill_value=-1,
+                dtype=torch.long,
+                device=device,
+            )
+            unique_active_row_indices.scatter_reduce_(
+                0,
+                active_unique_indices,
+                active_row_indices,
+                reduce="amax",
+                include_self=True,
+            )
+            active_unique_mask = unique_active_row_indices >= 0
+            unique_scale_t[active_unique_mask] = delayed_scale_t[
+                unique_active_row_indices[active_unique_mask]
+            ]
         flat_rtg_logits = flat_rtg_logits * unique_scale_t.view(-1, 1, 1)
+    step_t_t = decode_meta.get("step_t_t")
+    if step_t_t is None:
+        step_t_t = torch.as_tensor(decode_meta["step_t"], dtype=torch.long, device=device)
+    else:
+        step_t_t = step_t_t.to(device=device, dtype=torch.long)
+    unique_row_indices_np = unique_row_indices_t.detach().cpu().numpy()
     discrete_unique = _sample_rtg_indices(
         teacher=teacher,
         flat_rtg_logits=flat_rtg_logits,
         flat_tilt_logits=flat_tilt_logits,
-        sampling_seed=decode_meta["sampling_seed"][unique_row_indices],
-        step_t=decode_meta["step_t"][unique_row_indices],
-        veh_id=decode_meta["veh_id"][unique_row_indices],
+        sampling_seed=decode_meta["sampling_seed"][unique_row_indices_np],
+        step_t=step_t_t[unique_row_indices_t].detach().cpu().numpy(),
+        veh_id=veh_id_t[unique_row_indices_t].detach().cpu().numpy(),
     )
     continuous_unique = _undiscretize_rtg_indices_batched(
         teacher=teacher,
@@ -261,12 +308,17 @@ def decode_rtg_jobs_batched_impl(
     batched_data["agent"].rtgs[write_batch_idx, write_idx_in_model, write_token_index, 1] = write_discrete[:, 1]
     batched_data["agent"].rtgs[write_batch_idx, write_idx_in_model, write_token_index, 2] = write_discrete[:, 2]
 
-    ordered_unique_indices = np.argsort(unique_row_indices)
-    sorted_row_indices = unique_row_indices[ordered_unique_indices]
-    sorted_job_idx = np.asarray(decode_meta["job_idx"], dtype=np.int64)[sorted_row_indices]
-    sorted_veh_id = np.asarray(decode_meta["veh_id"], dtype=np.int64)[sorted_row_indices]
+    ordered_unique_indices_t = torch.argsort(unique_row_indices_t)
+    sorted_row_indices_t = unique_row_indices_t[ordered_unique_indices_t]
+    job_idx_t = decode_meta.get("job_idx_t")
+    if job_idx_t is None:
+        job_idx_t = torch.as_tensor(decode_meta["job_idx"], dtype=torch.long, device=device)
+    else:
+        job_idx_t = job_idx_t.to(device=device, dtype=torch.long)
+    sorted_job_idx = job_idx_t[sorted_row_indices_t].detach().cpu().numpy().astype(np.int64, copy=False)
+    sorted_veh_id = veh_id_t[sorted_row_indices_t].detach().cpu().numpy().astype(np.int64, copy=False)
     sorted_values = (
-        continuous_unique[torch.as_tensor(ordered_unique_indices, dtype=torch.long, device=continuous_unique.device)]
+        continuous_unique[ordered_unique_indices_t]
         .detach()
         .cpu()
         .numpy()
