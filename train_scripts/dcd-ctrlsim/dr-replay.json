@@ -3,7 +3,7 @@
     "env_name": ["Nocturne-CtrlSim-v0"],
     "ued_algo": ["domain_randomization"],
     "num_processes": [32],
-    "num_env_steps": [32768000],
+    "num_env_steps": [204800000],
     "seed": [123],
 
     "__note1__": ["learning parameters"],
@@ -12,7 +12,7 @@
     "use_gae": [true],
     "gae_lambda": [0.95],
     "handle_timelimits": [false],
-    "num_steps": [512],
+    "num_steps": [256],
     "ppo_epoch": [10],
     "num_mini_batch": [32],
     "recurrent_agent": [false],
@@ -28,7 +28,7 @@
     "use_plr": [false],
     "level_replay_prob": [0.5],
     "level_replay_rho": [0.5],
-    "level_replay_seed_buffer_size": [11520],
+    "level_replay_seed_buffer_size": [8000],
     "level_replay_strategy": ["value_l1"],
     "level_replay_score_transform": ["rank"],
     "level_replay_temperature": [0.3],
@@ -50,16 +50,16 @@
 
     "__note5__": ["warmup parameters"],
     "warmup_opponent_disable_ratio": [0.0],
-    "warmup_opponent_replay_ratio": [0.1],
+    "warmup_opponent_replay_ratio": [1.0],
 
     "__note6__": ["logging parameters"],
     "verbose": [false],
     "test_env_names": [""],
     "log_plr_buffer_stats": [false],
-    "screenshot_interval": [10000],
-    "log_interval": [10000],
-    "checkpoint_interval": [100],
-    "archive_interval": [100],
+    "screenshot_interval": [1000000],
+    "log_interval": [1000000],
+    "checkpoint_interval": [1000],
+    "archive_interval": [1000],
 
     "__note7__": ["student reward setup"],
     "use_approaching_goal" : [true],
@@ -95,6 +95,8 @@
 
     "__note11__": ["clearml"],
     "use_clearml": ["true"],
-    "clearml_task": ["dcd-ctrlsim"]
+    "clearml_task": ["dcd-ctrlsim"],
+    "clearml_monitor_only": [false],
+    "local_tensorboard": [false]
   }
 }
