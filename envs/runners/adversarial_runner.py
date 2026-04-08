@@ -841,11 +841,15 @@ class AdversarialRunner(object):
                       level_sampler=None, 
                       update_level_sampler=False,
                       discard_grad=False, 
+                      sample_only=False,
                       edit_level=False,
                       num_edits=0, 
                       fixed_seeds=None,
                       kl_dict=None,
                       update_agent_separately=False):
+        if sample_only and discard_grad:
+            raise ValueError("sample_only and discard_grad are mutually exclusive")
+
         args = self.args
         plr_runtime_enabled = self.plr_runtime_enabled
         if is_env:
@@ -1102,36 +1106,79 @@ class AdversarialRunner(object):
 
             # Update level sampler and remove any ejected seeds from level store
             if not update_agent_separately:
-                if plr_runtime_enabled and level_sampler and update_level_sampler:
-                    level_sampler.update_with_rollouts(agent.storage)
+                if sample_only:
+                    rollout_info.update(
+                        self._finalize_sample_only_update(
+                            agent=agent,
+                            level_sampler=level_sampler,
+                            update_level_sampler=update_level_sampler,
+                        )
+                    )
+                else:
+                    if plr_runtime_enabled and level_sampler and update_level_sampler:
+                        level_sampler.update_with_rollouts(agent.storage)
 
-                value_loss, action_loss, dist_entropy, info = agent.update(
-                    discard_grad=discard_grad,
-                    kl_dict=kl_dict,
-                    current_update=self.num_updates,
-                    total_updates=self.total_updates,
-                )
+                    value_loss, action_loss, dist_entropy, info = agent.update(
+                        discard_grad=discard_grad,
+                        kl_dict=kl_dict,
+                        current_update=self.num_updates,
+                        total_updates=self.total_updates,
+                    )
 
-                if plr_runtime_enabled and level_sampler and update_level_sampler:
-                    level_sampler.after_update()
-                
-                if 'kl_loss' in info.keys():
-                    kl_loss = info.pop('kl_loss')
-                    rollout_info.update({'kl_loss': kl_loss})
-                if 'ego_ctrlsim_kl_loss' in info.keys():
-                    ego_ctrlsim_kl_loss = info.pop('ego_ctrlsim_kl_loss')
-                    rollout_info.update({'ego_ctrlsim_kl_loss': ego_ctrlsim_kl_loss})
+                    if plr_runtime_enabled and level_sampler and update_level_sampler:
+                        level_sampler.after_update()
+                    
+                    if 'kl_loss' in info.keys():
+                        kl_loss = info.pop('kl_loss')
+                        rollout_info.update({'kl_loss': kl_loss})
+                    if 'ego_ctrlsim_kl_loss' in info.keys():
+                        ego_ctrlsim_kl_loss = info.pop('ego_ctrlsim_kl_loss')
+                        rollout_info.update({'ego_ctrlsim_kl_loss': ego_ctrlsim_kl_loss})
 
-                rollout_info.update({
-                    'value_loss': value_loss,
-                    'action_loss': action_loss,
-                    'dist_entropy': dist_entropy,
-                    'update_info': info,
-                })
+                    rollout_info.update({
+                        'value_loss': value_loss,
+                        'action_loss': action_loss,
+                        'dist_entropy': dist_entropy,
+                        'update_info': info,
+                    })
 
-                # Compute LZ complexity of action trajectories
-                if args.log_action_complexity:
-                    rollout_info.update({'action_complexity': agent.storage.get_action_complexity()})
+                    # Compute LZ complexity of action trajectories
+                    if args.log_action_complexity:
+                        rollout_info.update({'action_complexity': agent.storage.get_action_complexity()})
+
+        return rollout_info
+
+    def _finalize_sample_only_update(
+        self,
+        agent,
+        level_sampler=None,
+        update_level_sampler=False,
+        external_scores=None,
+    ):
+        """Finalize a sample-only rollout without entering PPO update."""
+        plr_runtime_enabled = self.plr_runtime_enabled
+
+        if plr_runtime_enabled and level_sampler and update_level_sampler:
+            level_sampler.update_with_rollouts(
+                agent.storage,
+                external_scores=external_scores,
+            )
+
+        agent.storage.after_update()
+
+        if plr_runtime_enabled and level_sampler and update_level_sampler:
+            level_sampler.after_update()
+
+        rollout_info = {
+            'value_loss': None,
+            'action_loss': None,
+            'dist_entropy': None,
+            'update_info': {},
+            'sample_only': True,
+        }
+
+        if self.args.log_action_complexity:
+            rollout_info.update({'action_complexity': agent.storage.get_action_complexity()})
 
         return rollout_info
     
@@ -1140,9 +1187,21 @@ class AdversarialRunner(object):
                                  level_sampler=None, 
                                  update_level_sampler=False,
                                  discard_grad=False,
+                                 sample_only=False,
                                  kl_dict=None,
                                  external_scores=None):
+        if sample_only and discard_grad:
+            raise ValueError("sample_only and discard_grad are mutually exclusive")
+
         plr_runtime_enabled = self.plr_runtime_enabled
+
+        if sample_only:
+            return self._finalize_sample_only_update(
+                agent=agent,
+                level_sampler=level_sampler,
+                update_level_sampler=update_level_sampler,
+                external_scores=external_scores,
+            )
 
         # Update level sampler and remove any ejected seeds level store
         if plr_runtime_enabled and level_sampler and update_level_sampler:
@@ -1254,14 +1313,15 @@ class AdversarialRunner(object):
         if plr_runtime_enabled and self.is_training:
             level_replay = self._sample_replay_decision()
 
-        # Discard student gradients if not level replay (sampling new levels)
+        # Use sample-only updates when scoring newly sampled levels without PPO.
         student_discard_grad = False
+        student_sample_only = False
         no_exploratory_grad_updates = \
             vars(args).get('no_exploratory_grad_updates', False)
         if plr_runtime_enabled and (not level_replay) and no_exploratory_grad_updates:
-            student_discard_grad = True
+            student_sample_only = True
 
-        if self.is_training and not student_discard_grad:
+        if self.is_training and not student_discard_grad and not student_sample_only:
             self.student_grad_updates += 1
 
         # Generate a batch of adversarial environments
@@ -1294,6 +1354,7 @@ class AdversarialRunner(object):
             level_sampler=level_sampler,
             update_level_sampler=is_updateable,
             discard_grad=student_discard_grad,
+            sample_only=student_sample_only,
             kl_dict=kl_dict_agent,
             update_agent_separately=self.use_accel_paired)
         merge_nocturne_first_done_infos(agent_info)
@@ -1333,6 +1394,7 @@ class AdversarialRunner(object):
                 level_sampler=level_sampler,
                 update_level_sampler=is_updateable,
                 discard_grad=student_discard_grad,
+                sample_only=student_sample_only,
                 kl_dict=kl_dict_adv_agent)
             merge_nocturne_first_done_infos(adversary_agent_info)
             
@@ -1349,6 +1411,7 @@ class AdversarialRunner(object):
                 level_sampler=None,
                 update_level_sampler=False,
                 discard_grad=student_discard_grad,
+                sample_only=student_sample_only,
                 kl_dict=None,
                 update_agent_separately=self.use_accel_paired
             )
@@ -1371,6 +1434,7 @@ class AdversarialRunner(object):
                                  level_sampler=level_sampler, 
                                  update_level_sampler=is_updateable,
                                  discard_grad=student_discard_grad,
+                                 sample_only=student_sample_only,
                                  kl_dict=kl_dict_agent,
                                  external_scores=external_scores)
             
@@ -1392,6 +1456,7 @@ class AdversarialRunner(object):
                                  level_sampler=level_sampler, 
                                  update_level_sampler=is_updateable,
                                  discard_grad=student_discard_grad,
+                                 sample_only=student_sample_only,
                                  kl_dict=kl_dict_adv_agent,
                                  external_scores=external_scores)
             
@@ -1467,7 +1532,7 @@ class AdversarialRunner(object):
                     level_sampler=level_sampler,
                     update_level_sampler=is_updateable,
                     update_agent_separately=self.use_accel_paired,
-                    discard_grad=True)
+                    sample_only=True)
                 merge_nocturne_first_done_infos(agent_info_edited_level)
                 
                 if self.use_accel_paired:
@@ -1611,13 +1676,25 @@ class AdversarialRunner(object):
         })
 
         if args.log_grad_norm:
-            agent_grad_norm = np.mean(agent_info['update_info']['grad_norms'])
-            adversary_grad_norm = 0
-            adversary_env_grad_norm = 0
+            def _get_mean_grad_norm(rollout_info):
+                """Return the logged grad norm mean when available."""
+                if rollout_info.get('sample_only'):
+                    return None
+
+                update_info = rollout_info.get('update_info', {})
+                grad_norms = update_info.get('grad_norms')
+                if not grad_norms:
+                    return None
+
+                return np.mean(grad_norms)
+
+            agent_grad_norm = _get_mean_grad_norm(agent_info)
+            adversary_grad_norm = None
+            adversary_env_grad_norm = None
             if self.is_paired:
-                adversary_grad_norm = np.mean(adversary_agent_info['update_info']['grad_norms'])
+                adversary_grad_norm = _get_mean_grad_norm(adversary_agent_info)
             if self.is_training_env:
-                adversary_env_grad_norm = np.mean(adversary_env_info['update_info']['grad_norms'])
+                adversary_env_grad_norm = _get_mean_grad_norm(adversary_env_info)
             stats.update({
                 'agent_grad_norm': agent_grad_norm,
                 'adversary_grad_norm': adversary_grad_norm,
