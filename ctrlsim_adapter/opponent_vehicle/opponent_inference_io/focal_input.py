@@ -16,6 +16,33 @@ from batch_inference.batch_ipc.arrays import pack_ragged_int_lists
 from ..step_tensor_context import build_policy_step_tensor_context
 from .prepare_inference_payload import get_control_vehicle_queue
 
+
+def _get_or_create_focal_buffer(
+    adapter: Any,
+    name: str,
+    shape: Tuple[int, ...],
+    dtype: np.dtype,
+) -> np.ndarray:
+    """获取 focal 路径复用缓冲区。 / Get a reusable numpy buffer for the focal-input path.
+
+    focal batch 构造会频繁创建大块中间数组，例如 gathered motion 张量和道路局部坐标缓冲区。
+    该函数把这些数组统一挂到 adapter 级缓存上，允许相同 layout 在相邻 step 中复用内存。
+
+    Focal-batch construction repeatedly creates large intermediate arrays such as gathered
+    motion tensors and local-road buffers. This helper stores them in adapter-level caches
+    so adjacent steps with the same layout can reuse the same memory.
+    """
+    cache = getattr(adapter, "_batch_prepare_cache", None)
+    if cache is None:
+        cache = {}
+        adapter._batch_prepare_cache = cache
+    arr = cache.get(name)
+    if arr is None or arr.shape != shape or arr.dtype != dtype:
+        arr = np.empty(shape, dtype=dtype)
+        cache[name] = arr
+    return arr
+
+
 def _apply_se2_transform_batched_np(
     coordinates: np.ndarray,
     translation: np.ndarray,
@@ -253,6 +280,7 @@ def _build_focal_group_plans(
 
 
 def _select_roads_for_focals_batched(
+    adapter: Any,
     rl_cfg: Any,
     road_points_src: np.ndarray,
     road_types_src: np.ndarray,
@@ -270,14 +298,20 @@ def _select_roads_for_focals_batched(
     """
     batch_size = int(translation_xy.shape[0])
     max_roads = int(rl_cfg.max_num_road_polylines)
-    final_road_points = np.zeros(
-        (batch_size, max_roads, *road_points_src.shape[1:]),
-        dtype=road_points_src.dtype,
+    final_road_points = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_final_road_points",
+        shape=(batch_size, max_roads, *road_points_src.shape[1:]),
+        dtype=np.dtype(road_points_src.dtype),
     )
-    final_road_types = -np.ones(
-        (batch_size, max_roads, *road_types_src.shape[1:]),
-        dtype=road_types_src.dtype,
+    final_road_points.fill(0)
+    final_road_types = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_final_road_types",
+        shape=(batch_size, max_roads, *road_types_src.shape[1:]),
+        dtype=np.dtype(road_types_src.dtype),
     )
+    final_road_types.fill(-1)
     if max_roads <= 0 or int(road_points_src.shape[0]) == 0:
         return final_road_points, final_road_types
 
@@ -287,19 +321,43 @@ def _select_roads_for_focals_batched(
         road_delta = road_points_src[None, :, :, :2] - translation_xy[:, None, None, :]
         road_dist_sq = np.sum(road_delta * road_delta, axis=-1) * road_valid_mask[None, :, :]
         selected_indices = np.argsort(np.max(road_dist_sq, axis=2), axis=1)[:, :max_roads]
-        selected_road_points = road_points_src[selected_indices]
-        selected_road_types = road_types_src[selected_indices]
+        selected_road_points = _get_or_create_focal_buffer(
+            adapter,
+            name="focal_selected_road_points",
+            shape=(batch_size, max_roads, *road_points_src.shape[1:]),
+            dtype=np.dtype(road_points_src.dtype),
+        )
+        selected_road_types = _get_or_create_focal_buffer(
+            adapter,
+            name="focal_selected_road_types",
+            shape=(batch_size, max_roads, *road_types_src.shape[1:]),
+            dtype=np.dtype(road_types_src.dtype),
+        )
+        np.take(road_points_src, selected_indices, axis=0, out=selected_road_points)
+        np.take(road_types_src, selected_indices, axis=0, out=selected_road_types)
     else:
-        selected_road_points = np.broadcast_to(
-            road_points_src[None, :, :, :],
-            (batch_size, num_roads, *road_points_src.shape[1:]),
-        ).copy()
-        selected_road_types = np.broadcast_to(
-            road_types_src[None, :, :],
-            (batch_size, num_roads, *road_types_src.shape[1:]),
-        ).copy()
+        selected_road_points = _get_or_create_focal_buffer(
+            adapter,
+            name="focal_selected_road_points",
+            shape=(batch_size, num_roads, *road_points_src.shape[1:]),
+            dtype=np.dtype(road_points_src.dtype),
+        )
+        selected_road_types = _get_or_create_focal_buffer(
+            adapter,
+            name="focal_selected_road_types",
+            shape=(batch_size, num_roads, *road_types_src.shape[1:]),
+            dtype=np.dtype(road_types_src.dtype),
+        )
+        selected_road_points[:] = road_points_src[None, :, :, :]
+        selected_road_types[:] = road_types_src[None, :, :]
 
-    normalized_road_points = selected_road_points.copy()
+    normalized_road_points = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_normalized_road_points",
+        shape=selected_road_points.shape,
+        dtype=np.dtype(selected_road_points.dtype),
+    )
+    np.copyto(normalized_road_points, selected_road_points)
     normalized_road_points[:, :, :, :2] = _apply_se2_transform_batched_np(
         coordinates=normalized_road_points[:, :, :, :2],
         translation=translation_xy[:, None, None, :],
@@ -364,8 +422,20 @@ def _build_flat_focal_layout_from_plans(
     rl_cfg = policy.cfg_rl_waymo
     max_agents = int(rl_cfg.max_num_agents)
     batch_size = len(plans)
-    selected_indices = np.zeros((batch_size, max_agents), dtype=np.int64)
-    selected_mask = np.zeros((batch_size, max_agents), dtype=np.bool_)
+    selected_indices = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_selected_indices",
+        shape=(batch_size, max_agents),
+        dtype=np.dtype(np.int64),
+    )
+    selected_indices.fill(0)
+    selected_mask = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_selected_mask",
+        shape=(batch_size, max_agents),
+        dtype=np.dtype(np.bool_),
+    )
+    selected_mask.fill(False)
     for batch_idx, plan in enumerate(plans):
         row_indices = plan["selected_agent_indices"]
         count = min(int(row_indices.shape[0]), max_agents)
@@ -374,12 +444,48 @@ def _build_flat_focal_layout_from_plans(
         selected_indices[batch_idx, :count] = row_indices[:count]
         selected_mask[batch_idx, :count] = True
 
-    gathered_agent_states = ag_states[selected_indices].copy()
-    gathered_agent_types = ag_types[selected_indices].copy()
-    gathered_actions = actions_values[selected_indices].copy()
-    gathered_rtgs = rtgs_values[selected_indices].copy()
-    gathered_goals = goals_step[selected_indices].copy()
-    gathered_moving_mask = moving_agent_mask[selected_indices].copy()
+    gathered_agent_states = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_gathered_agent_states",
+        shape=(batch_size, max_agents, *ag_states.shape[1:]),
+        dtype=np.dtype(ag_states.dtype),
+    )
+    gathered_agent_types = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_gathered_agent_types",
+        shape=(batch_size, max_agents, *ag_types.shape[1:]),
+        dtype=np.dtype(ag_types.dtype),
+    )
+    gathered_actions = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_gathered_actions",
+        shape=(batch_size, max_agents, *actions_values.shape[1:]),
+        dtype=np.dtype(actions_values.dtype),
+    )
+    gathered_rtgs = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_gathered_rtgs",
+        shape=(batch_size, max_agents, *rtgs_values.shape[1:]),
+        dtype=np.dtype(rtgs_values.dtype),
+    )
+    gathered_goals = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_gathered_goals",
+        shape=(batch_size, max_agents, *goals_step.shape[1:]),
+        dtype=np.dtype(goals_step.dtype),
+    )
+    gathered_moving_mask = _get_or_create_focal_buffer(
+        adapter,
+        name="focal_gathered_moving_mask",
+        shape=(batch_size, max_agents),
+        dtype=np.dtype(np.bool_),
+    )
+    np.take(ag_states, selected_indices, axis=0, out=gathered_agent_states)
+    np.take(ag_types, selected_indices, axis=0, out=gathered_agent_types)
+    np.take(actions_values, selected_indices, axis=0, out=gathered_actions)
+    np.take(rtgs_values, selected_indices, axis=0, out=gathered_rtgs)
+    np.take(goals_step, selected_indices, axis=0, out=gathered_goals)
+    np.take(moving_agent_mask, selected_indices, axis=0, out=gathered_moving_mask)
 
     invalid_mask = ~selected_mask
     if np.any(invalid_mask):
@@ -433,6 +539,7 @@ def _build_flat_focal_layout_from_plans(
         )
 
     gathered_road_points, gathered_road_types = _select_roads_for_focals_batched(
+        adapter=adapter,
         rl_cfg=rl_cfg,
         road_points_src=road_points_src,
         road_types_src=road_types_src,

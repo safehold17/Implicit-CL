@@ -30,8 +30,8 @@ from .schema import (
     PreparedPayload,
 )
 from .shared_memory import (
-    close_and_unlink_shared_memory,
     pack_motion_array_to_shared_memory,
+    release_shared_memory_handle,
     should_use_shared_memory,
     unpack_motion_array_from_shared_memory,
 )
@@ -113,9 +113,7 @@ def _unpack_motion_batches(
         for field_name in MOTION_FIELD_NAMES:
             payload_key = f"motion_{field_name}"
             if motion_storage == SHM_MOTION_STORAGE:
-                restored_array, shm_handle = unpack_motion_array_from_shared_memory(
-                    packed[payload_key]
-                )
+                restored_array, shm_handle = unpack_motion_array_from_shared_memory(packed[payload_key])
                 shm_handles.append(shm_handle)
             else:
                 restored_array = np.asarray(packed[payload_key])
@@ -123,7 +121,7 @@ def _unpack_motion_batches(
         return motion_data_np, shm_handles
     except Exception:
         for shm_handle in shm_handles:
-            close_and_unlink_shared_memory(shm_handle)
+            release_shared_memory_handle(shm_handle)
         raise
 
 
@@ -469,4 +467,4 @@ def release_prepared_payload(prepared: Optional[Dict[str, Any]]) -> None:
         return
     shm_handles = prepared.pop("_ipc_shm_handles", [])
     for shm_handle in shm_handles:
-        close_and_unlink_shared_memory(shm_handle)
+        release_shared_memory_handle(shm_handle)

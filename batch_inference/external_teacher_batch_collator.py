@@ -8,6 +8,7 @@ and decode-metadata assembly.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -21,7 +22,90 @@ from batch_inference.batch_ipc.prepared import (
     get_prepared_focal_motion_data,
     get_prepared_focal_predict_rtgs,
 )
-from utils.data import MotionData, from_numpy
+from utils.data import MotionData
+
+
+@dataclass
+class CollateBufferSet:
+    """聚合一组可复用的 collate 缓冲区。 / Aggregate one reusable collate-buffer bundle.
+
+    该结构把 host tensor 与 numpy 视图显式收敛到一起，避免使用带有魔法字符串键的
+    嵌套字典，同时把可复用范围控制在最必要的 host 侧缓冲区。
+
+    This structure keeps host tensors and numpy views together explicitly. It replaces
+    nested dictionaries keyed by magic strings while limiting reuse to the minimum
+    host-side buffers that the collator always needs.
+    """
+
+    numpy_views: Dict[str, np.ndarray] = field(default_factory=dict)
+    host_tensors: Dict[str, torch.Tensor] = field(default_factory=dict)
+
+
+def _numpy_dtype_to_torch(dtype: np.dtype) -> torch.dtype:
+    """将 numpy dtype 映射到 torch dtype。 / Map a numpy dtype to its torch counterpart.
+
+    collator 会同时维护 numpy 视图与 host/device tensor，因此需要一个统一的 dtype
+    转换入口，保证缓冲区复用时两侧类型严格一致。
+
+    The collator keeps both numpy views and host/device tensors alive at the same time,
+    so it needs one central dtype conversion path to keep reused buffers strictly aligned.
+    """
+    dtype = np.dtype(dtype)
+    if dtype == np.dtype(np.bool_):
+        return torch.bool
+    if np.issubdtype(dtype, np.integer):
+        if dtype.itemsize <= np.dtype(np.int32).itemsize:
+            return torch.int32
+        return torch.int64
+    if dtype == np.dtype(np.float64):
+        return torch.float64
+    return torch.float32
+
+def _allocate_host_collate_buffer(
+    shape: Tuple[int, ...],
+    dtype: np.dtype,
+) -> Tuple[torch.Tensor, np.ndarray]:
+    """为 collator 分配一对 host tensor/numpy 视图。 / Allocate a host tensor and its numpy view for collate reuse.
+
+    该函数创建一个可长期复用的普通 CPU tensor，并返回共享底层存储的 numpy 视图，
+    供现有的 numpy 填充逻辑直接写入。
+
+    This function creates a long-lived regular CPU tensor and returns a numpy view that
+    shares the same storage so the existing numpy-based filling path can keep writing
+    into it directly.
+    """
+    host_tensor = torch.empty(shape, dtype=_numpy_dtype_to_torch(dtype))
+    return host_tensor, host_tensor.numpy()
+
+
+def _build_motion_data_from_tensor_buffers(
+    tensor_buffers: Dict[str, torch.Tensor],
+) -> MotionData:
+    """从 tensor 缓冲区构建 MotionData。 / Build a MotionData instance from reusable tensor buffers.
+
+    这里不再经过 `from_numpy()` 中转，而是直接把已经缓存好的 tensor 组织成 MotionData，
+    以避免每个 active inference step 重复创建新的中间 tensor 对象。
+
+    This path skips `from_numpy()` and directly organizes the cached tensors into a
+    MotionData object so active inference steps do not keep recreating intermediate tensors.
+    """
+    return MotionData(
+        {
+            "agent": {
+                "agent_states": tensor_buffers["agent_states_b"],
+                "agent_types": tensor_buffers["agent_types_b"],
+                "goals": tensor_buffers["goals_b"],
+                "actions": tensor_buffers["actions_b"],
+                "rtgs": tensor_buffers["rtgs_b"],
+                "timesteps": tensor_buffers["timesteps_b"],
+                "moving_agent_mask": tensor_buffers["moving_agent_mask_b"],
+            },
+            "map": {
+                "road_points": tensor_buffers["road_points_b"],
+                "road_types": tensor_buffers["road_types_b"],
+            },
+        }
+    )
 
 
 def _concat_or_empty(parts: List[np.ndarray], *, dtype: np.dtype) -> np.ndarray:
@@ -45,27 +129,35 @@ def _resolve_token_index(raw_token_index: int, seq_len: int) -> int:
 
 
 def get_or_create_collate_buffers(
-    collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]],
+    collate_numpy_buffers: Dict[Tuple[Any, ...], CollateBufferSet],
     cache_key: Tuple[Any, ...],
     specs: Dict[str, Tuple[Tuple[int, ...], np.dtype, Any]],
-) -> Dict[str, np.ndarray]:
+) -> CollateBufferSet:
     """按固定 layout 规格获取可复用的 collate 缓冲区。
 
     Get reusable collate buffers for the fixed layout described by the given specs.
     """
     buffers = collate_numpy_buffers.get(cache_key)
     if buffers is None:
-        buffers = {}
-        for name, (shape, dtype, fill_value) in specs.items():
-            arr = np.zeros(shape, dtype=dtype)
-            if fill_value != 0:
-                arr.fill(fill_value)
-            buffers[name] = arr
+        buffers = CollateBufferSet()
         collate_numpy_buffers[cache_key] = buffers
-        return buffers
 
-    for name, (_, _, fill_value) in specs.items():
-        buffers[name].fill(fill_value)
+    host_tensors = buffers.host_tensors
+    for name, (shape, dtype, fill_value) in specs.items():
+        host_tensor = host_tensors.get(name)
+        if (
+            host_tensor is None
+            or tuple(host_tensor.shape) != tuple(shape)
+            or host_tensor.dtype != _numpy_dtype_to_torch(dtype)
+        ):
+            host_tensor, np_view = _allocate_host_collate_buffer(shape, dtype)
+            host_tensors[name] = host_tensor
+            buffers.numpy_views[name] = np_view
+        if fill_value != 0:
+            buffers.numpy_views[name].fill(fill_value)
+        else:
+            buffers.numpy_views[name].fill(0)
+
     return buffers
 
 
@@ -172,26 +264,27 @@ def build_collate_cache_key(layout: Dict[str, Any]) -> Tuple[Any, ...]:
     )
 
 
-def fill_collate_buffers(jobs: List[Dict[str, Any]], buffers: Dict[str, np.ndarray]) -> None:
+def fill_collate_buffers(jobs: List[Dict[str, Any]], buffers: CollateBufferSet) -> None:
     """把每个 job 的 batched row copy 进 collate 缓冲区。
 
     Copy each job's batched focal row into the collate buffers.
     """
+    numpy_views = buffers.numpy_views
     for batch_idx, job in enumerate(jobs):
         prepared = job["prepared"]
         focal_idx = int(job["focal_idx"])
         motion = get_prepared_focal_motion_data(prepared, focal_idx)
-        buffers["agent_states_b"][batch_idx] = motion["agent_states"]
-        buffers["agent_types_b"][batch_idx] = motion["agent_types"]
-        buffers["goals_b"][batch_idx] = motion["goals"]
-        buffers["actions_b"][batch_idx] = motion["actions"]
-        buffers["rtgs_b"][batch_idx] = motion["rtgs"]
-        buffers["timesteps_b"][batch_idx] = np.asarray(prepared["shared_timesteps"])
-        buffers["moving_agent_mask_b"][batch_idx] = motion["moving_agent_mask"]
-        buffers["road_points_b"][batch_idx] = motion["road_points"]
-        buffers["road_types_b"][batch_idx] = motion["road_types"]
+        numpy_views["agent_states_b"][batch_idx] = motion["agent_states"]
+        numpy_views["agent_types_b"][batch_idx] = motion["agent_types"]
+        numpy_views["goals_b"][batch_idx] = motion["goals"]
+        numpy_views["actions_b"][batch_idx] = motion["actions"]
+        numpy_views["rtgs_b"][batch_idx] = motion["rtgs"]
+        numpy_views["timesteps_b"][batch_idx] = np.asarray(prepared["shared_timesteps"])
+        numpy_views["moving_agent_mask_b"][batch_idx] = motion["moving_agent_mask"]
+        numpy_views["road_points_b"][batch_idx] = motion["road_points"]
+        numpy_views["road_types_b"][batch_idx] = motion["road_types"]
         seq_len = int(motion["agent_states"].shape[1])
-        buffers["token_index_per_job"][batch_idx] = _resolve_token_index(
+        numpy_views["token_index_per_job"][batch_idx] = _resolve_token_index(
             int(prepared["token_index"]),
             seq_len,
         )
@@ -411,29 +504,22 @@ def build_decode_metadata(
 
 
 def build_motion_data_from_buffers(
-    buffers: Dict[str, np.ndarray],
+    buffers: CollateBufferSet,
     device: str,
 ) -> MotionData:
     """将填充后的 numpy 缓冲区组装成 `MotionData` 并搬运到目标设备。
 
     Assemble the populated numpy buffers into `MotionData` and move it to the target device.
     """
-    batched_np = {
-        "agent": {
-            "agent_states": buffers["agent_states_b"],
-            "agent_types": buffers["agent_types_b"],
-            "goals": buffers["goals_b"],
-            "actions": buffers["actions_b"],
-            "rtgs": buffers["rtgs_b"],
-            "timesteps": buffers["timesteps_b"],
-            "moving_agent_mask": buffers["moving_agent_mask_b"],
-        },
-        "map": {
-            "road_points": buffers["road_points_b"],
-            "road_types": buffers["road_types_b"],
-        },
+    host_tensors = buffers.host_tensors
+    if str(device) == "cpu":
+        return _build_motion_data_from_tensor_buffers(host_tensors)
+
+    device_tensor_map = {
+        name: host_tensor.to(device=device)
+        for name, host_tensor in host_tensors.items()
     }
-    return MotionData(from_numpy(batched_np)).to(device)
+    return _build_motion_data_from_tensor_buffers(device_tensor_map)
 
 
 def attach_decode_meta_tensors(
@@ -446,64 +532,64 @@ def attach_decode_meta_tensors(
     """
     action_meta = decode_meta["action"]
     action_meta["job_idx_t"] = torch.as_tensor(
-        action_meta["job_idx"],
+        np.asarray(action_meta["job_idx"], dtype=np.int64),
         dtype=torch.long,
         device=device,
     )
     action_meta["idx_in_model_t"] = torch.as_tensor(
-        action_meta["idx_in_model"],
+        np.asarray(action_meta["idx_in_model"], dtype=np.int64),
         dtype=torch.long,
         device=device,
     )
     action_meta["token_index_t"] = torch.as_tensor(
-        action_meta["token_index"],
+        np.asarray(action_meta["token_index"], dtype=np.int64),
         dtype=torch.long,
         device=device,
     )
     action_meta["temperature_t"] = torch.as_tensor(
-        action_meta["temperature"],
+        np.asarray(action_meta["temperature"], dtype=np.float32),
         dtype=torch.float32,
         device=device,
     )
     action_meta["nucleus_sampling_t"] = torch.as_tensor(
-        action_meta["nucleus_sampling"],
+        np.asarray(action_meta["nucleus_sampling"], dtype=np.bool_),
         dtype=torch.bool,
         device=device,
     )
     action_meta["nucleus_threshold_t"] = torch.as_tensor(
-        action_meta["nucleus_threshold"],
+        np.asarray(action_meta["nucleus_threshold"], dtype=np.float32),
         dtype=torch.float32,
         device=device,
     )
 
     rtg_meta = decode_meta["rtg"]
     rtg_meta["job_idx_t"] = torch.as_tensor(
-        rtg_meta["job_idx"],
+        np.asarray(rtg_meta["job_idx"], dtype=np.int64),
         dtype=torch.long,
         device=device,
     )
     rtg_meta["idx_in_model_t"] = torch.as_tensor(
-        rtg_meta["idx_in_model"],
+        np.asarray(rtg_meta["idx_in_model"], dtype=np.int64),
         dtype=torch.long,
         device=device,
     )
     rtg_meta["token_index_t"] = torch.as_tensor(
-        rtg_meta["token_index"],
+        np.asarray(rtg_meta["token_index"], dtype=np.int64),
         dtype=torch.long,
         device=device,
     )
     rtg_meta["goal_tilt_t"] = torch.as_tensor(
-        rtg_meta["goal_tilt"],
+        np.asarray(rtg_meta["goal_tilt"], dtype=np.float32),
         dtype=torch.float32,
         device=device,
     )
     rtg_meta["veh_tilt_t"] = torch.as_tensor(
-        rtg_meta["veh_tilt"],
+        np.asarray(rtg_meta["veh_tilt"], dtype=np.float32),
         dtype=torch.float32,
         device=device,
     )
     rtg_meta["road_tilt_t"] = torch.as_tensor(
-        rtg_meta["road_tilt"],
+        np.asarray(rtg_meta["road_tilt"], dtype=np.float32),
         dtype=torch.float32,
         device=device,
     )
@@ -512,7 +598,7 @@ def attach_decode_meta_tensors(
 def collate_jobs_with_padding(
     jobs: List[Dict[str, Any]],
     device: str,
-    collate_numpy_buffers: Dict[Tuple[Any, ...], Dict[str, np.ndarray]],
+    collate_numpy_buffers: Dict[Tuple[Any, ...], CollateBufferSet],
 ) -> Tuple[MotionData, Dict[str, Any]]:
     """将多个 flat focal job 整理成统一 batch，并构建解码元数据。
 
@@ -531,12 +617,15 @@ def collate_jobs_with_padding(
     )
     fill_collate_buffers(jobs, buffers)
     batched_data = build_motion_data_from_buffers(buffers, device=device)
-    token_index_per_job = torch.from_numpy(buffers["token_index_per_job"])
+    token_index_per_job = buffers.host_tensors["token_index_per_job"]
     decode_meta = build_decode_metadata(
         jobs=jobs,
-        token_index_per_job=buffers["token_index_per_job"],
+        token_index_per_job=buffers.numpy_views["token_index_per_job"],
     )
-    attach_decode_meta_tensors(decode_meta=decode_meta, device=device)
+    attach_decode_meta_tensors(
+        decode_meta=decode_meta,
+        device=device,
+    )
     return batched_data, {
         "jobs": jobs,
         "token_index_per_job": token_index_per_job,
