@@ -477,6 +477,40 @@ class RolloutStorage(object):
                     self.recurrent_hidden_states[step,:].squeeze(0))
         return self.recurrent_hidden_states[step]
 
+    def _get_feed_forward_flat_views(self):
+        """Build the flattened tensor views shared by feed-forward PPO minibatches."""
+        if self.is_dict_obs:
+            obs_batch = {
+                k: self.obs[k][:-1].view(-1, *self.obs[k].size()[2:])
+                for k in self.obs.keys()
+            }
+        else:
+            obs_batch = self.obs[:-1].view(-1, *self.obs.size()[2:])
+
+        flat_views = {
+            'obs': obs_batch,
+            'recurrent_hidden_states': self.recurrent_hidden_states[:-1].view(
+                -1, self.recurrent_hidden_states.size(-1)
+            ),
+            'actions': self.actions.view(-1, self.actions.size(-1)),
+            'value_preds': self.value_preds[:-1].view(-1, 1),
+            'returns': self.returns[:-1].view(-1, 1),
+            'masks': self.masks[:-1].view(-1, 1),
+            'action_log_probs': self.action_log_probs.view(-1, 1),
+            'ego_ctrlsim_action_logits': None,
+            'ego_ctrlsim_valid': None,
+        }
+        if self.ego_ctrlsim_action_logits is not None:
+            flat_views['ego_ctrlsim_action_logits'] = (
+                self.ego_ctrlsim_action_logits.view(
+                    -1,
+                    self.ego_ctrlsim_action_logits.size(-1),
+                )
+            )
+        if self.ego_ctrlsim_valid is not None:
+            flat_views['ego_ctrlsim_valid'] = self.ego_ctrlsim_valid.view(-1, 1)
+        return flat_views
+
     def feed_forward_generator(self,
                                advantages,
                                num_mini_batch=None,
@@ -497,24 +531,27 @@ class RolloutStorage(object):
             SubsetRandomSampler(range(batch_size)),
             mini_batch_size,
             drop_last=False)
+
+        flat_views = self._get_feed_forward_flat_views()
      
         for indices in sampler:
             if self.is_dict_obs:
-                obs_batch = {k: self.obs[k][:-1].view(-1, *self.obs[k].size()[2:])[indices] for k in self.obs.keys()}
+                obs_batch = {
+                    k: flat_views['obs'][k][indices]
+                    for k in flat_views['obs'].keys()
+                }
             else:
-                obs_batch = self.obs[:-1].view(-1, *self.obs.size()[2:])[indices]
+                obs_batch = flat_views['obs'][indices]
 
-            recurrent_hidden_states_batch = self.recurrent_hidden_states[:-1].view(
-                -1, self.recurrent_hidden_states.size(-1))[indices]
+            recurrent_hidden_states_batch = flat_views['recurrent_hidden_states'][indices]
 
-            actions_batch = self.actions.view(-1,
-                                            self.actions.size(-1))[indices]
+            actions_batch = flat_views['actions'][indices]
 
-            value_preds_batch = self.value_preds[:-1].view(-1, 1)[indices]
-            return_batch = self.returns[:-1].view(-1, 1)[indices]
+            value_preds_batch = flat_views['value_preds'][indices]
+            return_batch = flat_views['returns'][indices]
 
-            masks_batch = self.masks[:-1].view(-1, 1)[indices]
-            old_action_log_probs_batch = self.action_log_probs.view(-1, 1)[indices]
+            masks_batch = flat_views['masks'][indices]
+            old_action_log_probs_batch = flat_views['action_log_probs'][indices]
             # The original tensor is flattened into a one-dimensional vector (with length inferred automatically) 
             # and reshaped into a column vector (with the second dimension equal to 1).
             if advantages is None:
@@ -523,13 +560,12 @@ class RolloutStorage(object):
                 adv_targ = advantages.view(-1, 1)[indices]
             ego_ctrlsim_action_logits_batch = None
             ego_ctrlsim_valid_batch = None
-            if self.ego_ctrlsim_action_logits is not None:
-                ego_ctrlsim_action_logits_batch = self.ego_ctrlsim_action_logits.view(
-                    -1,
-                    self.ego_ctrlsim_action_logits.size(-1),
-                )[indices]
-            if self.ego_ctrlsim_valid is not None:
-                ego_ctrlsim_valid_batch = self.ego_ctrlsim_valid.view(-1, 1)[indices]
+            if flat_views['ego_ctrlsim_action_logits'] is not None:
+                ego_ctrlsim_action_logits_batch = flat_views[
+                    'ego_ctrlsim_action_logits'
+                ][indices]
+            if flat_views['ego_ctrlsim_valid'] is not None:
+                ego_ctrlsim_valid_batch = flat_views['ego_ctrlsim_valid'][indices]
 
             if self.is_lstm: 
                 # Split into (hxs, cxs) for LSTM

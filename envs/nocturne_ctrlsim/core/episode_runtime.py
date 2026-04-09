@@ -328,6 +328,8 @@ class NocturneCtrlSimRuntime:
         if runtime_mode == "normal" and len(env.opponent_vehicle_ids) > 0:
             opponent_actions = env.opponent.apply_predictions(model_outputs)
         else:
+            if getattr(env, "opponent", None) is not None:
+                env.opponent.reset_ego_action_scale()
             opponent_actions = {}
         return self.step_post_actions(opponent_actions)
 

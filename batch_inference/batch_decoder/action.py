@@ -94,35 +94,18 @@ def decode_action_jobs_batched_impl(
         row_token_index = torch.as_tensor(decode_meta["token_index"], dtype=torch.long, device=device)
     flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index].to(dtype=torch.float32)
     if getattr(teacher, "policy_reweighting_target", "rtg") == "action":
-        delayed_scale = decode_meta.get("delayed_scale_t")
-        if delayed_scale is None:
-            delayed_scale = torch.as_tensor(
+        effective_scale = decode_meta.get("effective_scale_t")
+        if effective_scale is None:
+            effective_scale = torch.as_tensor(
                 decode_meta.get(
-                    "delayed_scale",
+                    "effective_scale",
                     np.ones((flat_logits.shape[0],), dtype=np.float32),
                 ),
                 dtype=torch.float32,
                 device=device,
             )
         else:
-            delayed_scale = delayed_scale.to(device=device, dtype=torch.float32)
-        delayed_active = decode_meta.get("delayed_active_t")
-        if delayed_active is None:
-            delayed_active = torch.as_tensor(
-                decode_meta.get(
-                    "delayed_active",
-                    np.zeros((flat_logits.shape[0],), dtype=np.bool_),
-                ),
-                dtype=torch.bool,
-                device=device,
-            )
-        else:
-            delayed_active = delayed_active.to(device=device, dtype=torch.bool)
-        effective_scale = torch.where(
-            delayed_active,
-            delayed_scale,
-            torch.ones_like(delayed_scale),
-        )
+            effective_scale = effective_scale.to(device=device, dtype=torch.float32)
         flat_logits = flat_logits * effective_scale.unsqueeze(-1)
 
     temperatures = decode_meta.get("temperature_t")

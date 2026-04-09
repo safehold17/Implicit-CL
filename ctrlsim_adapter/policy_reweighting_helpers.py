@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from ctrlsim_adapter.opponent_vehicle.discretization import (
-    undiscretize_rtg_indices,
+    undiscretize_rtgs,
 )
 
 
@@ -80,12 +80,34 @@ def recover_current_ego_rtg(
     max_rtg_road: float,
 ) -> np.ndarray:
     """Recover the current ego RTG as a continuous 3D vector."""
-    raw = _to_numpy_vector(rtg_value).reshape(3)
-    if _is_discrete_rtg(rtg_value):
-        continuous = undiscretize_rtg_indices(
-            int(raw[0]),
-            int(raw[1]),
-            int(raw[2]),
+    return recover_current_ego_rtgs(
+        _to_numpy_vector(rtg_value).reshape(1, 3),
+        rtg_discretization=rtg_discretization,
+        min_rtg_pos=min_rtg_pos,
+        max_rtg_pos=max_rtg_pos,
+        min_rtg_veh=min_rtg_veh,
+        max_rtg_veh=max_rtg_veh,
+        min_rtg_road=min_rtg_road,
+        max_rtg_road=max_rtg_road,
+    )[0]
+
+
+def recover_current_ego_rtgs(
+    rtg_values: Sequence[Sequence[float]] | np.ndarray | torch.Tensor,
+    *,
+    rtg_discretization: int,
+    min_rtg_pos: float,
+    max_rtg_pos: float,
+    min_rtg_veh: float,
+    max_rtg_veh: float,
+    min_rtg_road: float,
+    max_rtg_road: float,
+) -> np.ndarray:
+    """Recover a batch of ego RTGs as continuous 3D vectors."""
+    raw = _to_numpy_vector(rtg_values).reshape(-1, 3)
+    if _is_discrete_rtg(rtg_values):
+        continuous = undiscretize_rtgs(
+            raw,
             rtg_discretization,
             min_rtg_pos,
             max_rtg_pos,

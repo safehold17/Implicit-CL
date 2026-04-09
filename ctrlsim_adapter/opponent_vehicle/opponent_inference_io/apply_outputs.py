@@ -67,6 +67,22 @@ def _iter_flat_result_rows(
         yield int(veh_id), value_row
 
 
+def reset_ego_action_scale(adapter: Any) -> None:
+    """把 adapter 上缓存的 ego_action_scale 收口到 unity。 / Reset the adapter's cached ego_action_scale back to unity.
+
+    这个 helper 统一承载所有“当前 step 不应保留上一步 scale”的语义，包括
+    replay/disable/no-opponent 路径，以及 batch inference 返回 `None` 或 `skip`
+    的情况。这样 runtime 和 apply bridge 都只表达“需要收口”，不再各自直接写字段。
+
+    This helper owns the shared "collapse to unity" semantics for any path
+    where the current step must not retain the previous scale, including
+    replay/disable/no-opponent branches and `None`/`skip` outputs from batched
+    inference. It lets both runtime and the apply bridge express intent
+    without directly mutating the field in multiple places.
+    """
+    adapter._ego_action_scale = 1.0
+
+
 def apply_predictions(
     adapter: Any,
     model_outputs: Optional[Dict[str, Any]],
@@ -76,7 +92,7 @@ def apply_predictions(
 
     model_outputs = unpack_model_outputs(model_outputs)
     if model_outputs is None:
-        adapter._ego_action_scale = 1.0
+        reset_ego_action_scale(adapter)
         pending_actions = consume_pending_sparse_actions(adapter)
         if pending_actions is not None:
             return pending_actions
@@ -87,7 +103,7 @@ def apply_predictions(
     step_t = int(model_outputs["step_t"])
     status = str(model_outputs["status"])
     if status == "skip":
-        adapter._ego_action_scale = 1.0
+        reset_ego_action_scale(adapter)
         pending_actions = consume_pending_sparse_actions(adapter, step_t=step_t)
         if pending_actions is not None:
             return pending_actions

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from policies.autoregressive_policy import AutoregressivePolicy
+from . import opponent_inference_io as _batch_io
 from .services.policy_service import OpponentPolicyService
 from .services.reward_service import OpponentRewardService
 from .services.state_service import OpponentStateService
@@ -329,7 +330,8 @@ class CtrlSimOpponentAdapter:
     ):
         """代理双路 prepared pack 构建。 / Delegate prepared-pack construction."""
         self._ensure_services()
-        return self._state_service.prepare_step_pack(
+        return _batch_io.prepare_step_pack(
+            self,
             t,
             vehicles,
             ego_id=ego_id,
@@ -343,6 +345,17 @@ class CtrlSimOpponentAdapter:
     def apply_predictions(self, model_outputs: Optional[Dict]):
         self._ensure_services()
         return self._state_service.apply_predictions(model_outputs)
+
+    def reset_ego_action_scale(self) -> None:
+        """把缓存的 ego_action_scale 收口到 unity。 / Reset the cached ego_action_scale back to unity.
+
+        这是 runtime 层使用的轻量 facade，用于避免外层直接读写 adapter 内部字段。
+
+        This is the lightweight facade used by runtime so outer layers do not
+        directly read or write the adapter's internal scale field.
+        """
+        self._ensure_services()
+        _batch_io.reset_ego_action_scale(self)
 
     def apply_action(self, veh, action: Tuple[float, float]):
         self._ensure_services()

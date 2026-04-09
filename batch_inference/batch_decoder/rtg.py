@@ -101,32 +101,63 @@ def sample_tilted_rtg_side_channel_impl(
     stage_tag: int = _SIDE_CHANNEL_RTG_STAGE_TAG,
 ) -> np.ndarray:
     """Sample a tilted RTG side-channel without mutating baseline RTG writeback."""
-    logits_3 = rtg_logits_row.to(dtype=torch.float32).reshape(
+    continuous = sample_tilted_rtg_side_channel_batched_impl(
+        teacher=teacher,
+        flat_rtg_logits=rtg_logits_row.unsqueeze(0),
+        goal_tilt=np.asarray([goal_tilt], dtype=np.int64),
+        veh_tilt=np.asarray([veh_tilt], dtype=np.int64),
+        road_tilt=np.asarray([road_tilt], dtype=np.int64),
+        sampling_seed=np.asarray([sampling_seed], dtype=np.uint64),
+        step_t=np.asarray([step_t], dtype=np.int64),
+        veh_id=np.asarray([veh_id], dtype=np.int64),
+        stage_tag=stage_tag,
+    )
+    return continuous[0]
+
+
+def sample_tilted_rtg_side_channel_batched_impl(
+    teacher: Any,
+    flat_rtg_logits: torch.Tensor,
+    goal_tilt: np.ndarray,
+    veh_tilt: np.ndarray,
+    road_tilt: np.ndarray,
+    sampling_seed: np.ndarray,
+    step_t: np.ndarray,
+    veh_id: np.ndarray,
+    stage_tag: int = _SIDE_CHANNEL_RTG_STAGE_TAG,
+) -> np.ndarray:
+    """Sample tilted RTG side-channels for many rows without writeback side effects."""
+    row_count = int(flat_rtg_logits.shape[0])
+    if row_count == 0:
+        return np.zeros((0, teacher.num_reward_components), dtype=np.float32)
+
+    logits_3 = flat_rtg_logits.to(dtype=torch.float32).reshape(
+        row_count,
         teacher.rtg_discretization,
         teacher.num_reward_components,
     )
     tilt_logits = _build_flat_tilt_logits(
         teacher=teacher,
-        goal_tilt=np.asarray([goal_tilt], dtype=np.int64),
-        veh_tilt=np.asarray([veh_tilt], dtype=np.int64),
-        road_tilt=np.asarray([road_tilt], dtype=np.int64),
+        goal_tilt=np.asarray(goal_tilt, dtype=np.int64),
+        veh_tilt=np.asarray(veh_tilt, dtype=np.int64),
+        road_tilt=np.asarray(road_tilt, dtype=np.int64),
         dtype=logits_3.dtype,
         device=logits_3.device,
     )
     discrete = _sample_rtg_indices(
         teacher=teacher,
-        flat_rtg_logits=logits_3.unsqueeze(0),
+        flat_rtg_logits=logits_3,
         flat_tilt_logits=tilt_logits,
-        sampling_seed=np.asarray([sampling_seed], dtype=np.uint64),
-        step_t=np.asarray([step_t], dtype=np.int64),
-        veh_id=np.asarray([veh_id], dtype=np.int64),
+        sampling_seed=np.asarray(sampling_seed, dtype=np.uint64),
+        step_t=np.asarray(step_t, dtype=np.int64),
+        veh_id=np.asarray(veh_id, dtype=np.int64),
         stage_tag=stage_tag,
     )
     continuous = _undiscretize_rtg_indices_batched(
         teacher=teacher,
         discrete_idx=discrete,
     )
-    return continuous[0].detach().cpu().numpy().astype(np.float32, copy=False)
+    return continuous.detach().cpu().numpy().astype(np.float32, copy=False)
 
 
 def decode_rtg_jobs_batched_impl(
@@ -224,55 +255,30 @@ def decode_rtg_jobs_batched_impl(
         device=device,
     )
     if getattr(teacher, "policy_reweighting_target", "rtg") == "rtg":
-        delayed_scale_t = decode_meta.get("delayed_scale_t")
-        if delayed_scale_t is None:
-            delayed_scale_t = torch.as_tensor(
+        effective_scale_t = decode_meta.get("effective_scale_t")
+        if effective_scale_t is None:
+            effective_scale_t = torch.as_tensor(
                 decode_meta.get(
-                    "delayed_scale",
+                    "effective_scale",
                     np.ones((cache_keys_t.shape[0],), dtype=np.float32),
                 ),
                 dtype=torch.float32,
                 device=device,
             )
         else:
-            delayed_scale_t = delayed_scale_t.to(device=device, dtype=torch.float32)
-        delayed_active_t = decode_meta.get("delayed_active_t")
-        if delayed_active_t is None:
-            delayed_active_t = torch.as_tensor(
-                decode_meta.get(
-                    "delayed_active",
-                    np.zeros((cache_keys_t.shape[0],), dtype=np.bool_),
-                ),
-                dtype=torch.bool,
-                device=device,
-            )
-        else:
-            delayed_active_t = delayed_active_t.to(device=device, dtype=torch.bool)
+            effective_scale_t = effective_scale_t.to(device=device, dtype=torch.float32)
         unique_scale_t = torch.ones(
             (unique_row_indices_t.shape[0],),
             dtype=torch.float32,
             device=device,
         )
-        active_row_indices = torch.nonzero(delayed_active_t, as_tuple=False).flatten()
-        if active_row_indices.numel() > 0:
-            active_unique_indices = inverse_t[active_row_indices]
-            unique_active_row_indices = torch.full(
-                (unique_row_indices_t.shape[0],),
-                fill_value=-1,
-                dtype=torch.long,
-                device=device,
-            )
-            unique_active_row_indices.scatter_reduce_(
-                0,
-                active_unique_indices,
-                active_row_indices,
-                reduce="amax",
-                include_self=True,
-            )
-            active_unique_mask = unique_active_row_indices >= 0
-            unique_scale_t[active_unique_mask] = delayed_scale_t[
-                unique_active_row_indices[active_unique_mask]
-            ]
+        unique_scale_t.scatter_reduce_(
+            0,
+            inverse_t,
+            effective_scale_t,
+            reduce="amax",
+            include_self=True,
+        )
         flat_rtg_logits = flat_rtg_logits * unique_scale_t.view(-1, 1, 1)
     step_t_t = decode_meta.get("step_t_t")
     if step_t_t is None:

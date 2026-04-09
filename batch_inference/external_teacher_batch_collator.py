@@ -22,6 +22,13 @@ from batch_inference.batch_ipc.prepared import (
     get_prepared_focal_motion_data,
     get_prepared_focal_predict_rtgs,
 )
+from .external_teacher_helper import (
+    _allocate_host_collate_buffer,
+    _build_rtg_row_metadata,
+    _concat_or_empty,
+    _numpy_dtype_to_torch,
+    _resolve_token_index,
+)
 from utils.data import MotionData
 
 
@@ -40,42 +47,6 @@ class CollateBufferSet:
     numpy_views: Dict[str, np.ndarray] = field(default_factory=dict)
     host_tensors: Dict[str, torch.Tensor] = field(default_factory=dict)
 
-
-def _numpy_dtype_to_torch(dtype: np.dtype) -> torch.dtype:
-    """将 numpy dtype 映射到 torch dtype。 / Map a numpy dtype to its torch counterpart.
-
-    collator 会同时维护 numpy 视图与 host/device tensor，因此需要一个统一的 dtype
-    转换入口，保证缓冲区复用时两侧类型严格一致。
-
-    The collator keeps both numpy views and host/device tensors alive at the same time,
-    so it needs one central dtype conversion path to keep reused buffers strictly aligned.
-    """
-    dtype = np.dtype(dtype)
-    if dtype == np.dtype(np.bool_):
-        return torch.bool
-    if np.issubdtype(dtype, np.integer):
-        if dtype.itemsize <= np.dtype(np.int32).itemsize:
-            return torch.int32
-        return torch.int64
-    if dtype == np.dtype(np.float64):
-        return torch.float64
-    return torch.float32
-
-def _allocate_host_collate_buffer(
-    shape: Tuple[int, ...],
-    dtype: np.dtype,
-) -> Tuple[torch.Tensor, np.ndarray]:
-    """为 collator 分配一对 host tensor/numpy 视图。 / Allocate a host tensor and its numpy view for collate reuse.
-
-    该函数创建一个可长期复用的普通 CPU tensor，并返回共享底层存储的 numpy 视图，
-    供现有的 numpy 填充逻辑直接写入。
-
-    This function creates a long-lived regular CPU tensor and returns a numpy view that
-    shares the same storage so the existing numpy-based filling path can keep writing
-    into it directly.
-    """
-    host_tensor = torch.empty(shape, dtype=_numpy_dtype_to_torch(dtype))
-    return host_tensor, host_tensor.numpy()
 
 
 def _build_motion_data_from_tensor_buffers(
@@ -106,26 +77,6 @@ def _build_motion_data_from_tensor_buffers(
             },
         }
     )
-
-
-def _concat_or_empty(parts: List[np.ndarray], *, dtype: np.dtype) -> np.ndarray:
-    """拼接一组同 dtype 数组；若为空则返回对应 dtype 的空数组。
-
-    Concatenate a list of same-dtype arrays, or return an empty array when the list is empty.
-    """
-    if not parts:
-        return np.zeros((0,), dtype=dtype)
-    return np.concatenate(parts, axis=0).astype(dtype, copy=False)
-
-
-def _resolve_token_index(raw_token_index: int, seq_len: int) -> int:
-    """将 prepared 中的 token_index 归一化到当前序列范围内。
-
-    Normalize the prepared token index into the valid range of the current sequence length.
-    """
-    if raw_token_index < 0:
-        raw_token_index = seq_len + raw_token_index
-    return max(0, min(raw_token_index, seq_len - 1))
 
 
 def get_or_create_collate_buffers(
@@ -307,8 +258,7 @@ def build_decode_metadata(
     action_temperature_parts: List[np.ndarray] = []
     action_nucleus_sampling_parts: List[np.ndarray] = []
     action_nucleus_threshold_parts: List[np.ndarray] = []
-    action_delayed_scale_parts: List[np.ndarray] = []
-    action_delayed_active_parts: List[np.ndarray] = []
+    action_effective_scale_parts: List[np.ndarray] = []
     action_job_offsets = [0]
 
     rtg_job_idx_parts: List[np.ndarray] = []
@@ -321,8 +271,7 @@ def build_decode_metadata(
     rtg_goal_tilt_parts: List[np.ndarray] = []
     rtg_veh_tilt_parts: List[np.ndarray] = []
     rtg_road_tilt_parts: List[np.ndarray] = []
-    rtg_delayed_scale_parts: List[np.ndarray] = []
-    rtg_delayed_active_parts: List[np.ndarray] = []
+    rtg_effective_scale_parts: List[np.ndarray] = []
     rtg_job_offsets = [0]
 
     for batch_idx, job in enumerate(jobs):
@@ -380,18 +329,11 @@ def build_decode_metadata(
                     dtype=np.float32,
                 )
             )
-            action_delayed_scale_parts.append(
+            action_effective_scale_parts.append(
                 np.full(
                     (valid_action_count,),
                     delayed_scale if is_opponent_job else 1.0,
                     dtype=np.float32,
-                )
-            )
-            action_delayed_active_parts.append(
-                np.full(
-                    (valid_action_count,),
-                    bool(is_opponent_job),
-                    dtype=np.bool_,
                 )
             )
 
@@ -412,24 +354,14 @@ def build_decode_metadata(
         if valid_rtg_count <= 0:
             continue
 
-        default_tilt = tuple(int(v) for v in prepared["default_tilt"])
-        tilt_by_veh_id = prepared["tilt_by_veh_id"]
-        goal_tilt = np.zeros((valid_rtg_count,), dtype=np.int64)
-        veh_tilt = np.zeros((valid_rtg_count,), dtype=np.int64)
-        road_tilt = np.zeros((valid_rtg_count,), dtype=np.int64)
-        data_vehicle_mask = np.isin(valid_context_veh_ids, data_veh_ids)
-        delayed_scale_per_row = np.ones((valid_rtg_count,), dtype=np.float32)
-        delayed_active_per_row = np.zeros((valid_rtg_count,), dtype=np.bool_)
-        if np.any(data_vehicle_mask):
-            for row_idx, veh_id in enumerate(valid_context_veh_ids[data_vehicle_mask]):
-                goal_val, veh_val, road_val = tilt_by_veh_id.get(int(veh_id), default_tilt)
-                target_idx = np.flatnonzero(data_vehicle_mask)[row_idx]
-                goal_tilt[target_idx] = int(goal_val)
-                veh_tilt[target_idx] = int(veh_val)
-                road_tilt[target_idx] = int(road_val)
-                if is_opponent_job:
-                    delayed_scale_per_row[target_idx] = delayed_scale
-                    delayed_active_per_row[target_idx] = True
+        goal_tilt, veh_tilt, road_tilt, effective_scale_per_row = _build_rtg_row_metadata(
+            valid_context_veh_ids=valid_context_veh_ids,
+            data_veh_ids=data_veh_ids,
+            default_tilt=tuple(int(v) for v in prepared["default_tilt"]),
+            tilt_by_veh_id=prepared["tilt_by_veh_id"],
+            delayed_scale=delayed_scale,
+            is_opponent_job=is_opponent_job,
+        )
 
         rtg_job_idx_parts.append(np.full((valid_rtg_count,), batch_idx, dtype=np.int64))
         rtg_env_idx_parts.append(
@@ -447,8 +379,7 @@ def build_decode_metadata(
         rtg_goal_tilt_parts.append(goal_tilt)
         rtg_veh_tilt_parts.append(veh_tilt)
         rtg_road_tilt_parts.append(road_tilt)
-        rtg_delayed_scale_parts.append(delayed_scale_per_row)
-        rtg_delayed_active_parts.append(delayed_active_per_row)
+        rtg_effective_scale_parts.append(effective_scale_per_row)
 
     return {
         "action": {
@@ -467,13 +398,9 @@ def build_decode_metadata(
                 action_nucleus_threshold_parts,
                 dtype=np.float32,
             ),
-            "delayed_scale": _concat_or_empty(
-                action_delayed_scale_parts,
+            "effective_scale": _concat_or_empty(
+                action_effective_scale_parts,
                 dtype=np.float32,
-            ),
-            "delayed_active": _concat_or_empty(
-                action_delayed_active_parts,
-                dtype=np.bool_,
             ),
             "job_offsets": np.asarray(action_job_offsets, dtype=np.int64),
             "job_count": np.asarray([len(jobs)], dtype=np.int64),
@@ -489,13 +416,9 @@ def build_decode_metadata(
             "goal_tilt": _concat_or_empty(rtg_goal_tilt_parts, dtype=np.int64),
             "veh_tilt": _concat_or_empty(rtg_veh_tilt_parts, dtype=np.int64),
             "road_tilt": _concat_or_empty(rtg_road_tilt_parts, dtype=np.int64),
-            "delayed_scale": _concat_or_empty(
-                rtg_delayed_scale_parts,
+            "effective_scale": _concat_or_empty(
+                rtg_effective_scale_parts,
                 dtype=np.float32,
-            ),
-            "delayed_active": _concat_or_empty(
-                rtg_delayed_active_parts,
-                dtype=np.bool_,
             ),
             "job_offsets": np.asarray(rtg_job_offsets, dtype=np.int64),
             "job_count": np.asarray([len(jobs)], dtype=np.int64),
@@ -562,14 +485,9 @@ def attach_decode_meta_tensors(
         dtype=torch.float32,
         device=device,
     )
-    action_meta["delayed_scale_t"] = torch.as_tensor(
-        np.asarray(action_meta["delayed_scale"], dtype=np.float32),
+    action_meta["effective_scale_t"] = torch.as_tensor(
+        np.asarray(action_meta["effective_scale"], dtype=np.float32),
         dtype=torch.float32,
-        device=device,
-    )
-    action_meta["delayed_active_t"] = torch.as_tensor(
-        np.asarray(action_meta["delayed_active"], dtype=np.bool_),
-        dtype=torch.bool,
         device=device,
     )
 
@@ -619,14 +537,9 @@ def attach_decode_meta_tensors(
         dtype=torch.long,
         device=device,
     )
-    rtg_meta["delayed_scale_t"] = torch.as_tensor(
-        np.asarray(rtg_meta["delayed_scale"], dtype=np.float32),
+    rtg_meta["effective_scale_t"] = torch.as_tensor(
+        np.asarray(rtg_meta["effective_scale"], dtype=np.float32),
         dtype=torch.float32,
-        device=device,
-    )
-    rtg_meta["delayed_active_t"] = torch.as_tensor(
-        np.asarray(rtg_meta["delayed_active"], dtype=np.bool_),
-        dtype=torch.bool,
         device=device,
     )
 

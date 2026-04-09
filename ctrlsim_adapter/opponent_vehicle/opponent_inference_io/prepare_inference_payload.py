@@ -214,38 +214,6 @@ def should_collect_ego_ctrlsim_kl_step(
     return phase == int(kl_loss_computation_frequency) - 1
 
 
-def resolve_ego_context_owner_focal_id(
-    adapter: Any,
-    ego_id: Optional[int],
-) -> Optional[int]:
-    """Return the ego focal id when it is present in the current ctrl-sim context."""
-    if ego_id is None or adapter._policy is None:
-        return None
-    if int(ego_id) not in adapter._policy.veh_id_to_idx:
-        return None
-    return int(ego_id)
-
-
-def resolve_delayed_ego_action_scale(
-    adapter: Any,
-    t: int,
-    owner_focal_id: Optional[int],
-) -> float:
-    """Return the delayed scale exported for the current prepared payload."""
-    if owner_focal_id is None:
-        return 1.0
-    if not bool(getattr(adapter, "use_policy_reweighting", False)):
-        return 1.0
-    should_trigger = should_trigger_policy_reweighting_step(
-        t=t,
-        history_steps=int(adapter.history_steps),
-        reweighting_frequency=int(adapter.reweighting_frequency),
-    )
-    if not should_trigger:
-        return 1.0
-    return float(getattr(adapter, "_ego_action_scale", 1.0))
-
-
 def _build_prepared_payload(
     adapter: Any,
     t: int,
@@ -357,12 +325,21 @@ def prepare_step_pack(
 
         shared_context = build_step_shared_context(adapter, t)
 
-    owner_focal_id = resolve_ego_context_owner_focal_id(adapter, ego_id)
-    delayed_ego_action_scale = resolve_delayed_ego_action_scale(
-        adapter,
-        t=t,
-        owner_focal_id=owner_focal_id,
-    )
+    owner_focal_id = None
+    if ego_id is not None and adapter._policy is not None:
+        ego_id_int = int(ego_id)
+        if ego_id_int in adapter._policy.veh_id_to_idx:
+            owner_focal_id = ego_id_int
+
+    delayed_ego_action_scale = 1.0
+    if owner_focal_id is not None and bool(getattr(adapter, "use_policy_reweighting", False)):
+        should_trigger = should_trigger_policy_reweighting_step(
+            t=t,
+            history_steps=int(adapter.history_steps),
+            reweighting_frequency=int(adapter.reweighting_frequency),
+        )
+        if should_trigger:
+            delayed_ego_action_scale = float(getattr(adapter, "_ego_action_scale", 1.0))
     ego_reweight_tilt = tuple(
         int(v) for v in getattr(adapter, "_ego_reweight_tilt", (0, 0, 0))
     )

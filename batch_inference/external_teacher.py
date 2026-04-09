@@ -21,44 +21,36 @@ ctrlsim_path()
 from models.ctrl_sim import CtRLSim
 
 from .external_teacher_batch_collator import collate_jobs_with_padding
-from .batch_decoder.action import (
-    decode_action_stage_batched_impl,
-)
 from .batch_decoder.forward_batch import batch_predict_rtgs_mode as _batch_predict_rtgs_mode
 from .batch_decoder.forward_batch import forward_job_batch_impl
 from .batch_decoder import rtg as rtg_impl
 from .batch_decoder.rtg import (
     _SIDE_CHANNEL_RTG_STAGE_TAG,
-    sample_tilted_rtg_side_channel_impl,
+    sample_tilted_rtg_side_channel_batched_impl,
 )
 from .batch_ipc import pack_model_outputs, release_prepared_payload, unpack_prepared
 from .batch_ipc.prepared import (
-    get_prepared_focal_count,
     get_prepared_focal_id,
     get_prepared_focal_motion_data,
-    get_prepared_focal_predict_rtgs,
+)
+from .external_teacher_helper import (
+    _append_flat_job_views_to_env_parts,
+    _assert_required_keys,
+    _build_flat_batch_views,
+    _build_last_decode_row_by_job_and_vehicle,
+    _collect_focal_jobs,
+    _concat_or_empty_ids,
+    _concat_or_empty_values,
+    _config_get,
+    _fill_empty_ok_env_results,
+    _find_flat_rtg_value,
 )
 from ctrlsim_adapter.policy_reweighting_helpers import (
     AdversarialRTGConfig,
     AdversarialRTGRunningStats,
-    compute_ego_action_error,
-    compute_ego_action_scale,
-    recover_current_ego_rtg,
+    compute_scale_from_error,
+    recover_current_ego_rtgs,
 )
-
-def _assert_required_keys(payload: Dict[str, Any], required: Tuple[str, ...], payload_name: str) -> None:
-    missing = [key for key in required if key not in payload]
-    if missing:
-        raise ValueError(f"{payload_name} missing required keys: {missing}")
-
-
-def _config_get(source: Any, key: str, default: Any) -> Any:
-    """Read a configuration value from either a mapping or an object."""
-    if source is None:
-        return default
-    if isinstance(source, dict):
-        return source.get(key, default)
-    return getattr(source, key, default)
 
 
 def build_external_teacher_kwargs(
@@ -99,105 +91,6 @@ def build_external_teacher_kwargs(
             )
         ),
     }
-
-
-def _collect_focal_jobs(
-    per_env_prepared: List[Optional[Dict[str, Any]]],
-    results: List[Optional[Dict[str, Any]]],
-    build_empty_env_result,
-    job_type: str = "opponent",
-    return_action_logits: bool = False,
-) -> List[Dict[str, Any]]:
-    """按 env prepared 收集 flat focal jobs。
-
-    Collect flat focal jobs from the per-env prepared payloads.
-    """
-    focal_jobs: List[Dict[str, Any]] = []
-    for env_idx, prepared in enumerate(per_env_prepared):
-        if prepared is None:
-            continue
-
-        _assert_required_keys(
-            prepared,
-            ("status", "step_t", "token_index", "dead_ids"),
-            f"prepared env_idx={env_idx}",
-        )
-        status = prepared["status"]
-        if status == "skip":
-            results[env_idx] = build_empty_env_result(prepared, env_idx=env_idx, status="skip")
-            continue
-        if status != "ok":
-            raise ValueError(f"prepared env_idx={env_idx} has invalid status={status!r}")
-
-        for focal_idx in range(get_prepared_focal_count(prepared)):
-            focal_jobs.append(
-                {
-                    "env_idx": env_idx,
-                    "prepared": prepared,
-                    "focal_idx": focal_idx,
-                    "predict_rtgs": get_prepared_focal_predict_rtgs(prepared, focal_idx),
-                    "job_type": job_type,
-                    "return_action_logits": return_action_logits,
-                }
-            )
-
-    return focal_jobs
-
-
-def _fill_empty_ok_env_results(
-    per_env_prepared: List[Optional[Dict[str, Any]]],
-    results: List[Optional[Dict[str, Any]]],
-    build_empty_env_result,
-) -> None:
-    """为 status=ok 但没有任何 job 输出的 env 填充空结果。
-
-    Fill empty results for environments whose status is ok but that produced no job outputs.
-    """
-    for env_idx, prepared in enumerate(per_env_prepared):
-        if prepared is None or prepared["status"] != "ok":
-            continue
-        if results[env_idx] is None:
-            results[env_idx] = build_empty_env_result(prepared, env_idx=env_idx, status="ok")
-
-
-def _concat_or_empty_ids(parts: List[np.ndarray]) -> np.ndarray:
-    """拼接多段 flat ID 数组；若为空则返回空数组。
-
-    Concatenate flat id-array parts, or return an empty array when there are no parts.
-    """
-    if not parts:
-        return np.zeros((0,), dtype=np.int64)
-    return np.concatenate(parts, axis=0).astype(np.int64, copy=False)
-
-
-def _concat_or_empty_values(parts: List[np.ndarray], width: int) -> np.ndarray:
-    """拼接多段 flat 值矩阵；若为空则返回空矩阵。
-
-    Concatenate flat value matrices, or return an empty matrix when there are no parts.
-    """
-    if not parts:
-        return np.zeros((0, width), dtype=np.float32)
-    return np.concatenate(parts, axis=0).astype(np.float32, copy=False)
-
-
-def _find_flat_rtg_value(
-    flat_rtg_results: Dict[str, Any],
-    job_idx: int,
-    veh_id: int,
-) -> np.ndarray | None:
-    """在 flat RTG 结果中查找指定 job/veh 的连续 RTG 结果。
-
-    Find the continuous RTG result for the given job and vehicle inside the flat RTG output.
-    """
-    job_offsets = np.asarray(flat_rtg_results["job_offsets"], dtype=np.int64)
-    start = int(job_offsets[job_idx])
-    end = int(job_offsets[job_idx + 1])
-    veh_ids = np.asarray(flat_rtg_results["veh_id"], dtype=np.int64)[start:end]
-    values = np.asarray(flat_rtg_results["values"], dtype=np.float32)[start:end]
-    row_indices = np.nonzero(veh_ids == int(veh_id))[0]
-    if row_indices.size == 0:
-        return None
-    return values[int(row_indices[-1])]
 
 
 class ExternalTeacher:
@@ -298,14 +191,27 @@ class ExternalTeacher:
             decoded_prepared = self._decode_prepared_batch(per_env_prepared)
             try:
                 results: List[Optional[Dict[str, Any]]] = [None] * len(decoded_prepared)
-                focal_jobs = self._collect_focal_jobs(decoded_prepared, results)
+                focal_jobs = _collect_focal_jobs(
+                    decoded_prepared,
+                    results,
+                    self._build_empty_env_result,
+                )
 
                 if not focal_jobs:
-                    self._fill_empty_ok_env_results(decoded_prepared, results)
+                    _fill_empty_ok_env_results(
+                        decoded_prepared,
+                        results,
+                        self._build_empty_env_result,
+                    )
                     return self._pack_outputs(results)
 
-                job_outputs = self._forward_job_batch(focal_jobs)
-                env_outputs = self._aggregate_job_outputs_by_env(job_outputs, decoded_prepared, results)
+                batch_output = forward_job_batch_impl(
+                    teacher=self,
+                    jobs=focal_jobs,
+                    batch_predict_rtgs_mode_fn=_batch_predict_rtgs_mode,
+                    decode_rtg_jobs_batched_fn=rtg_impl.decode_rtg_jobs_batched_impl,
+                )
+                env_outputs = self._aggregate_job_outputs_by_env(batch_output, decoded_prepared, results)
                 return self._pack_outputs(env_outputs)
             finally:
                 for prepared in decoded_prepared:
@@ -385,83 +291,67 @@ class ExternalTeacher:
             "dead_ids": np.asarray(prepared["dead_ids"], dtype=np.int64),
         }
 
-    def _compute_ego_action_scale_for_job(
+    def _build_env_output_parts(
         self,
         *,
-        job: Dict[str, Any],
-        job_idx: int,
-        rtg_logits: torch.Tensor,
-        decode_meta: Dict[str, np.ndarray],
-        flat_rtg_results: Dict[str, Any],
-    ) -> float:
-        """Compute ego_action_scale for the owner focal of one job."""
-        prepared = job["prepared"]
-        focal_idx = int(job["focal_idx"])
-        owner_focal_id = prepared.get("ego_context_owner_focal_id")
-        if owner_focal_id is None or get_prepared_focal_id(prepared, focal_idx) != int(owner_focal_id):
-            return 1.0
+        prepared: Dict[str, Any],
+        env_idx: int,
+    ) -> Dict[str, Any]:
+        """构造某个 env 的聚合中间态容器。
 
-        ego_id = prepared.get("ego_id")
-        if ego_id is None:
-            return 1.0
-        next_rtg = _find_flat_rtg_value(flat_rtg_results, job_idx, int(ego_id))
-        if next_rtg is None:
-            return 1.0
+        这个容器只保存 array views 的分段列表和最终需要写回的标量信息。批量前向的
+        flat 结果会先按 job span 挂到这些分段列表里，等同一 env 的所有 job 都处理完
+        后，再统一做一次拼接，避免旧实现里每来一个 job 就做一次 `np.concatenate`。
 
-        row_mask = (
-            (np.asarray(decode_meta["job_idx"], dtype=np.int64) == int(job_idx))
-            & (np.asarray(decode_meta["veh_id"], dtype=np.int64) == int(ego_id))
-        )
-        row_indices = np.nonzero(row_mask)[0]
-        if row_indices.size == 0:
-            return 1.0
-        row_idx = int(row_indices[-1])
-        idx_in_model = int(np.asarray(decode_meta["idx_in_model"], dtype=np.int64)[row_idx])
-        token_index = int(np.asarray(decode_meta["token_index"], dtype=np.int64)[row_idx])
+        Build the intermediate aggregation container for one environment. It
+        stores only per-env array-part lists plus the final scalar fields. Flat
+        batch outputs append job-span views into these lists first, then the env
+        result is concatenated once at the end instead of incrementally on every
+        job.
+        """
+        return {
+            "prepared": prepared,
+            "env_idx": env_idx,
+            "action_veh_ids_parts": [],
+            "action_values_parts": [],
+            "rtg_veh_ids_parts": [],
+            "rtg_values_parts": [],
+            "processed_rtg_veh_ids_parts": [],
+            "ego_action_scale": 1.0,
+        }
 
-        current_rtg_raw = np.asarray(
-            get_prepared_focal_motion_data(prepared, focal_idx)["rtgs"][idx_in_model, token_index]
+    def _finalize_env_output_parts(self, env_parts: Dict[str, Any]) -> Dict[str, Any]:
+        """将某个 env 的聚合中间态收口成最终 flat 输出。
+
+        输入是 `_build_env_output_parts` 产生的分段容器；输出是和 IPC 契约一致的
+        单 env flat 结果。该函数把“按 env 收集 parts”和“最终一次性拼接”这两件事
+        明确拆开，让热点聚合路径更稳定也更容易测试。
+
+        Finalize one environment's aggregation container into the flat output
+        contract used by IPC. It keeps "collect parts by env" separate from
+        "concatenate once at the end", which makes the hot aggregation path both
+        faster and easier to test.
+        """
+        env_output = self._build_empty_env_result(
+            prepared=env_parts["prepared"],
+            env_idx=int(env_parts["env_idx"]),
+            status="ok",
         )
-        current_rtg = recover_current_ego_rtg(
-            current_rtg_raw,
-            rtg_discretization=self.rtg_discretization,
-            min_rtg_pos=self.min_rtg_pos,
-            max_rtg_pos=self.max_rtg_pos,
-            min_rtg_veh=self.min_rtg_veh,
-            max_rtg_veh=self.max_rtg_veh,
-            min_rtg_road=self.min_rtg_road,
-            max_rtg_road=self.max_rtg_road,
+        env_output["action_veh_ids"] = _concat_or_empty_ids(env_parts["action_veh_ids_parts"])
+        env_output["action_values"] = _concat_or_empty_values(
+            env_parts["action_values_parts"],
+            width=2,
         )
-        ego_reweight_tilt = tuple(
-            int(v) for v in prepared.get("ego_reweight_tilt", (0, 0, 0))
+        env_output["rtg_veh_ids"] = _concat_or_empty_ids(env_parts["rtg_veh_ids_parts"])
+        env_output["rtg_values"] = _concat_or_empty_values(
+            env_parts["rtg_values_parts"],
+            width=3,
         )
-        tilted_current_rtg = sample_tilted_rtg_side_channel_impl(
-            teacher=self,
-            rtg_logits_row=rtg_logits[job_idx, idx_in_model, token_index],
-            goal_tilt=ego_reweight_tilt[0],
-            veh_tilt=ego_reweight_tilt[1],
-            road_tilt=ego_reweight_tilt[2],
-            sampling_seed=int(np.asarray(decode_meta["sampling_seed"], dtype=np.uint64)[row_idx]),
-            step_t=int(np.asarray(decode_meta["step_t"], dtype=np.int64)[row_idx]),
-            veh_id=int(ego_id),
-            stage_tag=_SIDE_CHANNEL_RTG_STAGE_TAG,
+        env_output["processed_rtg_veh_ids"] = _concat_or_empty_ids(
+            env_parts["processed_rtg_veh_ids_parts"]
         )
-        error_value = compute_ego_action_error(
-            current_rtg=current_rtg,
-            next_rtg=np.asarray(next_rtg, dtype=np.float32),
-            tilted_current_rtg=np.asarray(tilted_current_rtg, dtype=np.float32),
-        )
-        running_stats = self._get_policy_reweighting_running_stats()
-        scale = compute_ego_action_scale(
-            config=self.policy_reweighting_config,
-            current_rtg=current_rtg,
-            next_rtg=np.asarray(next_rtg, dtype=np.float32),
-            tilted_current_rtg=np.asarray(tilted_current_rtg, dtype=np.float32),
-            ego_reweight_tilt=ego_reweight_tilt,
-            running_stats=running_stats,
-        )
-        self._update_policy_reweighting_error_stats(error_value)
-        return scale
+        env_output["ego_action_scale"] = float(env_parts["ego_action_scale"])
+        return env_output
 
     def _get_policy_reweighting_error_rms(self) -> RunningMeanStd:
         """Return the shared running-stat accumulator for RTG mismatch error."""
@@ -496,97 +386,176 @@ class ExternalTeacher:
         flat_rtg_results: Dict[str, Any],
     ) -> List[float]:
         """Compute one ego_action_scale per job, owner focal only."""
-        return [
-            self._compute_ego_action_scale_for_job(
-                job=job,
-                job_idx=job_idx,
-                rtg_logits=rtg_logits,
-                decode_meta=decode_meta,
-                flat_rtg_results=flat_rtg_results,
+        scales = [1.0] * len(jobs)
+        if not jobs:
+            return scales
+
+        row_by_job_and_vehicle = _build_last_decode_row_by_job_and_vehicle(decode_meta)
+        idx_in_model = np.asarray(decode_meta["idx_in_model"], dtype=np.int64)
+        token_index = np.asarray(decode_meta["token_index"], dtype=np.int64)
+        sampling_seed = np.asarray(decode_meta["sampling_seed"], dtype=np.uint64)
+        step_t = np.asarray(decode_meta["step_t"], dtype=np.int64)
+
+        valid_job_indices: List[int] = []
+        valid_row_indices: List[int] = []
+        valid_ego_ids: List[int] = []
+        current_rtg_rows: List[np.ndarray] = []
+        ego_reweight_tilts: List[Tuple[int, int, int]] = []
+
+        for job_idx, job in enumerate(jobs):
+            prepared = job["prepared"]
+            focal_idx = int(job["focal_idx"])
+            owner_focal_id = prepared.get("ego_context_owner_focal_id")
+            if (
+                owner_focal_id is None
+                or get_prepared_focal_id(prepared, focal_idx) != int(owner_focal_id)
+            ):
+                continue
+
+            ego_id = prepared.get("ego_id")
+            if ego_id is None:
+                continue
+
+            if _find_flat_rtg_value(flat_rtg_results, job_idx, int(ego_id)) is None:
+                continue
+
+            row_idx = row_by_job_and_vehicle.get((int(job_idx), int(ego_id)))
+            if row_idx is None:
+                continue
+
+            current_rtg_rows.append(
+                get_prepared_focal_motion_data(prepared, focal_idx)["rtgs"][
+                    int(idx_in_model[row_idx]),
+                    int(token_index[row_idx]),
+                ]
             )
-            for job_idx, job in enumerate(jobs)
+            valid_job_indices.append(job_idx)
+            valid_row_indices.append(row_idx)
+            valid_ego_ids.append(int(ego_id))
+            ego_reweight_tilts.append(
+                tuple(int(v) for v in prepared.get("ego_reweight_tilt", (0, 0, 0)))
+            )
+
+        if not valid_row_indices:
+            return scales
+
+        valid_row_index_arr = np.asarray(valid_row_indices, dtype=np.int64)
+        valid_job_index_arr = np.asarray(valid_job_indices, dtype=np.int64)
+        valid_ego_id_arr = np.asarray(valid_ego_ids, dtype=np.int64)
+        goal_tilt = np.asarray([tilt[0] for tilt in ego_reweight_tilts], dtype=np.int64)
+        veh_tilt = np.asarray([tilt[1] for tilt in ego_reweight_tilts], dtype=np.int64)
+        road_tilt = np.asarray([tilt[2] for tilt in ego_reweight_tilts], dtype=np.int64)
+
+        valid_job_index_t = torch.as_tensor(
+            valid_job_index_arr,
+            dtype=torch.long,
+            device=rtg_logits.device,
+        )
+        valid_idx_in_model_t = torch.as_tensor(
+            idx_in_model[valid_row_index_arr],
+            dtype=torch.long,
+            device=rtg_logits.device,
+        )
+        valid_token_index_t = torch.as_tensor(
+            token_index[valid_row_index_arr],
+            dtype=torch.long,
+            device=rtg_logits.device,
+        )
+        flat_rtg_logits = rtg_logits[
+            valid_job_index_t,
+            valid_idx_in_model_t,
+            valid_token_index_t,
         ]
-
-    def _collect_focal_jobs(
-        self,
-        per_env_prepared: List[Optional[Dict[str, Any]]],
-        results: List[Optional[Dict[str, Any]]],
-        job_type: str = "opponent",
-        return_action_logits: bool = False,
-    ) -> List[Dict[str, Any]]:
-        return _collect_focal_jobs(
-            per_env_prepared=per_env_prepared,
-            results=results,
-            build_empty_env_result=self._build_empty_env_result,
-            job_type=job_type,
-            return_action_logits=return_action_logits,
+        tilted_current_rtgs = sample_tilted_rtg_side_channel_batched_impl(
+            teacher=self,
+            flat_rtg_logits=flat_rtg_logits,
+            goal_tilt=goal_tilt,
+            veh_tilt=veh_tilt,
+            road_tilt=road_tilt,
+            sampling_seed=sampling_seed[valid_row_index_arr],
+            step_t=step_t[valid_row_index_arr],
+            veh_id=valid_ego_id_arr,
+            stage_tag=_SIDE_CHANNEL_RTG_STAGE_TAG,
+        )
+        current_rtgs_arr = recover_current_ego_rtgs(
+            np.asarray(current_rtg_rows),
+            rtg_discretization=self.rtg_discretization,
+            min_rtg_pos=self.min_rtg_pos,
+            max_rtg_pos=self.max_rtg_pos,
+            min_rtg_veh=self.min_rtg_veh,
+            max_rtg_veh=self.max_rtg_veh,
+            min_rtg_road=self.min_rtg_road,
+            max_rtg_road=self.max_rtg_road,
+        )
+        error_values = np.sum(
+            np.square(current_rtgs_arr - tilted_current_rtgs),
+            axis=1,
+            dtype=np.float32,
         )
 
-    def _fill_empty_ok_env_results(
-        self,
-        per_env_prepared: List[Optional[Dict[str, Any]]],
-        results: List[Optional[Dict[str, Any]]],
-    ) -> None:
-        _fill_empty_ok_env_results(
-            per_env_prepared=per_env_prepared,
-            results=results,
-            build_empty_env_result=self._build_empty_env_result,
-        )
+        for idx, job_idx in enumerate(valid_job_indices):
+            running_stats = self._get_policy_reweighting_running_stats()
+            error_value = float(error_values[idx])
+            if (
+                self.policy_reweighting_config.enabled
+                and any(float(value) != 0.0 for value in ego_reweight_tilts[idx])
+            ):
+                scales[job_idx] = compute_scale_from_error(
+                    error_value=error_value,
+                    config=self.policy_reweighting_config,
+                    running_stats=running_stats,
+                )
+            self._update_policy_reweighting_error_stats(error_value)
+
+        return scales
 
     def _aggregate_job_outputs_by_env(
         self,
-        job_outputs: List[Dict[str, Any]],
+        batch_output: Dict[str, Any],
         per_env_prepared: List[Optional[Dict[str, Any]]],
         results: List[Optional[Dict[str, Any]]],
     ) -> List[Optional[Dict[str, Any]]]:
-        """
-        将按 job 粒度的推理结果按 env 聚合，并回填到 per-env 结果列表中。
-        该过程会合并 action / RTG 输出，同时为没有 job 输出但状态为 ok 的 env 补齐空结果。
+        """按 env 一次性聚合 flat batch 输出，并回填 per-env 结果。
 
-        Aggregate job-level inference outputs by environment and write them back into the
-        per-env result list.
-        This merges action / RTG outputs and also fills empty results for environments whose
-        status is `ok` but produced no job-level outputs.
+        `_forward_job_batch` 现在返回统一的 flat batch 结果对象，而不是按 job 切开的
+        小字典列表。这里按 job offset 取 array views，先挂到 env 级 parts 容器里，
+        最后对每个 env 做一次性拼接，避免旧实现中重复切片和增量 concat 的开销。
+
+        Aggregate the flat batch output back into per-env results. The new
+        `_forward_job_batch` returns one flat batch object, so this helper reads
+        job spans via offsets, appends those array views into env-level part
+        containers, and performs one final concatenate per env instead of
+        repeated slicing and incremental concatenation.
         """
+        views = _build_flat_batch_views(batch_output)
         env_accum: Dict[int, Dict[str, Any]] = {}
-        for job_output in job_outputs:
-            env_idx = int(job_output["env_idx"])
-            if env_idx not in env_accum:
-                env_accum[env_idx] = self._build_empty_env_result(
-                    prepared=job_output["prepared"],
+
+        for job_idx, _job in enumerate(views["jobs"]):
+            if str(views["job_types"][job_idx]) != "opponent":
+                continue
+            env_idx = int(views["env_idx_by_job"][job_idx])
+            env_parts = env_accum.setdefault(
+                env_idx,
+                self._build_env_output_parts(
+                    prepared=views["prepared_by_job"][job_idx],
                     env_idx=env_idx,
-                    status="ok",
-                )
+                ),
+            )
+            _append_flat_job_views_to_env_parts(
+                env_parts,
+                job_idx=job_idx,
+                views=views,
+                ego_action_scale=views["ego_action_scales_by_job"][job_idx],
+            )
 
-            env_accum_item = env_accum[env_idx]
-            env_accum_item["action_veh_ids"] = _concat_or_empty_ids(
-                [env_accum_item["action_veh_ids"], np.asarray(job_output["action_veh_ids"], dtype=np.int64)]
-            )
-            env_accum_item["action_values"] = _concat_or_empty_values(
-                [env_accum_item["action_values"], np.asarray(job_output["action_values"], dtype=np.float32)],
-                width=2,
-            )
-            env_accum_item["rtg_veh_ids"] = _concat_or_empty_ids(
-                [env_accum_item["rtg_veh_ids"], np.asarray(job_output["rtg_veh_ids"], dtype=np.int64)]
-            )
-            env_accum_item["rtg_values"] = _concat_or_empty_values(
-                [env_accum_item["rtg_values"], np.asarray(job_output["rtg_values"], dtype=np.float32)],
-                width=3,
-            )
-            env_accum_item["processed_rtg_veh_ids"] = _concat_or_empty_ids(
-                [
-                    env_accum_item["processed_rtg_veh_ids"],
-                    np.asarray(job_output["processed_rtg_veh_ids"], dtype=np.int64),
-                ]
-            )
-            scale = float(job_output.get("ego_action_scale", 1.0))
-            if scale != 1.0:
-                env_accum_item["ego_action_scale"] = scale
+        for env_idx, env_parts in env_accum.items():
+            results[env_idx] = self._finalize_env_output_parts(env_parts)
 
-        for env_idx, env_output in env_accum.items():
-            results[env_idx] = env_output
-
-        self._fill_empty_ok_env_results(per_env_prepared, results)
+        _fill_empty_ok_env_results(
+            per_env_prepared,
+            results,
+            self._build_empty_env_result,
+        )
         return results
 
     def _collate_jobs_with_padding(self, jobs: List[Dict[str, Any]]):
@@ -594,56 +563,6 @@ class ExternalTeacher:
             jobs=jobs,
             device=self.device,
             collate_numpy_buffers=self._collate_numpy_buffers,
-        )
-
-    def _decode_rtg_stage_batched(
-        self,
-        batched_data,
-        batch_meta,
-        decode_rtg_jobs_batched_fn,
-    ):
-        with torch.inference_mode():
-            with self.model_forward_context():
-                preds = self.model(
-                    batched_data,
-                    eval=True,
-                    need_action=False,
-                    need_rtg=True,
-                    need_state=False,
-                )
-            rtg_logits = preds["rtg_preds"]
-            flat_rtg_results = decode_rtg_jobs_batched_fn(
-                teacher=self,
-                batched_data=batched_data,
-                rtg_logits=rtg_logits,
-                decode_meta=batch_meta["decode_meta"]["rtg"],
-            )
-            return batched_data, flat_rtg_results
-
-    def _decode_action_stage_batched(
-        self,
-        batched_data,
-        batch_meta,
-        return_logits: bool = False,
-        logits_job_indices=(),
-        cached_scene_enc=None,
-    ):
-        with torch.inference_mode():
-            return decode_action_stage_batched_impl(
-                teacher=self,
-                batched_data=batched_data,
-                batch_meta=batch_meta,
-                return_logits=return_logits,
-                logits_job_indices=logits_job_indices,
-                cached_scene_enc=cached_scene_enc,
-            )
-
-    def _forward_job_batch(self, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return forward_job_batch_impl(
-            teacher=self,
-            jobs=jobs,
-            batch_predict_rtgs_mode_fn=_batch_predict_rtgs_mode,
-            decode_rtg_jobs_batched_fn=rtg_impl.decode_rtg_jobs_batched_impl,
         )
 
     def run_batched_forward_with_ego_logits(
@@ -658,19 +577,22 @@ class ExternalTeacher:
                 opponent_results: List[Optional[Dict[str, Any]]] = [None] * len(decoded_opponent)
                 ego_logits_by_env: List[Optional[np.ndarray]] = [None] * len(decoded_ego)
 
-                opponent_jobs = self._collect_focal_jobs(
+                opponent_jobs = _collect_focal_jobs(
                     decoded_opponent,
                     opponent_results,
-                    job_type="opponent",
-                    return_action_logits=False,
+                    self._build_empty_env_result,
+                    "opponent",
+                    False,
                 )
-                ego_jobs = self._collect_focal_jobs(
+                ego_jobs = _collect_focal_jobs(
                     decoded_ego,
                     [None] * len(decoded_ego),
-                    job_type="ego_ctrlsim",
-                    return_action_logits=True,
+                    self._build_empty_env_result,
+                    "ego_ctrlsim",
+                    True,
                 )
                 combined_jobs = opponent_jobs + ego_jobs
+                opponent_env_parts: Dict[int, Dict[str, Any]] = {}
                 if combined_jobs:
                     for predict_rtgs_mode in (False, True):
                         bucket_jobs = [
@@ -680,74 +602,59 @@ class ExternalTeacher:
                         ]
                         if not bucket_jobs:
                             continue
-                        for job_output in self._forward_job_batch(bucket_jobs):
-                            job_type = str(job_output.get("job_type", "opponent"))
-                            env_idx = int(job_output["env_idx"])
+                        batch_output = forward_job_batch_impl(
+                            teacher=self,
+                            jobs=bucket_jobs,
+                            batch_predict_rtgs_mode_fn=_batch_predict_rtgs_mode,
+                            decode_rtg_jobs_batched_fn=rtg_impl.decode_rtg_jobs_batched_impl,
+                        )
+                        views = _build_flat_batch_views(batch_output)
+
+                        for job_idx, _job in enumerate(views["jobs"]):
+                            env_idx = int(views["env_idx_by_job"][job_idx])
+                            job_type = str(views["job_types"][job_idx])
+                            scale = float(views["ego_action_scales_by_job"][job_idx])
                             if job_type == "ego_ctrlsim":
-                                action_logits = job_output.get("action_logits")
+                                action_logits = views["action_logits_by_job"][job_idx]
                                 ego_logits_by_env[env_idx] = (
                                     action_logits.cpu().numpy()
                                     if action_logits is not None
                                     else None
                                 )
-                                if (
-                                    opponent_results[env_idx] is None
-                                    and decoded_opponent[env_idx] is not None
-                                ):
-                                    opponent_results[env_idx] = self._build_empty_env_result(
-                                        prepared=job_output["prepared"],
-                                        env_idx=env_idx,
-                                        status="ok",
+                                if decoded_opponent[env_idx] is not None:
+                                    env_parts = opponent_env_parts.setdefault(
+                                        env_idx,
+                                        self._build_env_output_parts(
+                                            prepared=decoded_opponent[env_idx],
+                                            env_idx=env_idx,
+                                        ),
                                     )
-                                if opponent_results[env_idx] is not None:
-                                    opponent_results[env_idx]["ego_action_scale"] = float(
-                                        job_output.get("ego_action_scale", 1.0)
-                                    )
+                                    if scale != 1.0:
+                                        env_parts["ego_action_scale"] = scale
                                 continue
 
-                            if opponent_results[env_idx] is None:
-                                opponent_results[env_idx] = self._build_empty_env_result(
-                                    prepared=job_output["prepared"],
+                            env_parts = opponent_env_parts.setdefault(
+                                env_idx,
+                                self._build_env_output_parts(
+                                    prepared=views["prepared_by_job"][job_idx],
                                     env_idx=env_idx,
-                                    status="ok",
-                                )
-                            opponent_results[env_idx]["action_veh_ids"] = _concat_or_empty_ids(
-                                [
-                                    opponent_results[env_idx]["action_veh_ids"],
-                                    np.asarray(job_output["action_veh_ids"], dtype=np.int64),
-                                ]
+                                ),
                             )
-                            opponent_results[env_idx]["action_values"] = _concat_or_empty_values(
-                                [
-                                    opponent_results[env_idx]["action_values"],
-                                    np.asarray(job_output["action_values"], dtype=np.float32),
-                                ],
-                                width=2,
+                            _append_flat_job_views_to_env_parts(
+                                env_parts,
+                                job_idx=job_idx,
+                                views=views,
+                                ego_action_scale=scale,
                             )
-                            opponent_results[env_idx]["rtg_veh_ids"] = _concat_or_empty_ids(
-                                [
-                                    opponent_results[env_idx]["rtg_veh_ids"],
-                                    np.asarray(job_output["rtg_veh_ids"], dtype=np.int64),
-                                ]
-                            )
-                            opponent_results[env_idx]["rtg_values"] = _concat_or_empty_values(
-                                [
-                                    opponent_results[env_idx]["rtg_values"],
-                                    np.asarray(job_output["rtg_values"], dtype=np.float32),
-                                ],
-                                width=3,
-                            )
-                            opponent_results[env_idx]["processed_rtg_veh_ids"] = _concat_or_empty_ids(
-                                [
-                                    opponent_results[env_idx]["processed_rtg_veh_ids"],
-                                    np.asarray(job_output["processed_rtg_veh_ids"], dtype=np.int64),
-                                ]
-                            )
-                            scale = float(job_output.get("ego_action_scale", 1.0))
-                            if scale != 1.0:
-                                opponent_results[env_idx]["ego_action_scale"] = scale
 
-                self._fill_empty_ok_env_results(decoded_opponent, opponent_results)
+                for env_idx, env_parts in opponent_env_parts.items():
+                    opponent_results[env_idx] = self._finalize_env_output_parts(env_parts)
+
+                _fill_empty_ok_env_results(
+                    decoded_opponent,
+                    opponent_results,
+                    self._build_empty_env_result,
+                )
                 return self._pack_outputs(opponent_results), ego_logits_by_env
             finally:
                 for prepared in decoded_opponent:

@@ -105,22 +105,6 @@ class OpponentStateService:
         """
         return _batch_io.prepare_step(self.adapter, t, vehicles)
 
-    def prepare_step_pack(
-        self,
-        t: int,
-        vehicles: List,
-        ego_id: Optional[int] = None,
-        include_ego_ctrlsim_prepared: bool = True,
-    ) -> Dict[str, Optional[Dict]]:
-        """构建 opponent/ego_ctrlsim 双路 prepared pack。 / Build the opponent and ego_ctrlsim prepared pack."""
-        return _batch_io.prepare_step_pack(
-            self.adapter,
-            t,
-            vehicles,
-            ego_id=ego_id,
-            include_ego_ctrlsim_prepared=include_ego_ctrlsim_prepared,
-        )
-
     def apply_predictions(
         self,
         model_outputs: Optional[Dict],

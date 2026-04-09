@@ -64,7 +64,6 @@ def check_done(env) -> bool:
     return False
 
 
-
 def get_info(env) -> Dict[str, Any]:
     """Return additional information."""
     done = check_done(env)
@@ -94,6 +93,18 @@ def get_info(env) -> Dict[str, Any]:
 
     # Always add complexity info (real-time data)
     info.update(get_complexity_info(env))
+    scale = 1.0
+    if (
+        bool(getattr(env, 'use_policy_reweighting', False))
+        and str(getattr(env, 'opponent_runtime_mode', 'normal')) == 'normal'
+        and len(getattr(env, 'opponent_vehicle_ids', ())) > 0
+    ):
+        opponent = getattr(env, 'opponent', None)
+        if opponent is not None:
+            raw_scale = float(getattr(opponent, '_ego_action_scale', 1.0))
+            if np.isfinite(raw_scale):
+                scale = raw_scale
+    info['ego_action_scale'] = scale
 
     # Add episode summary when episode ends
     if done:
