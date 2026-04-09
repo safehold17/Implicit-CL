@@ -103,8 +103,10 @@ class AdversarialRunner(object):
         self._plr_args = plr_args
         self.level_store = None
         self.level_samplers = {}
+        self.warmup_level_samplers = {}
         self.current_level_seeds = None
         self._default_level_sampler = None
+        self._default_warmup_level_sampler = None
         self.weighted_num_edits = 0
         self.latest_env_stats = defaultdict(float)
         self.latest_env_process_stats = []
@@ -146,11 +148,21 @@ class AdversarialRunner(object):
             return LevelStore(data_info=data_info)
         return LevelStore()
 
+    def _build_warmup_plr_args(self, plr_args):
+        """Build PLR kwargs for the warmup replay buffer."""
+        warmup_plr_args = dict(plr_args)
+        warmup_plr_args['seed_buffer_size'] = int(
+            getattr(self.args, 'warmup_level_replay_seed_buffer_size', 8000)
+        )
+        return warmup_plr_args
+
     def _init_or_reset_plr_state(self, plr_args):
         self.level_store = None
         self.level_samplers = {}
+        self.warmup_level_samplers = {}
         self.current_level_seeds = None
         self._default_level_sampler = None
+        self._default_warmup_level_sampler = None
 
         if not plr_args:
             self.use_editor = False
@@ -159,12 +171,18 @@ class AdversarialRunner(object):
             return False
 
         self.level_samplers = self._build_level_samplers(plr_args)
+        if getattr(self.args, 'use_warmup_level_replay', False):
+            warmup_plr_args = self._build_warmup_plr_args(plr_args)
+            self.warmup_level_samplers = self._build_level_samplers(warmup_plr_args)
         self.level_store = self._build_level_store()
         self.current_level_seeds = [-1 for _ in range(self.args.num_processes)]
 
-        all_level_samplers = self.all_level_samplers
-        if all_level_samplers:
-            self._default_level_sampler = all_level_samplers[0]
+        if self.level_samplers:
+            self._default_level_sampler = next(iter(self.level_samplers.values()))
+        if self.warmup_level_samplers:
+            self._default_warmup_level_sampler = next(
+                iter(self.warmup_level_samplers.values())
+            )
 
         self.use_editor = self.args.use_editor
         self.edit_prob = self.args.level_editor_prob
@@ -186,10 +204,17 @@ class AdversarialRunner(object):
 
     @property
     def plr_runtime_enabled(self) -> bool:
+        runtime_mode = self._get_opponent_runtime_mode()
+        use_warmup_level_replay = bool(
+            getattr(self.args, 'use_warmup_level_replay', False)
+        )
         return bool(
             self.args.use_plr
             and self.plr_active
-            and self._get_opponent_runtime_mode() == 'normal'
+            and (
+                runtime_mode == 'normal'
+                or (runtime_mode == 'replay' and use_warmup_level_replay)
+            )
         )
 
     def set_opponent_runtime_mode(self, mode: str) -> str:
@@ -281,6 +306,7 @@ class AdversarialRunner(object):
             'latest_env_process_stats': self.latest_env_process_stats,
             'level_store': self.level_store,
             'level_samplers': self.level_samplers,
+            'warmup_level_samplers': self.warmup_level_samplers,
         }
 
     def load_state_dict(self, state_dict):
@@ -307,9 +333,25 @@ class AdversarialRunner(object):
 
         self.level_store = state_dict.get('level_store')
         self.level_samplers = state_dict.get('level_samplers')
+        self.warmup_level_samplers = state_dict.get('warmup_level_samplers')
+
+        if self.warmup_level_samplers is None:
+            self.warmup_level_samplers = {}
+            if (
+                self.args.use_plr
+                and getattr(self.args, 'use_warmup_level_replay', False)
+                and self._plr_args
+            ):
+                warmup_plr_args = self._build_warmup_plr_args(self._plr_args)
+                self.warmup_level_samplers = self._build_level_samplers(warmup_plr_args)
 
         if self.args.use_plr:
-            self._default_level_sampler = self.all_level_samplers[0]
+            if self.level_samplers:
+                self._default_level_sampler = next(iter(self.level_samplers.values()))
+            if self.warmup_level_samplers:
+                self._default_warmup_level_sampler = next(
+                    iter(self.warmup_level_samplers.values())
+                )
 
             if self.use_editor:
                 self.weighted_num_edits = self._get_weighted_num_edits()
@@ -664,22 +706,49 @@ class AdversarialRunner(object):
             return self.ued_venv.get_level()
 
     def _get_level_sampler(self, name):
+        active_level_samplers = self._get_active_level_sampler_map()
         other = 'adversary_agent'
         if name == 'adversary_agent':
             other = 'agent'
 
-        level_sampler = self.level_samplers.get(name) or self.level_samplers.get(other)
+        level_sampler = active_level_samplers.get(name) or active_level_samplers.get(other)
 
-        updateable = name in self.level_samplers
+        updateable = name in active_level_samplers
 
         return level_sampler, updateable
 
+    def _is_warmup_replay_plr_active(self):
+        """Return whether the dedicated warmup replay PLR buffer is active."""
+        return bool(
+            getattr(self.args, 'use_warmup_level_replay', False)
+            and self._get_opponent_runtime_mode() == 'replay'
+        )
+
+    def _get_active_level_sampler_map(self):
+        """Return the sampler mapping active for the current runtime stage."""
+        if self._is_warmup_replay_plr_active():
+            return self.warmup_level_samplers
+        return self.level_samplers
+
+    @property
+    def active_level_samplers(self):
+        """Return active sampler instances for the current runtime stage."""
+        active_level_samplers = self._get_active_level_sampler_map()
+        return list(
+            filter(lambda x: x is not None, [v for _, v in active_level_samplers.items()])
+        )
+
     @property
     def all_level_samplers(self):
-        if len(self.level_samplers) == 0:
-            return []
-
-        return list(filter(lambda x: x is not None, [v for _, v in self.level_samplers.items()]))
+        seen = set()
+        samplers = []
+        for sampler_map in (self.level_samplers, self.warmup_level_samplers):
+            for sampler in sampler_map.values():
+                if sampler is None or id(sampler) in seen:
+                    continue
+                seen.add(id(sampler))
+                samplers.append(sampler)
+        return samplers
 
     def _should_edit_level(self):
         if self.use_editor:
@@ -700,7 +769,7 @@ class AdversarialRunner(object):
             self.current_level_seeds, solvable=passable)
 
     def _update_level_samplers_with_external_unseen_sample(self, seeds, solvable=None):
-        level_samplers = self.all_level_samplers
+        level_samplers = self.active_level_samplers
 
         if self.args.reject_unsolvable_seeds:
             solvable = np.array(solvable, dtype='bool')
@@ -717,7 +786,7 @@ class AdversarialRunner(object):
         self.level_store.reconcile_seeds(all_replay_seeds)
 
     def _get_weighted_num_edits(self):
-        level_sampler = self.all_level_samplers[0]
+        level_sampler = self._default_level_sampler or self._default_warmup_level_sampler
         seed_num_edits = np.zeros(level_sampler.seed_buffer_size)
         for idx, value in enumerate(self.level_store.seed2parent.values()):
             seed_num_edits[idx] = len(value)
@@ -753,7 +822,9 @@ class AdversarialRunner(object):
         return int(root_seed)
 
     def _sample_replay_decision(self):
-        return self._default_level_sampler.sample_replay_decision()
+        default_level_sampler = self._default_warmup_level_sampler \
+            if self._is_warmup_replay_plr_active() else self._default_level_sampler
+        return default_level_sampler.sample_replay_decision()
 
     def _consume_pending_replay_obs(self):
         """Return and clear the one-shot replay observation prepared for agent rollout."""

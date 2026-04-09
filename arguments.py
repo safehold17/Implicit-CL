@@ -1051,6 +1051,20 @@ parser.add_argument(
     default=0.2,
     help="Warmup ratio for opponent-replay stage (fraction of num_env_steps).",
 )
+parser.add_argument(
+    "--use_warmup_level_replay",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=False,
+    help="Enable a dedicated PLR buffer during opponent replay warmup stage.",
+)
+parser.add_argument(
+    "--warmup_level_replay_seed_buffer_size",
+    type=int,
+    default=8000,
+    help="Seed buffer size for the dedicated warmup replay PLR buffer.",
+)
 
 # ============== render options ==============
 parser.add_argument(
