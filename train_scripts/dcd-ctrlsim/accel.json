@@ -33,7 +33,6 @@
     "level_replay_score_transform": ["rank"],
     "level_replay_temperature": [0.3],
     "staleness_coef": [0.5],
-    "base_levels": ["easy"],
     "no_exploratory_grad_updates": [true],
 
     "__note3__": ["ACCEL parameters"],
@@ -42,6 +41,7 @@
     "level_editor_method": ["random"],
     "mutation_mode": ["all"],
     "mutation_range": [5.0],
+    "base_levels": ["easy"],
 
 
     "__note4__": ["tilting parameters"],
