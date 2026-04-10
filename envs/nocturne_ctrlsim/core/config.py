@@ -159,6 +159,11 @@ def build_nocturne_ctrlsim_env_config(
     use_policy_reweighting = bool(
         kwargs.get("use_policy_reweighting", False)
     )
+    if use_policy_reweighting and tilting_mode != "none":
+        raise ValueError(
+            "use_policy_reweighting requires tilting_mode='none', "
+            f"got tilting_mode={tilting_mode}"
+        )
     policy_reweighting_config = AdversarialRTGConfig(
         enabled=use_policy_reweighting,
         reward_scale=float(kwargs.get("policy_reweighting_reward_scale", 1.0)),
