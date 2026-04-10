@@ -85,14 +85,7 @@ def render(env, mode: str = "human"):
     show_ego_vehicle_selection = getattr(env, "show_ego_vehicle_selection", True)
     tilt_by_vehicle_id = {}
     if show_tilting_params and env.current_level is not None:
-        if env.tilting_mode == "ego" and env.ego_vehicle is not None:
-            ego_id = env.ego_vehicle.getID()
-            tilt_by_vehicle_id[ego_id] = (
-                env.current_level.goal_tilt,
-                env.current_level.veh_veh_tilt,
-                env.current_level.veh_edge_tilt,
-            )
-        elif opponent_ids:
+        if opponent_ids:
             if env.tilting_mode == "global":
                 tilt_tuple = (
                     env.current_level.goal_tilt,

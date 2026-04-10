@@ -847,12 +847,11 @@ parser.add_argument(
     "--tilting_mode",
     type=str,
     default="per_vehicle",
-    choices=["global", "per_vehicle", "ego", "none"],
+    choices=["global", "per_vehicle", "none"],
     help=(
         "Tilting mode: "
         "global (all opponents share same tilts), "
         "per_vehicle (each opponent has independent tilts), "
-        "ego (tilts stored for ego only; opponents use 0), "
         "none (all tilts are 0, scenario-only adversary)."
     ),
 )

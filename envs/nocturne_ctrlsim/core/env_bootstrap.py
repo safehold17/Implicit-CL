@@ -48,6 +48,7 @@ def _init_config_state(
     env.action_repeat_frequency = config.action_repeat_frequency
     env.kl_loss_computation_frequency = config.kl_loss_computation_frequency
     env.fixed_environment = config.fixed_environment
+    env.current_ego_reweight_tilt = (0, 0, 0)
     env._set_process_seed(config.seed)
 
 
@@ -123,10 +124,7 @@ def _init_data_bridge_and_opponent(
         load_on_init=(config.opponent_runtime_mode == "normal"),
     )
     env.opponent._ego_action_scale = 1.0
-    env.opponent._ego_reweight_tilt = env._resolve_initial_ego_reweight_tilt(
-        tilting_mode=config.tilting_mode,
-        opponent_runtime_mode=config.opponent_runtime_mode,
-    )
+    env.opponent._ego_reweight_tilt = tuple(env.current_ego_reweight_tilt)
 
 
 def _init_environment_attributes(
@@ -265,7 +263,7 @@ def _init_observation_and_action_spaces(
 
     if env.tilting_mode == "none":
         env.adversary_action_dim = 1
-    elif env.tilting_mode in ("ego", "global"):
+    elif env.tilting_mode == "global":
         env.adversary_action_dim = 4
     elif env.tilting_mode == "per_vehicle":
         env.adversary_action_dim = 1 + env.per_vehicle_tilting_length

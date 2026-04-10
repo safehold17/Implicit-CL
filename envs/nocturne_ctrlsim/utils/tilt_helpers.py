@@ -25,6 +25,29 @@ def map_action_to_tilt(
     return round_clipped_tilt(tilt_value, tilt_range)
 
 
+def sample_policy_reweighting_ego_tilt(
+    *,
+    use_policy_reweighting: bool,
+    opponent_runtime_mode: str,
+    tilt_range: tuple[float, float],
+    rng: Any,
+) -> tuple[int, int, int]:
+    """为 policy reweighting 采样 ego-only 三维 tilt；该链路与 tilting_mode 无关。
+
+    Sample the ego-only 3D tilt used by policy reweighting. This helper encodes
+    the exact project semantics for the reweighting path.
+    """
+    if not use_policy_reweighting or str(opponent_runtime_mode) != "normal":
+        return (0, 0, 0)
+    goal_tilt, veh_veh_tilt, veh_edge_tilt, _ = sample_random_tilt_components(
+        tilting_mode="global",
+        per_vehicle_tilting_length=0,
+        tilt_range=tilt_range,
+        rng=rng,
+    )
+    return (goal_tilt, veh_veh_tilt, veh_edge_tilt)
+
+
 def init_level_params_vec(
     tilting_mode: str,
     per_vehicle_tilting_length: int,
@@ -46,7 +69,7 @@ def apply_adversary_tilting_action(
     tilt_range: tuple[float, float],
 ) -> None:
     """Apply adversary tilt action into ``level_params_vec``."""
-    if tilting_mode in ("global", "ego"):
+    if tilting_mode == "global":
         tilt_values = [0, 0, 0]
         if runtime_mode == "normal":
             tilt_values = [
@@ -60,16 +83,16 @@ def apply_adversary_tilting_action(
     if tilting_mode == "per_vehicle":
         if runtime_mode != "normal":
             level_params_vec[1:4] = [0, 0, 0]
-            level_params_vec[4:4 + per_vehicle_tilting_length] = (
-                [0] * per_vehicle_tilting_length
-            )
+            level_params_vec[4 : 4 + per_vehicle_tilting_length] = [
+                0
+            ] * per_vehicle_tilting_length
             return
 
         per_vehicle_values = [
             map_action_to_tilt(v, tilt_range)
-            for v in action_vec[1:1 + per_vehicle_tilting_length]
+            for v in action_vec[1 : 1 + per_vehicle_tilting_length]
         ]
-        level_params_vec[4:4 + per_vehicle_tilting_length] = per_vehicle_values
+        level_params_vec[4 : 4 + per_vehicle_tilting_length] = per_vehicle_values
         return
 
     if tilting_mode == "none":
@@ -87,7 +110,7 @@ def sample_random_tilt_components(
     """Sample random tilt components for the current tilting mode."""
     zero_per_vehicle = (0,) * per_vehicle_tilting_length
 
-    if tilting_mode in ("global", "ego"):
+    if tilting_mode == "global":
         return (
             round_clipped_tilt(rng.uniform(*tilt_range), tilt_range),
             round_clipped_tilt(rng.uniform(*tilt_range), tilt_range),

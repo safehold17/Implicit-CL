@@ -498,12 +498,6 @@ class AdversarialRunner(object):
             e = float(info.get('veh_edge_tilt', 0.0))
             for _ in range(opp_count):
                 tilts.append((g, v, e))
-        elif tilting_mode == 'ego':
-            ego_goal_tilt = float(info.get('goal_tilt', 0.0))
-            ego_veh_veh_tilt = float(info.get('veh_veh_tilt', 0.0))
-            ego_veh_edge_tilt = float(info.get('veh_edge_tilt', 0.0))
-            for _ in range(opp_count):
-                tilts.append((0.0, 0.0, 0.0))
         else:
             for _ in range(opp_count):
                 tilts.append((0.0, 0.0, 0.0))

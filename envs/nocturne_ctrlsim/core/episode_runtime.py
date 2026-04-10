@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from .level import normalize_per_vehicle_tilting
+from ..utils.tilt_helpers import sample_policy_reweighting_ego_tilt
 from ..services.ground_truth import (
     build_episode_gt_action_cache,
     get_gt_action,
@@ -165,6 +166,12 @@ class NocturneCtrlSimRuntime:
             )
 
         runtime_mode = getattr(env, "opponent_runtime_mode", "normal")
+        env.current_ego_reweight_tilt = sample_policy_reweighting_ego_tilt(
+            use_policy_reweighting=env.use_policy_reweighting,
+            opponent_runtime_mode=runtime_mode,
+            tilt_range=env.tilt_range,
+            rng=env.np_random,
+        )
         if runtime_mode == "disable":
             # Disable mode keeps the simulator alive but hands no non-ego agent
             # to the opponent policy.
@@ -270,6 +277,7 @@ class NocturneCtrlSimRuntime:
             vehicles_to_control,
             ego_id=env.ego_vehicle.getID() if env.ego_vehicle else None,
         )
+        env.opponent._ego_reweight_tilt = tuple(env.current_ego_reweight_tilt)
         # Build student-side caches used in the hot path:
         # - compact road graph arrays are valid for the whole episode
         # - road-edge polylines are reused by shaped reward computation

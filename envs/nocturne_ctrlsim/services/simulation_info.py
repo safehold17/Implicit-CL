@@ -167,7 +167,7 @@ def build_level_context(env) -> Dict[str, Any]:
         'scenario_pool_size': len(env.scenario_ids),
     }
 
-    if env.tilting_mode in ('global', 'ego', 'none'):
+    if env.tilting_mode in ('global', 'none'):
         info.update(
             {
                 'goal_tilt': 0 if env.tilting_mode == 'none' else env.current_level.goal_tilt,

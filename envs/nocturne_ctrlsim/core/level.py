@@ -426,7 +426,7 @@ def mutate_level_internal(env: Any, level: ScenarioLevel) -> ScenarioLevel:
     from ..utils.tilt_helpers import mutate_global_level, mutate_per_vehicle_level
 
     rng = env.np_random
-    if env.tilting_mode in ("global", "ego"):
+    if env.tilting_mode == "global":
         return mutate_global_level(
             level=level,
             rng=rng,

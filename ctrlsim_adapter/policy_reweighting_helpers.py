@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
@@ -41,8 +41,7 @@ def should_trigger_policy_reweighting_step(
     """Return whether the current step should emit a new delayed reweighting signal."""
     if reweighting_frequency < 1:
         raise ValueError(
-            "reweighting_frequency must be >= 1, "
-            f"got {reweighting_frequency}"
+            f"reweighting_frequency must be >= 1, got {reweighting_frequency}"
         )
 
     anchor_t = int(history_steps) - 1
@@ -119,71 +118,6 @@ def recover_current_ego_rtgs(
         return np.asarray(continuous, dtype=np.float32)
     return raw.astype(np.float32, copy=False)
 
-
-def compute_reward_delta(
-    current_rtg: np.ndarray,
-    next_rtg: np.ndarray,
-) -> np.ndarray:
-    """Estimate the instantaneous reward from two RTG vectors."""
-    current = np.asarray(current_rtg, dtype=np.float32)
-    next_value = np.asarray(next_rtg, dtype=np.float32)
-    return current - next_value
-
-
-def compute_target_next_rtg(
-    tilted_current_rtg: np.ndarray | torch.Tensor,
-    reward_delta: np.ndarray | torch.Tensor,
-) -> np.ndarray | torch.Tensor:
-    """Build a stopgrad target next RTG vector."""
-    if isinstance(tilted_current_rtg, torch.Tensor) or isinstance(
-        reward_delta, torch.Tensor
-    ):
-        if isinstance(tilted_current_rtg, torch.Tensor):
-            base = tilted_current_rtg
-        else:
-            base = torch.as_tensor(tilted_current_rtg, dtype=torch.float32)
-        if isinstance(reward_delta, torch.Tensor):
-            delta = reward_delta.to(dtype=base.dtype, device=base.device)
-        else:
-            delta = torch.as_tensor(
-                reward_delta,
-                dtype=base.dtype,
-                device=base.device,
-            )
-        with torch.no_grad():
-            return base.detach() - delta.detach()
-
-    tilted = np.asarray(tilted_current_rtg, dtype=np.float32)
-    delta = np.asarray(reward_delta, dtype=np.float32)
-    return tilted - delta
-
-
-def compute_ego_action_error(
-    *,
-    current_rtg: np.ndarray,
-    next_rtg: np.ndarray,
-    tilted_current_rtg: np.ndarray,
-    error_weights: np.ndarray | None = None,
-) -> float:
-    """Compute the RTG mismatch error prior to running-stat normalization."""
-    current = np.asarray(current_rtg, dtype=np.float32)
-    next_value = np.asarray(next_rtg, dtype=np.float32)
-    tilted = np.asarray(tilted_current_rtg, dtype=np.float32)
-    reward_delta = compute_reward_delta(current, next_value)
-    target_next_rtg = np.asarray(
-        compute_target_next_rtg(
-            tilted_current_rtg=tilted,
-            reward_delta=reward_delta,
-        ),
-        dtype=np.float32,
-    )
-    if error_weights is None:
-        weights = np.ones_like(next_value, dtype=np.float32)
-    else:
-        weights = np.asarray(error_weights, dtype=np.float32)
-    return float(np.sum(np.square(weights * (next_value - target_next_rtg))))
-
-
 def compute_scale_from_error(
     error_value: float,
     config: AdversarialRTGConfig,
@@ -195,39 +129,8 @@ def compute_scale_from_error(
     if float(running_stats.error_sigma) <= 0.0:
         return 1.0
 
-    error_norm = (
-        float(error_value) - float(running_stats.error_mean)
-    ) / float(running_stats.error_sigma)
+    error_norm = (float(error_value) - float(running_stats.error_mean)) / float(
+        running_stats.error_sigma
+    )
     sigmoid = 1.0 / (1.0 + math.exp(-error_norm))
-    return float(
-        config.reward_scale * math.sqrt(sigmoid + config.epsilon)
-    )
-
-
-def compute_ego_action_scale(
-    *,
-    config: AdversarialRTGConfig,
-    current_rtg: np.ndarray,
-    next_rtg: np.ndarray,
-    tilted_current_rtg: np.ndarray,
-    ego_reweight_tilt: tuple[float, float, float],
-    running_stats: AdversarialRTGRunningStats,
-    error_weights: np.ndarray | None = None,
-) -> float:
-    """Compute the delayed reweighting scale from RTG mismatch."""
-    if not config.enabled:
-        return 1.0
-    if all(float(value) == 0.0 for value in ego_reweight_tilt):
-        return 1.0
-
-    error_value = compute_ego_action_error(
-        current_rtg=current_rtg,
-        next_rtg=next_rtg,
-        tilted_current_rtg=tilted_current_rtg,
-        error_weights=error_weights,
-    )
-    return compute_scale_from_error(
-        error_value=error_value,
-        config=config,
-        running_stats=running_stats,
-    )
+    return float(config.reward_scale * math.sqrt(sigmoid + config.epsilon))

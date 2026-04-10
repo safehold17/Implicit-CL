@@ -29,7 +29,6 @@ from .core.env_bootstrap import (
 from .services.scenario_runtime import (
     get_vehicle_by_id,
     load_scenario,
-    remove_background_moving_vehicles,
 )
 from .services import scenario_pool as scenario_pool_service
 
@@ -82,7 +81,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
     
     Adversary action space (single-step joint action):
     - none: [scenario_idx]
-    - global/ego: [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt]
+    - global: [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt]
     - per_vehicle: [scenario_idx, per_vehicle_tilt_0, ..., per_vehicle_tilt_N-1]
     """
     
@@ -146,29 +145,6 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self.current_level = level
         self._set_level_seed(level.seed)
         return self.current_level
-
-    def _resolve_initial_ego_reweight_tilt(
-        self,
-        *,
-        tilting_mode: str,
-        opponent_runtime_mode: str,
-    ) -> Tuple[float, float, float]:
-        """Resolve the runtime tilt used for ego-side RTG mismatch computation."""
-        if not self.use_policy_reweighting:
-            return (0.0, 0.0, 0.0)
-        if opponent_runtime_mode != 'normal':
-            return (0.0, 0.0, 0.0)
-        if tilting_mode != 'ego':
-            return (0.0, 0.0, 0.0)
-
-        current_tilt = getattr(self.opponent, 'current_tilt', None)
-        if current_tilt is None:
-            return (0.0, 0.0, 0.0)
-        return (
-            float(current_tilt.goal_tilt),
-            float(current_tilt.veh_veh_tilt),
-            float(current_tilt.veh_edge_tilt),
-        )
 
     # ========== Visualization helpers (bound from visualization module) ==========
     render = viz.render
@@ -243,7 +219,7 @@ class NocturneCtrlSimAdversarial(gym.Env):
         """
         Action mapping (single-step joint action):
         - none: [scenario_idx]
-        - global/ego: [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt]
+        - global: [scenario_idx, goal_tilt, veh_veh_tilt, veh_edge_tilt]
         - per_vehicle: [scenario_idx, per_vehicle_tilt_0, ..., per_vehicle_tilt_N-1]
         
         Args:

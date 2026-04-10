@@ -137,9 +137,9 @@ def build_nocturne_ctrlsim_env_config(
         raise ValueError(f"opponent_k must be non-negative, got {opponent_k}")
 
     tilting_mode = str(kwargs.get("tilting_mode", "per_vehicle"))
-    if tilting_mode not in {"global", "per_vehicle", "ego", "none"}:
+    if tilting_mode not in {"global", "per_vehicle", "none"}:
         raise ValueError(
-            "tilting_mode must be 'global', 'per_vehicle', 'ego', or 'none', "
+            "tilting_mode must be 'global', 'per_vehicle', or 'none', "
             f"got {tilting_mode}"
         )
     mutation_mode = str(kwargs.get("mutation_mode", "all"))

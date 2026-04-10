@@ -464,7 +464,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tilting_mode",
         type=str,
-        choices=["global", "per_vehicle", "ego", "none"],
+        choices=["global", "per_vehicle", "none"],
         default="per_vehicle",
     )
     parser.add_argument(
@@ -533,12 +533,6 @@ def _build_tilting_columns(info, tilting_mode):
         e = float(info.get("veh_edge_tilt", 0.0))
         for _ in range(opp_count):
             tilts.append((g, v, e))
-    elif tilting_mode == "ego":
-        ego_goal_tilt = float(info.get("goal_tilt", 0.0))
-        ego_veh_veh_tilt = float(info.get("veh_veh_tilt", 0.0))
-        ego_veh_edge_tilt = float(info.get("veh_edge_tilt", 0.0))
-        for _ in range(opp_count):
-            tilts.append((0.0, 0.0, 0.0))
     else:
         for _ in range(opp_count):
             tilts.append((0.0, 0.0, 0.0))
