@@ -12,6 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from batch_inference.batch_ipc import pack_prepared
+from ctrlsim_adapter.regret_enhancement_helper import (
+    should_collect_ego_ctrlsim_rtg_step,
+)
 from ctrlsim_adapter.policy_reweighting_helpers import (
     should_trigger_policy_reweighting_step,
 )
@@ -308,16 +311,35 @@ def prepare_step_pack(
         }
 
     opponent_needs_prepare = not _should_skip_opponent_inference(adapter, t)
-    ego_needs_prepare = (
+    ego_policy_ready = (
         include_ego_ctrlsim_prepared
         and ego_id is not None
         and ego_id in adapter._policy.veh_id_to_idx
+    )
+    ego_needs_kl_prepare = (
+        ego_policy_ready
+        and bool(getattr(adapter, "use_ego_ctrlsim_kl_loss", True))
         and should_collect_ego_ctrlsim_kl_step(
             t=t,
             history_steps=adapter.history_steps,
             kl_loss_computation_frequency=adapter.kl_loss_computation_frequency,
         )
     )
+    ego_needs_rtg_prepare = (
+        ego_policy_ready
+        and bool(getattr(adapter, "enhanced_regret", False))
+        and should_collect_ego_ctrlsim_rtg_step(
+            t=t,
+            history_steps=adapter.history_steps,
+            sparse_inference_action_repeat=bool(
+                getattr(adapter, "sparse_inference_action_repeat", False)
+            ),
+            action_repeat_frequency=int(
+                getattr(adapter, "action_repeat_frequency", 1)
+            ),
+        )
+    )
+    ego_needs_prepare = ego_needs_kl_prepare or ego_needs_rtg_prepare
 
     shared_context = None
     if opponent_needs_prepare or ego_needs_prepare:

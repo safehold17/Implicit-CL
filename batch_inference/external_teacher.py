@@ -20,10 +20,18 @@ ctrlsim_path()
 
 from models.ctrl_sim import CtRLSim
 
-from .external_teacher_batch_collator import collate_jobs_with_padding
-from .batch_decoder.forward_batch import batch_predict_rtgs_mode as _batch_predict_rtgs_mode
-from .batch_decoder.forward_batch import forward_job_batch_impl
+from ctrlsim_adapter.policy_reweighting_helpers import (
+    AdversarialRTGConfig,
+    AdversarialRTGRunningStats,
+    compute_scale_from_error,
+    recover_current_ego_rtgs,
+)
+
 from .batch_decoder import rtg as rtg_impl
+from .batch_decoder.forward_batch import (
+    batch_predict_rtgs_mode as _batch_predict_rtgs_mode,
+)
+from .batch_decoder.forward_batch import forward_job_batch_impl
 from .batch_decoder.rtg import (
     _SIDE_CHANNEL_RTG_STAGE_TAG,
     sample_tilted_rtg_side_channel_batched_impl,
@@ -33,6 +41,7 @@ from .batch_ipc.prepared import (
     get_prepared_focal_id,
     get_prepared_focal_motion_data,
 )
+from .external_teacher_batch_collator import collate_jobs_with_padding
 from .external_teacher_helper import (
     _append_flat_job_views_to_env_parts,
     _assert_required_keys,
@@ -44,12 +53,6 @@ from .external_teacher_helper import (
     _config_get,
     _fill_empty_ok_env_results,
     _find_flat_rtg_value,
-)
-from ctrlsim_adapter.policy_reweighting_helpers import (
-    AdversarialRTGConfig,
-    AdversarialRTGRunningStats,
-    compute_scale_from_error,
-    recover_current_ego_rtgs,
 )
 
 
@@ -137,8 +140,7 @@ class ExternalTeacher:
         print("[ExternalTeacher] Model loaded successfully.")
         print(f"[ExternalTeacher] Inference precision: {self.inference_precision}")
         print(
-            "[ExternalTeacher] Runtime param dtype: "
-            f"{self._get_runtime_param_dtype()}"
+            f"[ExternalTeacher] Runtime param dtype: {self._get_runtime_param_dtype()}"
         )
 
         ckpt_cfg = self.model.cfg
@@ -181,7 +183,9 @@ class ExternalTeacher:
                 f"teacher=({self.accel_discretization}, {self.steer_discretization})."
             )
 
-    def run_batched_forward(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
+    def run_batched_forward(
+        self, per_env_prepared: List[Optional[Dict[str, Any]]]
+    ) -> List[Optional[Dict[str, Any]]]:
         """
         跨 env 聚合 prepared 输入，并执行批量推理与结果回收。
         Aggregate prepared inputs across environments, run batched inference pipeline,
@@ -211,7 +215,9 @@ class ExternalTeacher:
                     batch_predict_rtgs_mode_fn=_batch_predict_rtgs_mode,
                     decode_rtg_jobs_batched_fn=rtg_impl.decode_rtg_jobs_batched_impl,
                 )
-                env_outputs = self._aggregate_job_outputs_by_env(batch_output, decoded_prepared, results)
+                env_outputs = self._aggregate_job_outputs_by_env(
+                    batch_output, decoded_prepared, results
+                )
                 return self._pack_outputs(env_outputs)
             finally:
                 for prepared in decoded_prepared:
@@ -236,7 +242,10 @@ class ExternalTeacher:
         if self.inference_precision == "amp_fp16":
             return True, torch.float16
 
-        if self.inference_precision == "amp_bf16" and not torch.cuda.is_bf16_supported():
+        if (
+            self.inference_precision == "amp_bf16"
+            and not torch.cuda.is_bf16_supported()
+        ):
             raise ValueError("amp_bf16 is not supported on this CUDA device.")
         return True, torch.bfloat16
 
@@ -259,7 +268,9 @@ class ExternalTeacher:
             return nullcontext()
         return torch.autocast(device_type="cuda", dtype=self._autocast_dtype)
 
-    def _decode_prepared_batch(self, per_env_prepared: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
+    def _decode_prepared_batch(
+        self, per_env_prepared: List[Optional[Dict[str, Any]]]
+    ) -> List[Optional[Dict[str, Any]]]:
         decoded_prepared: List[Optional[Dict[str, Any]]] = []
         for prepared in per_env_prepared:
             if prepared is None:
@@ -268,15 +279,26 @@ class ExternalTeacher:
             decoded_prepared.append(unpack_prepared(prepared))
         return decoded_prepared
 
-    def _pack_outputs(self, outputs: List[Optional[Dict[str, Any]]]) -> List[Optional[Dict[str, Any]]]:
-        return [pack_model_outputs(output) if output is not None else None for output in outputs]
+    def _pack_outputs(
+        self, outputs: List[Optional[Dict[str, Any]]]
+    ) -> List[Optional[Dict[str, Any]]]:
+        return [
+            pack_model_outputs(output) if output is not None else None
+            for output in outputs
+        ]
 
-    def _build_empty_env_result(self, prepared: Dict[str, Any], env_idx: int, status: str) -> Dict[str, Any]:
+    def _build_empty_env_result(
+        self, prepared: Dict[str, Any], env_idx: int, status: str
+    ) -> Dict[str, Any]:
         """构造单个 env 的空 flat 输出结果。
 
         Build the empty flat output result for one environment.
         """
-        _assert_required_keys(prepared, ("step_t", "token_index", "dead_ids"), f"prepared env_idx={env_idx}")
+        _assert_required_keys(
+            prepared,
+            ("step_t", "token_index", "dead_ids"),
+            f"prepared env_idx={env_idx}",
+        )
         return {
             "status": status,
             "env_idx": env_idx,
@@ -337,7 +359,9 @@ class ExternalTeacher:
             env_idx=int(env_parts["env_idx"]),
             status="ok",
         )
-        env_output["action_veh_ids"] = _concat_or_empty_ids(env_parts["action_veh_ids_parts"])
+        env_output["action_veh_ids"] = _concat_or_empty_ids(
+            env_parts["action_veh_ids_parts"]
+        )
         env_output["action_values"] = _concat_or_empty_values(
             env_parts["action_values_parts"],
             width=2,
@@ -406,10 +430,9 @@ class ExternalTeacher:
             prepared = job["prepared"]
             focal_idx = int(job["focal_idx"])
             owner_focal_id = prepared.get("ego_context_owner_focal_id")
-            if (
-                owner_focal_id is None
-                or get_prepared_focal_id(prepared, focal_idx) != int(owner_focal_id)
-            ):
+            if owner_focal_id is None or get_prepared_focal_id(
+                prepared, focal_idx
+            ) != int(owner_focal_id):
                 continue
 
             ego_id = prepared.get("ego_id")
@@ -496,9 +519,8 @@ class ExternalTeacher:
         for idx, job_idx in enumerate(valid_job_indices):
             running_stats = self._get_policy_reweighting_running_stats()
             error_value = float(error_values[idx])
-            if (
-                self.policy_reweighting_config.enabled
-                and any(float(value) != 0.0 for value in ego_reweight_tilts[idx])
+            if self.policy_reweighting_config.enabled and any(
+                float(value) != 0.0 for value in ego_reweight_tilts[idx]
             ):
                 scales[job_idx] = compute_scale_from_error(
                     error_value=error_value,
@@ -569,13 +591,26 @@ class ExternalTeacher:
         self,
         opponent_prepared_batch: List[Optional[Dict[str, Any]]],
         ego_prepared_batch: List[Optional[Dict[str, Any]]],
-    ) -> Tuple[List[Optional[Dict[str, Any]]], List[Optional[np.ndarray]]]:
+    ) -> Tuple[
+        List[Optional[Dict[str, Any]]],
+        List[Optional[np.ndarray]],
+        List[Optional[np.ndarray]],
+        List[Optional[Dict[str, int]]],
+    ]:
         with torch.inference_mode():
             decoded_opponent = self._decode_prepared_batch(opponent_prepared_batch)
             decoded_ego = self._decode_prepared_batch(ego_prepared_batch)
             try:
-                opponent_results: List[Optional[Dict[str, Any]]] = [None] * len(decoded_opponent)
-                ego_logits_by_env: List[Optional[np.ndarray]] = [None] * len(decoded_ego)
+                opponent_results: List[Optional[Dict[str, Any]]] = [None] * len(
+                    decoded_opponent
+                )
+                ego_logits_by_env: List[Optional[np.ndarray]] = [None] * len(
+                    decoded_ego
+                )
+                ego_rtgs_by_env: List[Optional[np.ndarray]] = [None] * len(decoded_ego)
+                ego_rtg_metadata_by_env: List[Optional[Dict[str, int]]] = [
+                    None
+                ] * len(decoded_ego)
 
                 opponent_jobs = _collect_focal_jobs(
                     decoded_opponent,
@@ -621,6 +656,31 @@ class ExternalTeacher:
                                     if action_logits is not None
                                     else None
                                 )
+                                ego_id = views["prepared_by_job"][job_idx].get("ego_id")
+                                if ego_id is None:
+                                    focal_ids = np.asarray(
+                                        views["prepared_by_job"][job_idx]["focal_ids"],
+                                        dtype=np.int64,
+                                    )
+                                    ego_id = int(focal_ids[0])
+                                if ego_id is not None:
+                                    rtg_value = _find_flat_rtg_value(
+                                        batch_output["flat_rtg_results"],
+                                        job_idx=job_idx,
+                                        veh_id=int(ego_id),
+                                    )
+                                    if rtg_value is not None:
+                                        prepared = views["prepared_by_job"][job_idx]
+                                        ego_rtgs_by_env[env_idx] = np.asarray(
+                                            rtg_value,
+                                            dtype=np.float32,
+                                        ).reshape((3,))  # flatten to 1D
+                                        ego_rtg_metadata_by_env[env_idx] = {
+                                            "env_idx": int(env_idx),
+                                            "step_t": int(prepared["step_t"]),
+                                            "token_index": int(prepared["token_index"]),
+                                            "ego_id": int(ego_id),
+                                        }
                                 if decoded_opponent[env_idx] is not None:
                                     env_parts = opponent_env_parts.setdefault(
                                         env_idx,
@@ -648,14 +708,21 @@ class ExternalTeacher:
                             )
 
                 for env_idx, env_parts in opponent_env_parts.items():
-                    opponent_results[env_idx] = self._finalize_env_output_parts(env_parts)
+                    opponent_results[env_idx] = self._finalize_env_output_parts(
+                        env_parts
+                    )
 
                 _fill_empty_ok_env_results(
                     decoded_opponent,
                     opponent_results,
                     self._build_empty_env_result,
                 )
-                return self._pack_outputs(opponent_results), ego_logits_by_env
+                return (
+                    self._pack_outputs(opponent_results),
+                    ego_logits_by_env,
+                    ego_rtgs_by_env,
+                    ego_rtg_metadata_by_env,
+                )
             finally:
                 for prepared in decoded_opponent:
                     release_prepared_payload(prepared)

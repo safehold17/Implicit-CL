@@ -842,12 +842,22 @@ class AdversarialRunner(object):
         use_policy_reweighting = bool(
             getattr(self.args, "use_policy_reweighting", False)
         )
+        enhanced_regret = bool(
+            getattr(self.args, "enhanced_regret", False)
+        )
 
         ego_ctrlsim_logits = [None] * len(ego_ctrlsim_prepared)
-        if use_ego_ctrlsim_kl_loss or use_policy_reweighting:
+        ego_ctrlsim_rtgs = [None] * len(ego_ctrlsim_prepared)
+        ego_ctrlsim_rtg_metadata = [None] * len(ego_ctrlsim_prepared)
+        if use_ego_ctrlsim_kl_loss or use_policy_reweighting or enhanced_regret:
             if self.external_teacher is None:
                 raise RuntimeError("Nocturne training requires an ExternalTeacher.")
-            model_outputs, ego_ctrlsim_logits = (
+            (
+                model_outputs,
+                ego_ctrlsim_logits,
+                ego_ctrlsim_rtgs,
+                ego_ctrlsim_rtg_metadata,
+            ) = (
                 self.external_teacher.run_batched_forward_with_ego_logits(
                     opponent_prepared,
                     ego_ctrlsim_prepared,
@@ -868,8 +878,18 @@ class AdversarialRunner(object):
             auto_reset_on_done=auto_reset_on_done,
         )
 
-        for info, logits in zip(infos, ego_ctrlsim_logits):
+        for info, logits, rtg, rtg_metadata in zip(
+            infos,
+            ego_ctrlsim_logits,
+            ego_ctrlsim_rtgs,
+            ego_ctrlsim_rtg_metadata,
+        ):
             info["ego_ctrlsim_action_logits"] = logits
+            info["ego_ctrlsim_pred_rtg"] = rtg
+            info["ego_ctrlsim_pred_rtg_metadata"] = rtg_metadata
+            info["ego_ctrlsim_pred_rtg_step"] = (
+                None if rtg_metadata is None else int(rtg_metadata["step_t"])
+            )
 
         return obs, reward, done, infos
 

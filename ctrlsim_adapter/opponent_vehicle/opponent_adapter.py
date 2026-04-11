@@ -62,6 +62,8 @@ class CtrlSimOpponentAdapter:
         action_repeat_frequency: int = 2,
         kl_loss_computation_frequency: int = 2,
         sparse_inference_action_repeat: bool = False,
+        use_ego_ctrlsim_kl_loss: bool = False,
+        enhanced_regret: bool = False,
         use_policy_reweighting: bool = False,
         policy_reweighting_reward_scale: float = 1.0,
         policy_reweighting_epsilon: float = 1e-6,
@@ -89,6 +91,8 @@ class CtrlSimOpponentAdapter:
         kl_loss_computation_frequency: cycle length N for ego KL-loss collection.
         sparse_inference_action_repeat: 是否启用动作复用节奏
         sparse_inference_action_repeat: whether to enable the action-reuse cadence.
+        use_ego_ctrlsim_kl_loss: whether to collect ego teacher logits for KL.
+        enhanced_regret: whether to export ego teacher RTGs for regret enhancement.
         use_policy_reweighting: 是否启用 opponent policy delayed reweighting
         use_policy_reweighting: whether to enable delayed opponent policy reweighting.
         policy_reweighting_reward_scale: policy reweighting scalar multiplier.
@@ -116,6 +120,8 @@ class CtrlSimOpponentAdapter:
         self.action_repeat_frequency = int(action_repeat_frequency)
         self.kl_loss_computation_frequency = int(kl_loss_computation_frequency)
         self.sparse_inference_action_repeat = bool(sparse_inference_action_repeat)
+        self.use_ego_ctrlsim_kl_loss = bool(use_ego_ctrlsim_kl_loss)
+        self.enhanced_regret = bool(enhanced_regret)
         self.use_policy_reweighting = bool(use_policy_reweighting)
         self.policy_reweighting_target = str(policy_reweighting_target)
         self.reweighting_frequency = int(reweighting_frequency)

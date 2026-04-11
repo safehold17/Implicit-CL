@@ -15,6 +15,55 @@ from utils.sim import compute_reward
 from utils.data import compute_distance_to_road_edge
 
 
+_STUDENT_COMPONENT_APPLIED_RETURN_ATTRS = (
+    "student_goal_pos_component_applied_return",
+    "student_veh_veh_component_applied_return",
+    "student_veh_edge_component_applied_return",
+)
+
+
+def reset_student_component_applied_return(env) -> None:
+    """Reset student component applied returns used by enhanced regret."""
+    for attr in _STUDENT_COMPONENT_APPLIED_RETURN_ATTRS:
+        setattr(env, attr, 0.0)
+
+
+def get_student_component_applied_return(env) -> np.ndarray:
+    """Return the current student component applied return as [goal, veh, edge]."""
+    return np.array(
+        [
+            float(getattr(env, _STUDENT_COMPONENT_APPLIED_RETURN_ATTRS[0], 0.0)),
+            float(getattr(env, _STUDENT_COMPONENT_APPLIED_RETURN_ATTRS[1], 0.0)),
+            float(getattr(env, _STUDENT_COMPONENT_APPLIED_RETURN_ATTRS[2], 0.0)),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _accumulate_student_component_applied_return(
+    env,
+    goal_pos_component: float,
+    veh_veh_component: float,
+    veh_edge_component: float,
+) -> None:
+    """Accumulate student RTG-aligned reward components when enabled."""
+    if not getattr(env, "enhanced_regret", False):
+        return
+
+    env.student_goal_pos_component_applied_return = (
+        float(getattr(env, "student_goal_pos_component_applied_return", 0.0))
+        + float(goal_pos_component)
+    )
+    env.student_veh_veh_component_applied_return = (
+        float(getattr(env, "student_veh_veh_component_applied_return", 0.0))
+        + float(veh_veh_component)
+    )
+    env.student_veh_edge_component_applied_return = (
+        float(getattr(env, "student_veh_edge_component_applied_return", 0.0))
+        + float(veh_edge_component)
+    )
+
+
 def _angle_diff(a: float, b: float) -> float:
     """Calculate the difference between two angles (handle wraparound)."""
     diff = a - b
@@ -25,11 +74,12 @@ def _angle_diff(a: float, b: float) -> float:
     return diff
 
 
-def _compute_veh_veh_shaped_reward(env, ego_id: int, ego_pos_arr: np.ndarray) -> float:
-    """Compute CtrlSim-style veh-veh shaped reward in [0, 1]."""
-    if not getattr(env, 'use_veh_veh_shaped', True):
-        return 0.0
-
+def _compute_raw_veh_veh_shaped_reward(
+    env,
+    ego_id: int,
+    ego_pos_arr: np.ndarray,
+) -> float:
+    """Compute raw CtrlSim-style veh-veh shaped reward in [0, 1], used in enhanced regret."""
     max_veh_veh_distance = float(getattr(env, 'max_veh_veh_distance', 15.0))
     if max_veh_veh_distance <= 0.0:
         return 0.0
@@ -50,6 +100,20 @@ def _compute_veh_veh_shaped_reward(env, ego_id: int, ego_pos_arr: np.ndarray) ->
     )
 
 
+def _compute_veh_veh_shaped_reward(
+    env,
+    ego_id: int,
+    ego_pos_arr: np.ndarray,
+    raw_value: float | None = None,
+) -> float:
+    """Compute CtrlSim-style veh-veh shaped reward for training, decoupled with enhanced regret."""
+    if not getattr(env, 'use_veh_veh_shaped', True):
+        return 0.0
+    if raw_value is not None:
+        return float(raw_value)
+    return _compute_raw_veh_veh_shaped_reward(env, ego_id, ego_pos_arr)
+
+
 def _get_student_road_edge_polylines(env) -> tuple[np.ndarray, ...]:
     """Return cached road-edge polylines, materializing them once per episode."""
     road_edge_polylines = getattr(env, '_student_road_edge_polylines', ())
@@ -67,11 +131,8 @@ def _get_student_road_edge_polylines(env) -> tuple[np.ndarray, ...]:
     return road_edge_polylines
 
 
-def _compute_veh_edge_shaped_reward(env, ego_pos_arr: np.ndarray) -> float:
-    """Compute CtrlSim-style veh-edge shaped reward in [0, 1]."""
-    if not getattr(env, 'use_veh_edge_shaped', True):
-        return 0.0
-
+def _compute_raw_veh_edge_shaped_reward(env, ego_pos_arr: np.ndarray) -> float:
+    """Compute raw CtrlSim-style veh-edge shaped reward in [0, 1], used in enhanced regret."""
     clip_distance = float(getattr(env, 'veh_edge_reward_distance_clip', 5.0))
     if clip_distance <= 0.0:
         return 0.0
@@ -92,6 +153,19 @@ def _compute_veh_edge_shaped_reward(env, ego_pos_arr: np.ndarray) -> float:
 
     edge_distance = float(np.abs(signed_distance[0]))
     return float(np.clip(edge_distance, 0.0, clip_distance) / clip_distance)
+
+
+def _compute_veh_edge_shaped_reward(
+    env,
+    ego_pos_arr: np.ndarray,
+    raw_value: float | None = None,
+) -> float:
+    """Compute CtrlSim-style veh-edge shaped reward for training, decoupled with enhanced regret."""
+    if not getattr(env, 'use_veh_edge_shaped', True):
+        return 0.0
+    if raw_value is not None:
+        return float(raw_value)
+    return _compute_raw_veh_edge_shaped_reward(env, ego_pos_arr)
 
 
 def compute_student_reward(env) -> float:
@@ -225,8 +299,26 @@ def compute_student_reward(env) -> float:
     speed_target_term = speed_target_achieved if use_speed_heading_target else 0.0
     speed_shaped_term = speed_shaped if use_speed_shaped else 0.0
     heading_shaped_term = heading_shaped if use_heading_shaped else 0.0
-    veh_veh_shaped_term = _compute_veh_veh_shaped_reward(env, ego_id, ego_pos_arr)  # [0, 1]
-    veh_edge_shaped_term = _compute_veh_edge_shaped_reward(env, ego_pos_arr)  #[0, 1]
+    raw_veh_veh_shaped_term = _compute_raw_veh_veh_shaped_reward(
+        env,
+        ego_id,
+        ego_pos_arr,
+    )
+    raw_veh_edge_shaped_term = _compute_raw_veh_edge_shaped_reward(
+        env,
+        ego_pos_arr,
+    )
+    veh_veh_shaped_term = _compute_veh_veh_shaped_reward(
+        env,
+        ego_id,
+        ego_pos_arr,
+        raw_value=raw_veh_veh_shaped_term,
+    )
+    veh_edge_shaped_term = _compute_veh_edge_shaped_reward(
+        env,
+        ego_pos_arr,
+        raw_value=raw_veh_edge_shaped_term,
+    )
 
     scalar_reward = (
             position_reward_term
@@ -240,6 +332,21 @@ def compute_student_reward(env) -> float:
             + veh_edge_shaped_term     # not using
             - veh_veh_collision * env.veh_veh_collision_rew_multiplier
             - veh_edge_collision * env.veh_edge_collision_rew_multiplier
+    )
+
+    _accumulate_student_component_applied_return(
+        env,
+        goal_pos_component=(
+            position_target_achieved * env.pos_target_achieved_rew_multiplier
+        ),
+        veh_veh_component=(
+            raw_veh_veh_shaped_term
+            - veh_veh_collision * env.veh_veh_collision_rew_multiplier
+        ),
+        veh_edge_component=(
+            raw_veh_edge_shaped_term
+            - veh_edge_collision * env.veh_edge_collision_rew_multiplier
+        ),
     )
 
     env.episode_reward += scalar_reward

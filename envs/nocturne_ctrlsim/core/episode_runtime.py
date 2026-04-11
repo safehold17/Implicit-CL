@@ -36,7 +36,10 @@ from ..student.observation_action import (
     apply_student_action,
     refresh_student_vehicle_cache,
 )
-from ..student.student_reward import compute_student_reward
+from ..student.student_reward import (
+    compute_student_reward,
+    reset_student_component_applied_return,
+)
 from ctrlsim_adapter._data_bridge.scenario import road_data_to_numpy
 
 
@@ -109,6 +112,7 @@ class NocturneCtrlSimRuntime:
         env._episode_position_reached = False
         env._episode_steps = 0
         env._episode_progress = 0.0
+        reset_student_component_applied_return(env)
 
         # Keep the episode boundary aligned with ``level.seed`` for downstream
         # logic that still implicitly depends on NumPy's global RNG state.
