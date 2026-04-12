@@ -248,7 +248,7 @@ class FileWriter:
             "veh_goal_avg": ("veh_goal_avg",),
             "veh_veh_avg": ("veh_veh_avg",),
             "veh_edge_avg": ("veh_edge_avg",),
-            "progress": ("avg_progress", "progress"),
+            "progress": ("max_progress", "progress"),
             "collision": ("collision_occurred", "collision"),
             "offroad": ("offroad_occurred", "offroad"),
             "position_reached": ("position_reached_occurred", "position_reached"),

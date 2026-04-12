@@ -459,7 +459,10 @@ def parse_args() -> argparse.Namespace:
         "--progress_threshold",
         type=float,
         default=0.85,
-        help="Progress threshold used in solved metric: solved if progress > threshold or position_reached.",
+        help=(
+            "Progress threshold used in solved metric: solved if max progress "
+            "> threshold and no collision/offroad occurred."
+        ),
     )
     parser.add_argument(
         "--tilting_mode",
@@ -588,10 +591,17 @@ def _extract_episode_metrics(
         "position_reached_occurred", info.get("position_reached", 0.0)
     )
     offroad = info.get("offroad_occurred", info.get("offroad", 0.0))
-    progress = info.get("avg_progress", info.get("progress", 0.0))
+    progress = info.get(
+        "max_progress",
+        info.get("progress", 0.0),
+    )
     solved = (
         1.0
-        if (float(progress) > float(progress_threshold) or float(position_reached) > 0.0)
+        if (
+            float(progress) > float(progress_threshold)
+            and float(collision) == 0.0
+            and float(offroad) == 0.0
+        )
         else 0.0
     )
 

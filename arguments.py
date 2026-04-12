@@ -913,6 +913,15 @@ parser.add_argument(
     help="Goal position tolerance in meters for student and opponent vehicles.",
 )
 parser.add_argument(
+    "--solvable_progress_threshold",
+    type=float,
+    default=0.85,
+    help=(
+        "Episode success threshold: success if max_progress is above this value "
+        "and no collision/offroad occurred."
+    ),
+)
+parser.add_argument(
     "--remove_background_vehicles",
     type=str2bool,
     nargs="?",

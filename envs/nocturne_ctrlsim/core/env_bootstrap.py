@@ -50,6 +50,7 @@ def _init_config_state(
     env.action_repeat_frequency = config.action_repeat_frequency
     env.kl_loss_computation_frequency = config.kl_loss_computation_frequency
     env.fixed_environment = config.fixed_environment
+    env.solvable_progress_threshold = config.solvable_progress_threshold
     env.current_ego_reweight_tilt = (0, 0, 0)
     env._set_process_seed(config.seed)
 

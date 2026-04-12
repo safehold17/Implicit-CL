@@ -176,7 +176,7 @@ def main(args, clearml_task=None):
                 'offroad_occurred': 'offroad',
                 'goal_reached_occurred': 'goal_reached',
                 'position_reached_occurred': 'position_reached',
-                'avg_progress': 'progress',
+                'max_progress': 'progress',
                 'scenario_episode_reward': 'update_reward',
                 'plr_scenario_episode_reward': 'plr_update_reward',
             }

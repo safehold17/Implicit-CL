@@ -141,14 +141,38 @@ def get_complexity_info(env) -> Dict[str, Any]:
     return build_complexity_snapshot(env, build_episode_stats(env))
 
 
+def is_episode_success(
+    max_progress: float,
+    collision_occurred: float,
+    offroad_occurred: float,
+    threshold: float,
+) -> bool:
+    """Return whether an episode satisfies the default solvable criterion."""
+    return (
+        float(max_progress) > float(threshold)
+        and float(collision_occurred) == 0.0
+        and float(offroad_occurred) == 0.0
+    )
+
+
 def build_episode_stats(env) -> Dict[str, float]:
     """Build episode statistics payload shared by info and complexity APIs."""
+    collision_occurred = 1.0 if env._episode_collision_occurred else 0.0
+    offroad_occurred = 1.0 if env._episode_offroad_occurred else 0.0
+    max_progress = float(env._episode_progress)
+    success = 1.0 if is_episode_success(
+        max_progress=max_progress,
+        collision_occurred=collision_occurred,
+        offroad_occurred=offroad_occurred,
+        threshold=float(getattr(env, 'solvable_progress_threshold', 0.85)),
+    ) else 0.0
     return {
-        'collision_occurred': 1.0 if env._episode_collision_occurred else 0.0,
+        'collision_occurred': collision_occurred,
         'goal_reached_occurred': 1.0 if env._episode_goal_reached else 0.0,
         'position_reached_occurred': 1.0 if env._episode_position_reached else 0.0,
-        'offroad_occurred': 1.0 if env._episode_offroad_occurred else 0.0,
-        'avg_progress': env._episode_progress,
+        'offroad_occurred': offroad_occurred,
+        'max_progress': max_progress,
+        'success': success,
         'episode_steps': env._episode_steps,
         'episode_reward': env.episode_reward,
     }

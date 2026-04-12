@@ -51,6 +51,7 @@ class NocturneCtrlSimEnvConfig:
     opponent_runtime_mode: str
     done_on_position_reached_only: bool
     goal_pos_tolerance: float
+    solvable_progress_threshold: float
     student_num_neighbors: int
     student_top_k_road: int
     veh_veh_collision_rew_multiplier: float
@@ -215,6 +216,9 @@ def build_nocturne_ctrlsim_env_config(
             kwargs.get("done_on_position_reached_only", True)
         ),
         goal_pos_tolerance=float(kwargs.get("goal_pos_tolerance", 2.0)),
+        solvable_progress_threshold=float(
+            kwargs.get("solvable_progress_threshold", 0.85)
+        ),
         student_num_neighbors=int(kwargs.get("student_num_neighbors", 16)),
         student_top_k_road=int(kwargs.get("student_top_k_road", 64)),
         veh_veh_collision_rew_multiplier=float(

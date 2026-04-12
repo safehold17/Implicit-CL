@@ -547,6 +547,8 @@ class AdversarialRunner(object):
                 continue
             if k.startswith('per_vehicle_'):
                 continue
+            if k.endswith('_progress') and k not in ('max_progress', 'plr_progress'):
+                continue
             filtered[k] = v
         return filtered
 
@@ -561,11 +563,13 @@ class AdversarialRunner(object):
         for process_idx, info in enumerate(infos):
             process_log = {'process_idx': process_idx}
             process_log.update(self._filter_nocturne_process_info(info))
-            avg_progress = process_log.get('avg_progress', None)
+            max_progress = process_log.pop('max_progress', None)
+            if max_progress is not None:
+                process_log['max_progress'] = max_progress
             opponent_vehicle_num = process_log.get('opponent_vehicle_num', None)
             if log_replay_complexity:
-                process_log['avg_progress'] = None
-                process_log['plr_progress'] = avg_progress
+                process_log['max_progress'] = None
+                process_log['plr_progress'] = max_progress
                 process_log['opponent_vehicle_num'] = None
                 process_log['plr_opponent_vehicle_num'] = opponent_vehicle_num
             else:
@@ -596,7 +600,7 @@ class AdversarialRunner(object):
         - collision_occurred: collision occurred flag (0/1)
         - offroad_occurred: offroad occurred flag (0/1)
         - goal_reached_occurred: goal reached flag (0/1)
-        - avg_progress: average progress
+        - max_progress: episode peak progress
         - episode_length: average episode length
         
         Args:
@@ -630,9 +634,9 @@ class AdversarialRunner(object):
                 if isinstance(v, (int, float)) and not np.isnan(v):
                     if k in ('opponent_k', 'scenario_pool_size'):
                         continue
-                    if k == 'avg_progress':
+                    if k == 'max_progress':
                         # Per-process progress is logged as progress/plr_progress;
-                        # skip aggregated scenario_avg_progress to avoid duplication.
+                        # skip aggregated scenario progress to avoid duplication.
                         continue
                     if k == 'seed':
                         # Keep per-process seed only; do not log aggregated scenario_seed.
