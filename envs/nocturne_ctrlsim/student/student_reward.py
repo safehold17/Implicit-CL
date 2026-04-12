@@ -299,14 +299,25 @@ def compute_student_reward(env) -> float:
     speed_target_term = speed_target_achieved if use_speed_heading_target else 0.0
     speed_shaped_term = speed_shaped if use_speed_shaped else 0.0
     heading_shaped_term = heading_shaped if use_heading_shaped else 0.0
-    raw_veh_veh_shaped_term = _compute_raw_veh_veh_shaped_reward(
-        env,
-        ego_id,
-        ego_pos_arr,
+    enhanced_regret = bool(getattr(env, "enhanced_regret", False))
+    use_veh_veh_shaped = getattr(env, 'use_veh_veh_shaped', True)
+    use_veh_edge_shaped = getattr(env, 'use_veh_edge_shaped', True)
+    raw_veh_veh_shaped_term = (
+        _compute_raw_veh_veh_shaped_reward(
+            env,
+            ego_id,
+            ego_pos_arr,
+        )
+        if enhanced_regret or use_veh_veh_shaped
+        else 0.0
     )
-    raw_veh_edge_shaped_term = _compute_raw_veh_edge_shaped_reward(
-        env,
-        ego_pos_arr,
+    raw_veh_edge_shaped_term = (
+        _compute_raw_veh_edge_shaped_reward(
+            env,
+            ego_pos_arr,
+        )
+        if enhanced_regret or use_veh_edge_shaped
+        else 0.0
     )
     veh_veh_shaped_term = _compute_veh_veh_shaped_reward(
         env,
