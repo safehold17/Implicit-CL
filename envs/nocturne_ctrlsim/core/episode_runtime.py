@@ -37,6 +37,7 @@ from ..student.observation_action import (
     refresh_student_vehicle_cache,
 )
 from ..student.student_reward import (
+    get_student_component_applied_return,
     compute_student_reward,
     reset_student_component_applied_return,
 )
@@ -113,6 +114,9 @@ class NocturneCtrlSimRuntime:
         env._episode_steps = 0
         env._episode_progress = 0.0
         reset_student_component_applied_return(env)
+        env._student_component_applied_return_before_inference_step = (
+            get_student_component_applied_return(env)
+        )
 
         # Keep the episode boundary aligned with ``level.seed`` for downstream
         # logic that still implicitly depends on NumPy's global RNG state.
@@ -307,6 +311,10 @@ class NocturneCtrlSimRuntime:
         opponent adapter to package the inference payload for the current state.
         """
         env = self.env
+        if bool(getattr(env, "use_enhanced_regret", False)):
+            env._student_component_applied_return_before_inference_step = (
+                get_student_component_applied_return(env)
+            )
         env.current_step += 1
         env._last_ego_student_action = apply_student_action(env, action)
 
@@ -327,6 +335,7 @@ class NocturneCtrlSimRuntime:
             include_ego_ctrlsim_prepared=bool(
                 getattr(env, "use_ego_ctrlsim_kl_loss", False)
                 or getattr(env, "use_policy_reweighting", False)
+                or getattr(env, "use_enhanced_regret", False)
             ),
         )
 

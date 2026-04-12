@@ -42,7 +42,7 @@ class NocturneCtrlSimEnvConfig:
     kl_loss_computation_frequency: int
     sparse_inference_action_repeat: bool
     use_ego_ctrlsim_kl_loss: bool
-    enhanced_regret: bool
+    use_enhanced_regret: bool
     use_policy_reweighting: bool
     policy_reweighting_target: str
     reweighting_frequency: int
@@ -205,7 +205,7 @@ def build_nocturne_ctrlsim_env_config(
             kwargs.get("sparse_inference_action_repeat", False)
         ),
         use_ego_ctrlsim_kl_loss=bool(kwargs.get("use_ego_ctrlsim_kl_loss", False)),
-        enhanced_regret=bool(kwargs.get("enhanced_regret", False)),
+        use_enhanced_regret=bool(kwargs.get("use_enhanced_regret", False)),
         use_policy_reweighting=use_policy_reweighting,
         policy_reweighting_target=policy_reweighting_target,
         reweighting_frequency=reweighting_frequency,

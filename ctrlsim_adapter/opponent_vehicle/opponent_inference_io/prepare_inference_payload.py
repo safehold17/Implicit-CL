@@ -327,7 +327,7 @@ def prepare_step_pack(
     )
     ego_needs_rtg_prepare = (
         ego_policy_ready
-        and bool(getattr(adapter, "enhanced_regret", False))
+        and bool(getattr(adapter, "use_enhanced_regret", False))
         and should_collect_ego_ctrlsim_rtg_step(
             t=t,
             history_steps=adapter.history_steps,

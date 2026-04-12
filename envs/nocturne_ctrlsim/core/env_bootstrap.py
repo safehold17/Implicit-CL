@@ -42,7 +42,7 @@ def _init_config_state(
 ) -> None:
     """Initialize direct config-backed env attributes."""
     env.use_ego_ctrlsim_kl_loss = config.use_ego_ctrlsim_kl_loss
-    env.enhanced_regret = config.enhanced_regret
+    env.use_enhanced_regret = config.use_enhanced_regret
     env.use_policy_reweighting = config.use_policy_reweighting
     env.policy_reweighting_target = config.policy_reweighting_target
     env.reweighting_frequency = config.reweighting_frequency
@@ -120,7 +120,7 @@ def _init_data_bridge_and_opponent(
         kl_loss_computation_frequency=config.kl_loss_computation_frequency,
         sparse_inference_action_repeat=config.sparse_inference_action_repeat,
         use_ego_ctrlsim_kl_loss=config.use_ego_ctrlsim_kl_loss,
-        enhanced_regret=config.enhanced_regret,
+        use_enhanced_regret=config.use_enhanced_regret,
         use_policy_reweighting=config.use_policy_reweighting,
         policy_reweighting_reward_scale=env.policy_reweighting_config.reward_scale,
         policy_reweighting_epsilon=env.policy_reweighting_config.epsilon,
@@ -204,6 +204,10 @@ def _init_environment_attributes(
     env._episode_steps = 0
     env._episode_progress = 0.0
     reset_student_component_applied_return(env)
+    env._student_component_applied_return_before_inference_step = np.zeros(
+        3,
+        dtype=np.float32,
+    )
     env._last_completed_complexity_info = None
 
     env.level_params_vec = init_level_params_vec(

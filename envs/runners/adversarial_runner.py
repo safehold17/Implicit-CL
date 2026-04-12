@@ -22,6 +22,10 @@ from teachDeepRL.teachers.teacher_controller import TeacherController
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
+from ctrlsim_adapter.regret_enhancement_helper import (
+    compute_truncated_episode_rtg_gap,
+    resolve_rollout_seed,
+)
 from envs.nocturne_ctrlsim.core.episode_runtime import split_prepared_pack_batch
 
 
@@ -846,14 +850,18 @@ class AdversarialRunner(object):
         use_policy_reweighting = bool(
             getattr(self.args, "use_policy_reweighting", False)
         )
-        enhanced_regret = bool(
-            getattr(self.args, "enhanced_regret", False)
+        use_enhanced_regret = bool(
+            getattr(self.args, "use_enhanced_regret", False)
         )
 
         ego_ctrlsim_logits = [None] * len(ego_ctrlsim_prepared)
         ego_ctrlsim_rtgs = [None] * len(ego_ctrlsim_prepared)
         ego_ctrlsim_rtg_metadata = [None] * len(ego_ctrlsim_prepared)
-        if use_ego_ctrlsim_kl_loss or use_policy_reweighting or enhanced_regret:
+        if (
+            use_ego_ctrlsim_kl_loss
+            or use_policy_reweighting
+            or use_enhanced_regret
+        ):
             if self.external_teacher is None:
                 raise RuntimeError("Nocturne training requires an ExternalTeacher.")
             (
@@ -919,6 +927,41 @@ class AdversarialRunner(object):
             torch.from_numpy(batch),   # zero-copy; batch is float32 already
             torch.from_numpy(valid),   # zero-copy; valid is bool already
         )
+
+    def _build_nocturne_rtg_record(self, info):
+        """Build one RTG segment record from a step info payload."""
+        teacher_rtg = info.get("ego_ctrlsim_pred_rtg")
+        step_t = info.get("ego_ctrlsim_pred_rtg_step")
+        student_return = info.get("student_component_applied_return")
+        if teacher_rtg is None or step_t is None or student_return is None:
+            return None
+        return {
+            "step_t": int(step_t),
+            "teacher_full_rtg_3d": np.asarray(teacher_rtg, dtype=np.float32),
+            "student_applied_return_3d_before_step": np.asarray(
+                student_return,
+                dtype=np.float32,
+            ),
+        }
+
+    def _append_nocturne_rtg_segment(
+        self,
+        seed,
+        records,
+        delta_rtg_segments_by_seed,
+        rtg_gap_method,
+        regret_component_weights,
+    ):
+        """Append one valid RTG segment gap to the seed aggregation."""
+        if seed is None:
+            return
+        delta_rtg_segment = compute_truncated_episode_rtg_gap(
+            records,
+            method=rtg_gap_method,
+            regret_component_weights=regret_component_weights,
+        )
+        if delta_rtg_segment is not None:
+            delta_rtg_segments_by_seed[int(seed)].append(delta_rtg_segment)
 
     def agent_rollout(self, 
                       agent, 
@@ -994,6 +1037,28 @@ class AdversarialRunner(object):
             )
         )
         first_done_info_by_process = {} if is_nocturne_rollout else None
+        track_nocturne_enhanced_regret = (
+            is_nocturne_rollout
+            and bool(getattr(args, "use_enhanced_regret", False))
+        )
+        if track_nocturne_enhanced_regret:
+            attempt_count_by_seed = defaultdict(int)
+            success_count_by_seed = defaultdict(int)
+            delta_rtg_segments_by_seed = defaultdict(list)
+            active_seed_by_process = [None for _ in range(args.num_processes)]
+            active_rtg_records_by_process = [
+                [] for _ in range(args.num_processes)
+            ]
+            rtg_gap_method = getattr(
+                args,
+                "rtg_difference_in_regret",
+                "first_inference_step_gap",
+            )
+            regret_component_weights = (
+                float(getattr(args, "regret_enhancement_w_goal", 1.0)),
+                float(getattr(args, "regret_enhancement_w_veh", 1.0)),
+                float(getattr(args, "regret_enhancement_w_edge", 1.0)),
+            )
         
         if self.use_accel_paired:
             actor_seeds = {i: [] for i in range(args.num_processes)}
@@ -1055,10 +1120,37 @@ class AdversarialRunner(object):
                 done = np.ones_like(done, dtype=np.float64)
 
             for i, info in enumerate(infos):
+                if track_nocturne_enhanced_regret:
+                    step_seed = resolve_rollout_seed(
+                        self.current_level_seeds,
+                        i,
+                        info,
+                    )
+                    if step_seed is not None:
+                        active_seed_by_process[i] = step_seed
+                    rtg_record = self._build_nocturne_rtg_record(info)
+                    if rtg_record is not None:
+                        active_rtg_records_by_process[i].append(rtg_record)
+
                 if 'episode' in info.keys():
                     if is_nocturne_rollout:
                         if i not in first_done_info_by_process:
                             first_done_info_by_process[i] = dict(info)
+                    if track_nocturne_enhanced_regret:
+                        seed = active_seed_by_process[i]
+                        if seed is not None:
+                            attempt_count_by_seed[seed] += 1
+                            success_count_by_seed[seed] += int(
+                                float(info.get("success", 0.0)) > 0.0
+                            )
+                            self._append_nocturne_rtg_segment(
+                                seed,
+                                active_rtg_records_by_process[i],
+                                delta_rtg_segments_by_seed,
+                                rtg_gap_method,
+                                regret_component_weights,
+                            )
+                        active_rtg_records_by_process[i] = []
                     rollout_returns[i].append(info['episode']['r'])
                     
                     if self.use_accel_paired:
@@ -1124,6 +1216,35 @@ class AdversarialRunner(object):
         # Add generated env to level store (as a constructive string representation)
         if is_env and plr_runtime_enabled and not level_replay:
             self._update_plr_with_current_unseen_levels()
+
+        if track_nocturne_enhanced_regret:
+            if bool(getattr(args, "include_truncated_rtg_gap", False)):
+                for i, records in enumerate(active_rtg_records_by_process):
+                    if records:
+                        seed = active_seed_by_process[i]
+                        self._append_nocturne_rtg_segment(
+                            seed,
+                            records,
+                            delta_rtg_segments_by_seed,
+                            rtg_gap_method,
+                            regret_component_weights,
+                        )
+            valid_rtg_segment_count_by_seed = {
+                int(seed): len(delta_rtg_segments_by_seed.get(seed, ()))
+                for seed in (
+                    set(attempt_count_by_seed.keys())
+                    | set(delta_rtg_segments_by_seed.keys())
+                )
+            }
+            rollout_info.update({
+                "attempt_count_by_seed": dict(attempt_count_by_seed),
+                "success_count_by_seed": dict(success_count_by_seed),
+                "delta_rtg_segments_by_seed": {
+                    int(seed): list(segments)
+                    for seed, segments in delta_rtg_segments_by_seed.items()
+                },
+                "valid_rtg_segment_count_by_seed": valid_rtg_segment_count_by_seed,
+            })
 
         rollout_info.update(self._get_rollout_return_stats(rollout_returns))
         if is_nocturne_rollout:

@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 import numpy as np
 
+from ..student.student_reward import get_student_component_applied_return
 from ..utils.common import clamp01, merge_episode_progress
 
 
@@ -105,6 +106,18 @@ def get_info(env) -> Dict[str, Any]:
             if np.isfinite(raw_scale):
                 scale = raw_scale
     info['ego_action_scale'] = scale
+    if bool(getattr(env, 'use_enhanced_regret', False)):
+        student_component_applied_return = getattr(
+            env,
+            '_student_component_applied_return_before_inference_step',
+            None,
+        )
+        if student_component_applied_return is None:
+            student_component_applied_return = get_student_component_applied_return(env)
+        info['student_component_applied_return'] = np.asarray(
+            student_component_applied_return,
+            dtype=np.float32,
+        )
 
     # Add episode summary when episode ends
     if done:
