@@ -3,7 +3,7 @@
     "env_name": ["Nocturne-CtrlSim-v0"],
     "ued_algo": ["domain_randomization"],
     "num_processes": [32],
-    "num_env_steps": [204800000],
+    "num_env_steps": [99941400],
     "seed": [123],
 
     "__note1__": ["learning parameters"],
@@ -12,7 +12,7 @@
     "use_gae": [true],
     "gae_lambda": [0.95],
     "handle_timelimits": [false],
-    "num_steps": [256],
+    "num_steps": [512],
     "ppo_epoch": [10],
     "num_mini_batch": [32],
     "recurrent_agent": [false],
@@ -86,11 +86,11 @@
     "ego_ctrlsim_kl_min_coef": [0.0],
 
     "__note10__": ["dataset parameters"],
-    "scenario_index_path": ["preparation_file/scenarios_index_filtered_train.json"],
+    "scenario_index_path": ["scenario_json/scenario_index_10k_train.json"],
+    "vehicle_map_path": ["scenario_json/vehicle_map_10k_train.json"],
     "scenario_data_dir": ["scenario_data/formatted_json_v2_no_tl_train"],
     "preprocess_dir": ["compressed_preprocessed_data/train"],
-    "opponent_checkpoint": ["checkpoints/model_fp16.ckpt"],
-    "vehicle_map_path": ["preparation_file/vehicle_map_filtered_train.json"],
+    "opponent_checkpoint": ["checkpoints/model_finetuning_patched_fp16.ckpt"],
     "log_dir": ["~/logs/dcd"],
 
     "__note11__": ["clearml"],
