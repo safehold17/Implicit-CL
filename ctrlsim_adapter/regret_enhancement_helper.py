@@ -63,17 +63,42 @@ def compute_truncated_episode_rtg_gap(
     raise ValueError(f"Unsupported rtg gap aggregation method: {method}")
 
 
-def resolve_rollout_seed(
-    current_level_seeds: Sequence[int] | None,
-    process_idx: int,
-    info: Mapping[str, object],
-) -> int | None:
-    """Resolve the rollout seed from PLR state or step info."""
-    if "seed" in info:
-        return int(info["seed"])
-    if current_level_seeds is not None:
-        return int(current_level_seeds[process_idx])
-    return None
+def compute_mean_delta_rtg(delta_rtg_segments: Sequence[float]) -> float | None:
+    """Average valid RTG segment gaps for one seed."""
+    if len(delta_rtg_segments) == 0:
+        return None
+    return float(np.mean(delta_rtg_segments))
+
+
+def compute_solvable_boundary(
+    *,
+    success_count: int,
+    attempt_count: int,
+) -> float | None:
+    """Return p * (1 - p) from rollout-local success attempts."""
+    if int(attempt_count) <= 0:
+        return None
+    solvable_rate = float(success_count) / float(attempt_count)
+    return float(solvable_rate * (1.0 - solvable_rate))
+
+
+def combine_enhanced_regret_score(
+    *,
+    base_regret: float,
+    solvable_boundary: float | None = None,
+    delta_rtg: float | None = None,
+    regret_term_weights: Sequence[float] = (0.1, 1.0, 0.1),
+    use_solvable_rate: bool = True,
+    use_ctrlsim_rtg_gap: bool = True,
+) -> float:
+    """Combine base regret, solvability, and RTG gap terms."""
+    solvable_weight, base_weight, rtg_weight = map(float, regret_term_weights)
+    score = base_weight * float(base_regret)
+    if use_solvable_rate and solvable_boundary is not None:
+        score += solvable_weight * float(solvable_boundary)
+    if use_ctrlsim_rtg_gap and delta_rtg is not None:
+        score += rtg_weight * float(delta_rtg)
+    return float(score)
 
 
 def should_collect_ego_ctrlsim_rtg_step(

@@ -146,7 +146,12 @@ class LevelSampler():
             proportion_seen = (len(self.seeds) - num_unseen)/len(self.seeds)
             return proportion_seen
 
-    def update_with_rollouts(self, rollouts, external_scores=None):
+    def update_with_rollouts(
+        self,
+        rollouts,
+        external_scores=None,
+        external_scores_apply_to_partial=False,
+    ):
         if self.strategy in ['random', 'off']:
             return
 
@@ -183,7 +188,12 @@ class LevelSampler():
         if external_scores is not None:
             score_function = self._average_external_score
 
-        self._update_with_rollouts(rollouts, score_function, external_scores=external_scores)
+        self._update_with_rollouts(
+            rollouts,
+            score_function,
+            external_scores=external_scores,
+            external_scores_apply_to_partial=external_scores_apply_to_partial,
+        )
 
     def update_seed_score(self, actor_index, seed, score, max_score, num_steps, running_mean=True):
         if self.sample_full_distribution and seed in self.staging_seed_set:
@@ -400,7 +410,7 @@ class LevelSampler():
         done = kwargs['done']
         external_scores = kwargs['external_scores'] # (1,)
         
-        if done:
+        if done or kwargs.get('external_scores_apply_to_partial', False):
             mean_score = external_scores.item()
         else:
             mean_score = 0
@@ -505,7 +515,13 @@ class LevelSampler():
     def _has_working_seed_buffer(self):
         return not self.sample_full_distribution or (self.sample_full_distribution and self.seed_buffer_size > 0)
 
-    def _update_with_rollouts(self, rollouts, score_function, external_scores=None):
+    def _update_with_rollouts(
+        self,
+        rollouts,
+        score_function,
+        external_scores=None,
+        external_scores_apply_to_partial=False,
+    ):
         if not self._has_working_seed_buffer:
             return
 
@@ -595,6 +611,8 @@ class LevelSampler():
                 score_function_kwargs['seed'] = seed_t
                 if external_scores is not None:
                     score_function_kwargs['external_scores'] = external_scores[actor_index]
+                    if external_scores_apply_to_partial:
+                        score_function_kwargs['external_scores_apply_to_partial'] = True
 
                 if self.requires_value_buffers:
                     score_function_kwargs['returns'] = _returns_cpu[start_t:,actor_index]
@@ -830,7 +848,3 @@ class LevelSampler():
     @property
     def max_score(self):
         return max(self.seed_scores)
-    
-
-
-    

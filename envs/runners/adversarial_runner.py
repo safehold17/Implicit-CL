@@ -22,8 +22,10 @@ from teachDeepRL.teachers.teacher_controller import TeacherController
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-from ctrlsim_adapter.regret_enhancement_helper import (
-    compute_truncated_episode_rtg_gap,
+from ctrlsim_adapter.regret_enhancement_implementation import (
+    append_nocturne_rtg_segment,
+    build_nocturne_rtg_record,
+    compute_nocturne_enhanced_regret_scores,
     resolve_rollout_seed,
 )
 from envs.nocturne_ctrlsim.core.episode_runtime import split_prepared_pack_batch
@@ -928,41 +930,6 @@ class AdversarialRunner(object):
             torch.from_numpy(valid),   # zero-copy; valid is bool already
         )
 
-    def _build_nocturne_rtg_record(self, info):
-        """Build one RTG segment record from a step info payload."""
-        teacher_rtg = info.get("ego_ctrlsim_pred_rtg")
-        step_t = info.get("ego_ctrlsim_pred_rtg_step")
-        student_return = info.get("student_component_applied_return")
-        if teacher_rtg is None or step_t is None or student_return is None:
-            return None
-        return {
-            "step_t": int(step_t),
-            "teacher_full_rtg_3d": np.asarray(teacher_rtg, dtype=np.float32),
-            "student_applied_return_3d_before_step": np.asarray(
-                student_return,
-                dtype=np.float32,
-            ),
-        }
-
-    def _append_nocturne_rtg_segment(
-        self,
-        seed,
-        records,
-        delta_rtg_segments_by_seed,
-        rtg_gap_method,
-        regret_component_weights,
-    ):
-        """Append one valid RTG segment gap to the seed aggregation."""
-        if seed is None:
-            return
-        delta_rtg_segment = compute_truncated_episode_rtg_gap(
-            records,
-            method=rtg_gap_method,
-            regret_component_weights=regret_component_weights,
-        )
-        if delta_rtg_segment is not None:
-            delta_rtg_segments_by_seed[int(seed)].append(delta_rtg_segment)
-
     def agent_rollout(self, 
                       agent, 
                       num_steps, 
@@ -1128,7 +1095,7 @@ class AdversarialRunner(object):
                     )
                     if step_seed is not None:
                         active_seed_by_process[i] = step_seed
-                    rtg_record = self._build_nocturne_rtg_record(info)
+                    rtg_record = build_nocturne_rtg_record(info)
                     if rtg_record is not None:
                         active_rtg_records_by_process[i].append(rtg_record)
 
@@ -1143,12 +1110,12 @@ class AdversarialRunner(object):
                             success_count_by_seed[seed] += int(
                                 float(info.get("success", 0.0)) > 0.0
                             )
-                            self._append_nocturne_rtg_segment(
-                                seed,
-                                active_rtg_records_by_process[i],
-                                delta_rtg_segments_by_seed,
-                                rtg_gap_method,
-                                regret_component_weights,
+                            append_nocturne_rtg_segment(
+                                seed=seed,
+                                records=active_rtg_records_by_process[i],
+                                delta_rtg_segments_by_seed=delta_rtg_segments_by_seed,
+                                rtg_gap_method=rtg_gap_method,
+                                regret_component_weights=regret_component_weights,
                             )
                         active_rtg_records_by_process[i] = []
                     rollout_returns[i].append(info['episode']['r'])
@@ -1222,12 +1189,12 @@ class AdversarialRunner(object):
                 for i, records in enumerate(active_rtg_records_by_process):
                     if records:
                         seed = active_seed_by_process[i]
-                        self._append_nocturne_rtg_segment(
-                            seed,
-                            records,
-                            delta_rtg_segments_by_seed,
-                            rtg_gap_method,
-                            regret_component_weights,
+                        append_nocturne_rtg_segment(
+                            seed=seed,
+                            records=records,
+                            delta_rtg_segments_by_seed=delta_rtg_segments_by_seed,
+                            rtg_gap_method=rtg_gap_method,
+                            regret_component_weights=regret_component_weights,
                         )
             valid_rtg_segment_count_by_seed = {
                 int(seed): len(delta_rtg_segments_by_seed.get(seed, ()))
@@ -1278,17 +1245,57 @@ class AdversarialRunner(object):
 
             # Update level sampler and remove any ejected seeds from level store
             if not update_agent_separately:
+                enhanced_regret_external_scores = None
+                enhanced_regret_external_score_metrics = {}
+                use_enhanced_regret_sampler_scores = (
+                    track_nocturne_enhanced_regret
+                    and plr_runtime_enabled
+                    and level_sampler
+                    and update_level_sampler
+                )
+                if use_enhanced_regret_sampler_scores:
+                    regret_term_weights = (
+                        float(getattr(args, "regret_enhancement_w1", 0.1)),
+                        float(getattr(args, "regret_enhancement_w2", 1.0)),
+                        float(getattr(args, "regret_enhancement_w3", 0.1)),
+                    )
+                    (
+                        enhanced_regret_external_scores,
+                        enhanced_regret_external_score_metrics,
+                    ) = compute_nocturne_enhanced_regret_scores(
+                        agent.storage,
+                        rollout_info,
+                        regret_term_weights=regret_term_weights,
+                        use_solvable_rate=bool(
+                            getattr(args, "regret_enhancement_use_solvable_rate", True)
+                        ),
+                        use_ctrlsim_rtg_gap=bool(
+                            getattr(args, "regret_enhancement_use_ctrlsim_rtg_gap", True)
+                        ),
+                    )
+                    rollout_info.update(enhanced_regret_external_score_metrics)
+
                 if sample_only:
                     rollout_info.update(
                         self._finalize_sample_only_update(
                             agent=agent,
                             level_sampler=level_sampler,
                             update_level_sampler=update_level_sampler,
+                            external_scores=enhanced_regret_external_scores,
+                            external_scores_apply_to_partial=(
+                                enhanced_regret_external_scores is not None
+                            ),
                         )
                     )
                 else:
                     if plr_runtime_enabled and level_sampler and update_level_sampler:
-                        level_sampler.update_with_rollouts(agent.storage)
+                        level_sampler.update_with_rollouts(
+                            agent.storage,
+                            external_scores=enhanced_regret_external_scores,
+                            external_scores_apply_to_partial=(
+                                enhanced_regret_external_scores is not None
+                            ),
+                        )
 
                     value_loss, action_loss, dist_entropy, info = agent.update(
                         discard_grad=discard_grad,
@@ -1326,6 +1333,7 @@ class AdversarialRunner(object):
         level_sampler=None,
         update_level_sampler=False,
         external_scores=None,
+        external_scores_apply_to_partial=False,
     ):
         """Finalize a sample-only rollout without entering PPO update."""
         plr_runtime_enabled = self.plr_runtime_enabled
@@ -1334,6 +1342,7 @@ class AdversarialRunner(object):
             level_sampler.update_with_rollouts(
                 agent.storage,
                 external_scores=external_scores,
+                external_scores_apply_to_partial=external_scores_apply_to_partial,
             )
 
         agent.storage.after_update()
@@ -1361,7 +1370,8 @@ class AdversarialRunner(object):
                                  discard_grad=False,
                                  sample_only=False,
                                  kl_dict=None,
-                                 external_scores=None):
+                                 external_scores=None,
+                                 external_scores_apply_to_partial=False):
         if sample_only and discard_grad:
             raise ValueError("sample_only and discard_grad are mutually exclusive")
 
@@ -1373,11 +1383,16 @@ class AdversarialRunner(object):
                 level_sampler=level_sampler,
                 update_level_sampler=update_level_sampler,
                 external_scores=external_scores,
+                external_scores_apply_to_partial=external_scores_apply_to_partial,
             )
 
         # Update level sampler and remove any ejected seeds level store
         if plr_runtime_enabled and level_sampler and update_level_sampler:
-            level_sampler.update_with_rollouts(agent.storage, external_scores=external_scores)
+            level_sampler.update_with_rollouts(
+                agent.storage,
+                external_scores=external_scores,
+                external_scores_apply_to_partial=external_scores_apply_to_partial,
+            )
 
         value_loss, action_loss, dist_entropy, info = agent.update(
             discard_grad=discard_grad,

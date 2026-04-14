@@ -1231,6 +1231,83 @@ parser.add_argument(
     help="Apply reweighting every N active ctrl-sim inference steps.",
 )
 
+# ============== PLR/ACCEL Regret Enhancement ==============
+parser.add_argument(
+    "--use_enhanced_regret",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=False,
+    help="Whether to enable runner-side enhanced regret scoring for PLR/ACCEL.",
+)
+parser.add_argument(
+    "--regret_enhancement_w1",
+    type=float,
+    default=0.1,
+    help="Weight for the solvable boundary term p * (1 - p).",
+)
+parser.add_argument(
+    "--regret_enhancement_w2",
+    type=float,
+    default=1.0,
+    help="Weight for the base positive value-loss regret term.",
+)
+parser.add_argument(
+    "--regret_enhancement_w3",
+    type=float,
+    default=0.1,
+    help="Weight for the CtrlSim RTG gap term.",
+)
+parser.add_argument(
+    "--regret_enhancement_use_solvable_rate",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=True,
+    help="Whether enhanced regret includes p * (1 - p).",
+)
+parser.add_argument(
+    "--regret_enhancement_use_ctrlsim_rtg_gap",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=True,
+    help="Whether enhanced regret includes the CtrlSim RTG gap term.",
+)
+parser.add_argument(
+    "--rtg_difference_in_regret",
+    type=str,
+    choices=["first_inference_step_gap", "mean_gap", "max_gap"],
+    default="first_inference_step_gap",
+    help="How to aggregate inference-to-last RTG gaps within one segment.",
+)
+parser.add_argument(
+    "--include_truncated_rtg_gap",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=False,
+    help="Whether rollout-tail truncated RTG segments can contribute to enhanced regret.",
+)
+parser.add_argument(
+    "--regret_enhancement_w_goal",
+    type=float,
+    default=1.0,
+    help="Weight for the goal-position RTG gap component.",
+)
+parser.add_argument(
+    "--regret_enhancement_w_veh",
+    type=float,
+    default=1.0,
+    help="Weight for the vehicle-vehicle RTG gap component.",
+)
+parser.add_argument(
+    "--regret_enhancement_w_edge",
+    type=float,
+    default=1.0,
+    help="Weight for the vehicle-edge RTG gap component.",
+)
+
 # ============== ClearML ==============
 parser.add_argument(
     "--use_clearml",
