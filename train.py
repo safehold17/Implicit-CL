@@ -91,7 +91,7 @@ def init_clearml(args):
             ],
             docker_arguments="-e NVIDIA_DRIVER_CAPABILITIES=all --network=host",
         )
-        task.execute_remotely('default', clone=False, exit_process=True)
+        task.execute_remotely('rtx3090', clone=False, exit_process=True)
 
     if args.clearml_monitor_only:
         print('Using ClearML monitor in local mode')

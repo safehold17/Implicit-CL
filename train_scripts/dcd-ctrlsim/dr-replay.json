@@ -3,7 +3,7 @@
     "env_name": ["Nocturne-CtrlSim-v0"],
     "ued_algo": ["domain_randomization"],
     "num_processes": [32],
-    "num_env_steps": [99941400],
+    "num_env_steps": [99942400],
     "seed": [123],
 
     "__note1__": ["learning parameters"],
@@ -86,8 +86,8 @@
     "ego_ctrlsim_kl_min_coef": [0.0],
 
     "__note10__": ["dataset parameters"],
-    "scenario_index_path": ["scenario_json/scenario_index_10k_train.json"],
-    "vehicle_map_path": ["scenario_json/vehicle_map_10k_train.json"],
+    "scenario_index_path": ["preparation_file/scenario_index_10k_train.json"],
+    "vehicle_map_path": ["preparation_file/vehicle_map_10k_train.json"],
     "scenario_data_dir": ["scenario_data/formatted_json_v2_no_tl_train"],
     "preprocess_dir": ["compressed_preprocessed_data/train"],
     "opponent_checkpoint": ["checkpoints/model_finetuning_patched_fp16.ckpt"],
