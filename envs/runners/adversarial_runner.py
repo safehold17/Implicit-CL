@@ -28,7 +28,14 @@ from ctrlsim_adapter.regret_enhancement_implementation import (
     compute_nocturne_enhanced_regret_scores,
     resolve_rollout_seed,
 )
-from envs.nocturne_ctrlsim.core.episode_runtime import split_prepared_pack_batch
+from ctrlsim_adapter.ego_ctrlsim_rollout_implementation import (
+    collect_ego_ctrlsim_action_logits,
+    run_nocturne_batched_step,
+)
+from ctrlsim_adapter.nocturne_stats_implementation import (
+    build_nocturne_process_stats,
+    compute_nocturne_env_stats,
+)
 
 
 class AdversarialRunner(object):
@@ -482,196 +489,6 @@ class AdversarialRunner(object):
 
         return stats
 
-    def _build_nocturne_tilting_columns(self, info):
-        tilting_mode = getattr(self.args, 'tilting_mode', 'per_vehicle')
-        opp_count = int(info.get('opponent_k', 7))
-        opp_count = max(0, opp_count)
-
-        tilts = []
-        ego_goal_tilt = 0.0
-        ego_veh_veh_tilt = 0.0
-        ego_veh_edge_tilt = 0.0
-
-        if tilting_mode == 'per_vehicle':
-            for i in range(opp_count):
-                g = float(info.get(f'per_vehicle_goal_tilt_{i}', 0.0))
-                v = float(info.get(f'per_vehicle_veh_tilt_{i}', 0.0))
-                e = float(info.get(f'per_vehicle_edge_tilt_{i}', 0.0))
-                tilts.append((g, v, e))
-        elif tilting_mode == 'global':
-            g = float(info.get('goal_tilt', 0.0))
-            v = float(info.get('veh_veh_tilt', 0.0))
-            e = float(info.get('veh_edge_tilt', 0.0))
-            for _ in range(opp_count):
-                tilts.append((g, v, e))
-        else:
-            for _ in range(opp_count):
-                tilts.append((0.0, 0.0, 0.0))
-
-        # veh_*_avg should include both opponent vehicles and ego tilt values.
-        # Keep the existing rule: only non-zero values are counted.
-        tilts_for_avg = list(tilts)
-        tilts_for_avg.append((ego_goal_tilt, ego_veh_veh_tilt, ego_veh_edge_tilt))
-
-        goal_sum = 0.0
-        goal_valid = 0
-        veh_veh_sum = 0.0
-        veh_veh_valid = 0
-        veh_edge_sum = 0.0
-        veh_edge_valid = 0
-
-        for g, v, e in tilts_for_avg:
-            if g != 0.0:
-                goal_valid += 1
-                goal_sum += g
-            if v != 0.0:
-                veh_veh_valid += 1
-                veh_veh_sum += v
-            if e != 0.0:
-                veh_edge_valid += 1
-                veh_edge_sum += e
-
-        columns = {}
-        for i, (g, v, e) in enumerate(tilts):
-            columns[f'opp{i}_goal_tilt'] = g
-            columns[f'opp{i}_veh_veh_tilt'] = v
-            columns[f'opp{i}_veh_edge_tilt'] = e
-
-        columns['veh_goal_avg'] = float(round(goal_sum / goal_valid, 2)) if goal_valid > 0 else 0.0
-        columns['veh_veh_avg'] = float(round(veh_veh_sum / veh_veh_valid, 2)) if veh_veh_valid > 0 else 0.0
-        columns['veh_edge_avg'] = float(round(veh_edge_sum / veh_edge_valid, 2)) if veh_edge_valid > 0 else 0.0
-        columns['ego_goal_tilt'] = ego_goal_tilt
-        columns['ego_veh_veh_tilt'] = ego_veh_veh_tilt
-        columns['ego_veh_edge_tilt'] = ego_veh_edge_tilt
-
-        return columns
-
-    def _filter_nocturne_process_info(self, info):
-        filtered = {}
-        for k, v in info.items():
-            if k in ('opponent_k', 'scenario_pool_size'):
-                continue
-            if k.startswith('per_vehicle_'):
-                continue
-            if k.endswith('_progress') and k not in ('max_progress', 'plr_progress'):
-                continue
-            filtered[k] = v
-        return filtered
-
-    def _get_nocturne_process_stats(self, infos=None, log_replay_complexity=False):
-        if infos is None:
-            try:
-                infos = self.venv.get_complexity_info()
-            except AttributeError:
-                return []
-
-        process_stats = []
-        for process_idx, info in enumerate(infos):
-            process_log = {'process_idx': process_idx}
-            process_log.update(self._filter_nocturne_process_info(info))
-            max_progress = process_log.pop('max_progress', None)
-            if max_progress is not None:
-                process_log['max_progress'] = max_progress
-            opponent_vehicle_num = process_log.get('opponent_vehicle_num', None)
-            if log_replay_complexity:
-                process_log['max_progress'] = None
-                process_log['plr_progress'] = max_progress
-                process_log['opponent_vehicle_num'] = None
-                process_log['plr_opponent_vehicle_num'] = opponent_vehicle_num
-            else:
-                process_log['plr_progress'] = None
-                process_log['plr_opponent_vehicle_num'] = None
-            tilting_columns = self._build_nocturne_tilting_columns(info)
-            if log_replay_complexity:
-                # In replay logging rows, keep per-process tilting values under plr_* keys.
-                # Mirror non-plr keys as None so CSV semantics stay unambiguous.
-                process_log.update({k: None for k in tilting_columns})
-                process_log.update({f'plr_{k}': v for k, v in tilting_columns.items()})
-            else:
-                process_log.update(tilting_columns)
-            process_stats.append(process_log)
-
-        return process_stats
-
-    def _get_env_stats_nocturne(self, agent_info, adversary_agent_info, infos=None):
-        """
-        Nocturne environment statistics
-        
-        Relies on the environment implementing the get_complexity_info() method, 
-        which returns a dictionary of metrics for each parallel environment.
-        
-        Expected metrics (to be implemented on the environment side):
-        - scenario_id: Scenario ID
-        - goal_tilt / veh_veh_tilt / veh_edge_tilt: tilt parameters
-        - collision_occurred: collision occurred flag (0/1)
-        - offroad_occurred: offroad occurred flag (0/1)
-        - goal_reached_occurred: goal reached flag (0/1)
-        - max_progress: episode peak progress
-        - episode_length: average episode length
-        
-        Args:
-            agent_info: agent rollout information
-            adversary_agent_info: adversary agent rollout information (not used in Nocturne)
-        
-        Returns:
-            stats: Dictionary containing scenario complexity metrics
-        """
-        # Retrieve complexity information from the environment
-        if infos is None:
-            try:
-                infos = self.venv.get_complexity_info()
-            except AttributeError:
-                # Environment does not implement get_complexity_info, return empty stats
-                return {}
-        
-        num_envs = len(infos)
-        if num_envs == 0:
-            return {}
-        
-        # Aggregate metrics from all parallel environments
-        sums = defaultdict(float)
-        counts = defaultdict(int)
-        for info in infos:
-            # Aggregate derived opp* / veh_* / ego_* fields so PLR keys become
-            # plr_opp*, plr_veh_*, plr_ego_* instead of plr_scenario_per_vehicle_*.
-            merged_info = self._filter_nocturne_process_info(info).copy()
-            merged_info.update(self._build_nocturne_tilting_columns(info))
-            for k, v in merged_info.items():
-                if isinstance(v, (int, float)) and not np.isnan(v):
-                    if k in ('opponent_k', 'scenario_pool_size'):
-                        continue
-                    if k == 'max_progress':
-                        # Per-process progress is logged as progress/plr_progress;
-                        # skip aggregated scenario progress to avoid duplication.
-                        continue
-                    if k == 'seed':
-                        # Keep per-process seed only; do not log aggregated scenario_seed.
-                        continue
-                    if k.endswith('_occurred'):
-                        # Per-process rows already log binary occurred flags.
-                        # Skip aggregated occurred values to avoid misleading "rate-like" interpretation.
-                        continue
-                    sums[k] += v
-                    counts[k] += 1
-        
-        # Calculate averages for retained numeric metrics.
-        stats = {}
-        for k, v in sums.items():
-            if counts[k] > 0:
-                avg_value = sums[k] / counts[k]
-                if k.startswith('opp') or k.startswith('veh_') or k.startswith('ego_'):
-                    stats[k] = avg_value
-                else:
-                    stats['scenario_' + k] = avg_value
-        
-        # Extract additional statistics from agent_info (if available)
-        if 'episode_return' in agent_info:
-            episode_returns = agent_info['episode_return']
-            if len(episode_returns) > 0:
-                stats['mean_episode_return'] = np.mean(episode_returns)
-        
-        return stats
-
     def _get_env_stats(self, agent_info, adversary_agent_info, log_replay_complexity=False, nocturne_infos=None):
         env_name = self.args.env_name
         if env_name.startswith('MultiGrid'):
@@ -681,7 +498,13 @@ class AdversarialRunner(object):
         elif env_name.startswith('BipedalWalker'):
             stats = self._get_env_stats_bipedalwalker(agent_info, adversary_agent_info)
         elif env_name.startswith('Nocturne') or env_name.startswith('nocturne'):
-            stats = self._get_env_stats_nocturne(agent_info, adversary_agent_info, infos=nocturne_infos)
+            tilting_mode = getattr(self.args, 'tilting_mode', 'per_vehicle')
+            stats = compute_nocturne_env_stats(
+                agent_info=agent_info,
+                infos=nocturne_infos,
+                venv=self.venv,
+                tilting_mode=tilting_mode,
+            )
         else:
             raise ValueError(f'Unsupported environment, {self.args.env_name}')
 
@@ -835,101 +658,6 @@ class AdversarialRunner(object):
         self._pending_replay_obs = None
         return pending_obs
 
-    def _run_nocturne_batched_step(
-        self,
-        action,
-        reset_random=False,
-        auto_reset_on_done=True,
-    ):
-        """执行 Nocturne 双路 batched step。 / Run the Nocturne batched step with opponent and ego_ctrlsim paths."""
-        prepared_batch = self.venv.step_prepare(action)
-        opponent_prepared, ego_ctrlsim_prepared = split_prepared_pack_batch(
-            prepared_batch
-        )
-        use_ego_ctrlsim_kl_loss = bool(
-            getattr(self.args, "use_ego_ctrlsim_kl_loss", False)
-        )
-        use_policy_reweighting = bool(
-            getattr(self.args, "use_policy_reweighting", False)
-        )
-        use_enhanced_regret = bool(
-            getattr(self.args, "use_enhanced_regret", False)
-        )
-
-        ego_ctrlsim_logits = [None] * len(ego_ctrlsim_prepared)
-        ego_ctrlsim_rtgs = [None] * len(ego_ctrlsim_prepared)
-        ego_ctrlsim_rtg_metadata = [None] * len(ego_ctrlsim_prepared)
-        if (
-            use_ego_ctrlsim_kl_loss
-            or use_policy_reweighting
-            or use_enhanced_regret
-        ):
-            if self.external_teacher is None:
-                raise RuntimeError("Nocturne training requires an ExternalTeacher.")
-            (
-                model_outputs,
-                ego_ctrlsim_logits,
-                ego_ctrlsim_rtgs,
-                ego_ctrlsim_rtg_metadata,
-            ) = (
-                self.external_teacher.run_batched_forward_with_ego_logits(
-                    opponent_prepared,
-                    ego_ctrlsim_prepared,
-                )
-            )
-        elif all(item is None for item in opponent_prepared):
-            model_outputs = [None] * len(opponent_prepared)
-        else:
-            if self.external_teacher is None:
-                raise RuntimeError("Nocturne training requires an ExternalTeacher.")
-            model_outputs = self.external_teacher.run_batched_forward(
-                opponent_prepared
-            )
-
-        obs, reward, done, infos = self.venv.step_complete(
-            model_outputs,
-            reset_random=reset_random,
-            auto_reset_on_done=auto_reset_on_done,
-        )
-
-        for info, logits, rtg, rtg_metadata in zip(
-            infos,
-            ego_ctrlsim_logits,
-            ego_ctrlsim_rtgs,
-            ego_ctrlsim_rtg_metadata,
-        ):
-            info["ego_ctrlsim_action_logits"] = logits
-            info["ego_ctrlsim_pred_rtg"] = rtg
-            info["ego_ctrlsim_pred_rtg_metadata"] = rtg_metadata
-            info["ego_ctrlsim_pred_rtg_step"] = (
-                None if rtg_metadata is None else int(rtg_metadata["step_t"])
-            )
-
-        return obs, reward, done, infos
-
-    def _collect_ego_ctrlsim_action_logits(self, infos):
-        """聚合当前 step 的 ego logits 与有效标记。 / Collect ego logits and validity flags for the current step."""
-        logits_list = [
-            info.get("ego_ctrlsim_action_logits")
-            for info in infos
-        ]
-        if not logits_list or all(logits is None for logits in logits_list):
-            return None, None
-
-        first_non_none = next(logits for logits in logits_list if logits is not None)
-        action_dim = int(np.asarray(first_non_none).shape[0])
-        batch = np.zeros((len(logits_list), action_dim), dtype=np.float32)
-        valid = np.zeros((len(logits_list), 1), dtype='bool')
-        for idx, logits in enumerate(logits_list):
-            if logits is None:
-                continue
-            batch[idx] = np.asarray(logits, dtype=np.float32)
-            valid[idx, 0] = True
-        return (
-            torch.from_numpy(batch),   # zero-copy; batch is float32 already
-            torch.from_numpy(valid),   # zero-copy; valid is bool already
-        )
-
     def agent_rollout(self, 
                       agent, 
                       num_steps, 
@@ -1059,8 +787,11 @@ class AdversarialRunner(object):
             if is_env:
                 obs, reward, done, infos = self.ued_venv.step_adversary(_action)
             elif args.env_name.startswith('Nocturne'):
-                obs, reward, done, infos = self._run_nocturne_batched_step(
-                    _action,
+                obs, reward, done, infos = run_nocturne_batched_step(
+                    venv=self.venv,
+                    external_teacher=self.external_teacher,
+                    args=args,
+                    action=_action,
                     reset_random=reset_random,
                     auto_reset_on_done=auto_reset_on_done,
                 )
@@ -1168,7 +899,7 @@ class AdversarialRunner(object):
             ego_ctrlsim_valid = None
             if is_nocturne_rollout:
                 ego_ctrlsim_action_logits, ego_ctrlsim_valid = (
-                    self._collect_ego_ctrlsim_action_logits(infos)
+                    collect_ego_ctrlsim_action_logits(infos)
                 )
 
             agent.insert(
@@ -1790,13 +1521,15 @@ class AdversarialRunner(object):
         nocturne_infos = None
         nocturne_process_infos = None
         if is_nocturne_env:
+            tilting_mode = getattr(args, 'tilting_mode', 'per_vehicle')
             nocturne_infos = list(nocturne_first_done_infos_for_update)
             nocturne_process_infos = []
             for process_idx in range(args.num_processes):
                 process_info = nocturne_first_done_info_by_process.get(process_idx)
                 nocturne_process_infos.append(dict(process_info) if process_info else {})
-            tb_per_process_stats = self._get_nocturne_process_stats(
+            tb_per_process_stats = build_nocturne_process_stats(
                 infos=nocturne_process_infos,
+                tilting_mode=tilting_mode,
                 log_replay_complexity=False,
             )
 
@@ -1806,8 +1539,9 @@ class AdversarialRunner(object):
                 log_replay_complexity=log_replay_complexity,
                 nocturne_infos=nocturne_infos)
             if is_nocturne_env:
-                per_process_stats = self._get_nocturne_process_stats(
+                per_process_stats = build_nocturne_process_stats(
                     infos=nocturne_process_infos,
+                    tilting_mode=tilting_mode,
                     log_replay_complexity=log_replay_complexity)
             stats.update({
                 'mean_env_return': env_return.mean().item(),
@@ -1824,7 +1558,10 @@ class AdversarialRunner(object):
             if is_nocturne_env:
                 per_process_stats = [s.copy() for s in self.latest_env_process_stats]
                 if not per_process_stats:
-                    per_process_stats = self._get_nocturne_process_stats()
+                    per_process_stats = build_nocturne_process_stats(
+                        venv=self.venv,
+                        tilting_mode=tilting_mode,
+                    )
 
         # Log PLR buffer stats
         if args.use_plr and args.log_plr_buffer_stats:
