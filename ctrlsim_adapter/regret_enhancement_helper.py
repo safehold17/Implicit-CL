@@ -70,7 +70,7 @@ def compute_mean_delta_rtg(delta_rtg_segments: Sequence[float]) -> float | None:
     return float(np.mean(delta_rtg_segments))
 
 
-def compute_solvable_boundary(
+def compute_learnability(
     *,
     success_count: int,
     attempt_count: int,
@@ -85,7 +85,7 @@ def compute_solvable_boundary(
 def combine_enhanced_regret_score(
     *,
     base_regret: float,
-    solvable_boundary: float | None = None,
+    learnability: float | None = None,
     delta_rtg: float | None = None,
     regret_term_weights: Sequence[float] = (0.1, 1.0, 0.1),
     use_solvable_rate: bool = True,
@@ -94,8 +94,8 @@ def combine_enhanced_regret_score(
     """Combine base regret, solvability, and RTG gap terms."""
     solvable_weight, base_weight, rtg_weight = map(float, regret_term_weights)
     score = base_weight * float(base_regret)
-    if use_solvable_rate and solvable_boundary is not None:
-        score += solvable_weight * float(solvable_boundary)
+    if use_solvable_rate and learnability is not None:
+        score += solvable_weight * float(learnability)
     if use_ctrlsim_rtg_gap and delta_rtg is not None:
         score += rtg_weight * float(delta_rtg)
     return float(score)

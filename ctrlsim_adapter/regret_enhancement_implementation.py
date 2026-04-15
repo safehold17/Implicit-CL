@@ -10,8 +10,8 @@ import torch
 
 from ctrlsim_adapter.regret_enhancement_helper import (
     combine_enhanced_regret_score,
+    compute_learnability,
     compute_mean_delta_rtg,
-    compute_solvable_boundary,
     compute_truncated_episode_rtg_gap,
 )
 
@@ -135,7 +135,7 @@ def compute_nocturne_enhanced_regret_scores(
     )
 
     solvable_rate_by_seed = {}
-    solvable_boundary_by_seed = {}
+    learnability_by_seed = {}
     delta_rtg_by_seed = {}
     enhanced_regret_score_by_seed = {}
 
@@ -143,14 +143,14 @@ def compute_nocturne_enhanced_regret_scores(
         base_regret = float(base_regret_by_seed.get(seed, 0.0))
         attempt_count = int(attempt_count_by_seed.get(seed, 0))
         success_count = int(success_count_by_seed.get(seed, 0))
-        solvable_boundary = compute_solvable_boundary(
+        learnability = compute_learnability(
             success_count=success_count,
             attempt_count=attempt_count,
         )
         if attempt_count > 0:
             solvable_rate_by_seed[int(seed)] = success_count / float(attempt_count)
-        if solvable_boundary is not None:
-            solvable_boundary_by_seed[int(seed)] = solvable_boundary
+        if learnability is not None:
+            learnability_by_seed[int(seed)] = learnability
 
         delta_rtg = compute_mean_delta_rtg(delta_rtg_segments_by_seed.get(seed, ()))
         if delta_rtg is not None:
@@ -158,7 +158,7 @@ def compute_nocturne_enhanced_regret_scores(
 
         enhanced_regret_score_by_seed[int(seed)] = combine_enhanced_regret_score(
             base_regret=base_regret,
-            solvable_boundary=solvable_boundary,
+            learnability=learnability,
             delta_rtg=delta_rtg,
             regret_term_weights=regret_term_weights,
             use_solvable_rate=use_solvable_rate,
@@ -177,7 +177,7 @@ def compute_nocturne_enhanced_regret_scores(
             for seed, score in base_regret_by_seed.items()
         },
         "solvable_rate_by_seed": solvable_rate_by_seed,
-        "solvable_boundary_by_seed": solvable_boundary_by_seed,
+        "learnability_by_seed": learnability_by_seed,
         "delta_rtg_by_seed": delta_rtg_by_seed,
         "enhanced_regret_score_by_seed": enhanced_regret_score_by_seed,
         "use_enhanced_regret": True,
@@ -185,7 +185,7 @@ def compute_nocturne_enhanced_regret_scores(
     for key in (
         "base_regret",
         "solvable_rate",
-        "solvable_boundary",
+        "learnability",
         "delta_rtg",
         "enhanced_regret_score",
     ):

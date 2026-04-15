@@ -1231,7 +1231,7 @@ parser.add_argument(
     help="Apply reweighting every N active ctrl-sim inference steps.",
 )
 
-# ============== PLR/ACCEL Regret Enhancement ==============
+# ============== Regret Enhancement ==============
 parser.add_argument(
     "--use_enhanced_regret",
     type=str2bool,
@@ -1243,7 +1243,7 @@ parser.add_argument(
 parser.add_argument(
     "--regret_enhancement_w1",
     type=float,
-    default=0.1,
+    default=1.0,
     help="Weight for the solvable boundary term p * (1 - p).",
 )
 parser.add_argument(
@@ -1255,7 +1255,7 @@ parser.add_argument(
 parser.add_argument(
     "--regret_enhancement_w3",
     type=float,
-    default=0.1,
+    default=1.0,
     help="Weight for the CtrlSim RTG gap term.",
 )
 parser.add_argument(
@@ -1286,7 +1286,7 @@ parser.add_argument(
     type=str2bool,
     nargs="?",
     const=True,
-    default=False,
+    default=True,
     help="Whether rollout-tail truncated RTG segments can contribute to enhanced regret.",
 )
 parser.add_argument(

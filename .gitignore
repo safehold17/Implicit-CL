@@ -14,9 +14,11 @@ nocturne.egg-info/
 
 
 /vibe
+/docs
 /tests
 /bash
 /train_scripts/test-local
+/thesis
 
 /outputs
 util/outputs

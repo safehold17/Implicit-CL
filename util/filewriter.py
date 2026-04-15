@@ -98,6 +98,11 @@ class FileWriter:
             "agent_value_loss",
             "agent_pg_loss",
             "agent_dist_entropy",
+            "base_regret",
+            "solvable_rate",
+            "learnability",
+            "delta_rtg",
+            "enhanced_regret_score",
             "plr_episode_reward",
         ]
 
@@ -241,6 +246,11 @@ class FileWriter:
             "agent_pg_loss": "agent_pg_loss",
             "agent_dist_entropy": "agent_dist_entropy",
             "ego_ctrlsim_kl_loss": "ego_ctrlsim_kl_loss",
+            "base_regret": "base_regret",
+            "solvable_rate": "solvable_rate",
+            "learnability": "learnability",
+            "delta_rtg": "delta_rtg",
+            "enhanced_regret_score": "enhanced_regret_score",
         }
         self._tb_mode_split_process_metric_keys = {
             "update_reward": ("episode_reward",),
@@ -285,6 +295,12 @@ class FileWriter:
             'agent_value_loss',
             'agent_pg_loss',
             'agent_dist_entropy',
+            'base_regret',
+            'solvable_rate',
+            'learnability',
+            'delta_rtg',
+            'enhanced_regret_score',
+            'use_enhanced_regret',
         ]
 
         if tick is None:
