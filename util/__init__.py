@@ -270,6 +270,9 @@ def _make_env(args):
             'use_ego_ctrlsim_kl_loss': getattr(
                 args, 'use_ego_ctrlsim_kl_loss', False
             ),
+            'use_enhanced_regret': getattr(
+                args, 'use_enhanced_regret', False
+            ),
             'use_policy_reweighting': getattr(
                 args, 'use_policy_reweighting', False
             ),

@@ -314,17 +314,32 @@ def decode_rtg_jobs_batched_impl(
     batched_data["agent"].rtgs[write_batch_idx, write_idx_in_model, write_token_index, 1] = write_discrete[:, 1]
     batched_data["agent"].rtgs[write_batch_idx, write_idx_in_model, write_token_index, 2] = write_discrete[:, 2]
 
-    ordered_unique_indices_t = torch.argsort(unique_row_indices_t)
-    sorted_row_indices_t = unique_row_indices_t[ordered_unique_indices_t]
     job_idx_t = decode_meta.get("job_idx_t")
     if job_idx_t is None:
         job_idx_t = torch.as_tensor(decode_meta["job_idx"], dtype=torch.long, device=device)
     else:
         job_idx_t = job_idx_t.to(device=device, dtype=torch.long)
-    sorted_job_idx = job_idx_t[sorted_row_indices_t].detach().cpu().numpy().astype(np.int64, copy=False)
-    sorted_veh_id = veh_id_t[sorted_row_indices_t].detach().cpu().numpy().astype(np.int64, copy=False)
+    continuous_all = continuous_unique[inverse_t]
+    row_count = int(job_idx_t.shape[0])
+    ordered_row_indices_t = torch.argsort(
+        job_idx_t * row_count + torch.arange(row_count, device=device)
+    )
+    sorted_job_idx = (
+        job_idx_t[ordered_row_indices_t]
+        .detach()
+        .cpu()
+        .numpy()
+        .astype(np.int64, copy=False)
+    )
+    sorted_veh_id = (
+        veh_id_t[ordered_row_indices_t]
+        .detach()
+        .cpu()
+        .numpy()
+        .astype(np.int64, copy=False)
+    )
     sorted_values = (
-        continuous_unique[ordered_unique_indices_t]
+        continuous_all[ordered_row_indices_t]
         .detach()
         .cpu()
         .numpy()

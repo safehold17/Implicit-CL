@@ -1598,6 +1598,18 @@ class AdversarialRunner(object):
             'adversary_dist_entropy': adversary_agent_info['dist_entropy'],
             'ego_ctrlsim_kl_loss': agent_info.get('ego_ctrlsim_kl_loss', None),
         })
+        enhanced_regret_metric_keys = (
+            'base_regret',
+            'solvable_rate',
+            'learnability',
+            'delta_rtg',
+            'enhanced_regret_score',
+        )
+        stats.update({
+            key: value
+            for key in enhanced_regret_metric_keys
+            if (value := agent_info.get(key)) is not None
+        })
 
         if args.log_grad_norm:
             def _get_mean_grad_norm(rollout_info):
