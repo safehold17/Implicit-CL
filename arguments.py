@@ -498,6 +498,18 @@ parser.add_argument(
     help="Write local TensorBoard event files under log_dir/xpid/tb.",
 )
 parser.add_argument(
+    "--write_file_outputs",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=True,
+    help=(
+        "Write train file outputs under log_dir/xpid "
+        "(out.log, logs.csv, fields.csv, final_test_eval.csv, "
+        "level_weights.csv, level_seeds.csv)."
+    ),
+)
+parser.add_argument(
     "--checkpoint_interval",
     type=int,
     default=5,

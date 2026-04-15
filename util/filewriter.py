@@ -119,6 +119,7 @@ class FileWriter:
         formatter = logging.Formatter("%(message)s")
         self._logger = logging.getLogger("logs/out")
         self._local_tensorboard = bool(xp_args.get("local_tensorboard", True))
+        self._write_file_outputs = bool(xp_args.get("write_file_outputs", True))
 
         train_full_distribution = xp_args.get('train_full_distribution', False)
         seed_buffer_size = xp_args.get('level_replay_seed_buffer_size', 0)
@@ -175,18 +176,17 @@ class FileWriter:
         else:
             self._save_metadata()
 
-        self._logger.info("Saving messages to %s", self.paths["msg"])
-        if os.path.exists(self.paths["msg"]):
-            self._logger.warning(
-                "Path to message file already exists. " "New data will be appended."
-            )
+        self._fieldfile = None
+        self._fieldwriter = None
+        self._logfile = None
+        self._logwriter = None
+        self._levelweightsfile = None
+        self._levelweightswriter = None
+        self._levelseedsfile = None
+        self._levelseedswriter = None
+        self._finaltestfile = None
+        self._finaltestwriter = None
 
-        fhandle = logging.FileHandler(self.paths["msg"])
-        fhandle.setFormatter(formatter)
-        self._logger.addHandler(fhandle)
-
-        self._logger.info("Saving logs data to %s", self.paths["logs"])
-        self._logger.info("Saving logs' fields to %s", self.paths["fields"])
         self.fieldnames = ["_tick", "_time"]
         self.final_test_eval_fieldnames = [
             'env_name',
@@ -196,42 +196,63 @@ class FileWriter:
             'median_episode_return',
         ]
         self.level_seeds_fieldnames = ['new_seeds', 'new_seed_indices']
-        if os.path.exists(self.paths["logs"]):
-            self._logger.warning(
-                "Path to log file already exists. " "New data will be appended."
-            )
-            self._wrote_log_header = True
-            # Override default fieldnames.
-            with open(self.paths["fields"], "r") as csvfile:
-                reader = csv.reader(csvfile)
-                lines = list(reader)
-                if len(lines) > 0:
-                    self.fieldnames = lines[-1]
-            # Override default tick: use the last tick from the logs file plus 1.
-            with open(self.paths["logs"], "r") as csvfile:
-                reader = csv.reader(csvfile)
-                lines = list(reader)
-                # Skip non-numeric rows (for example trailing avg rows) when
-                # recovering ticks from previous logs.
-                for row in reversed(lines):
-                    if not row:
-                        continue
-                    tick = self._safe_float(row[0])
-                    if tick is None:
-                        continue
-                    self._tick = int(tick) + 1
-                    break
+        if self._write_file_outputs:
+            self._logger.info("Saving messages to %s", self.paths["msg"])
+            if os.path.exists(self.paths["msg"]):
+                self._logger.warning(
+                    "Path to message file already exists. " "New data will be appended."
+                )
 
-        self._fieldfile = open(self.paths["fields"], "a")
-        self._fieldwriter = csv.writer(self._fieldfile)
-        self._logfile = open(self.paths["logs"], "a")
-        self._logwriter = csv.DictWriter(self._logfile, fieldnames=self.fieldnames)
-        self._levelweightsfile = open(self.paths["level_weights"], "a")
-        self._levelweightswriter = csv.writer(self._levelweightsfile)
-        self._levelseedsfile = open(self.paths["level_seeds"], "a")
-        self._levelseedswriter = csv.DictWriter(self._levelseedsfile, fieldnames=self.level_seeds_fieldnames)
-        self._finaltestfile = open(self.paths["final_test_eval"], "a")
-        self._finaltestwriter = csv.DictWriter(self._finaltestfile, fieldnames=self.final_test_eval_fieldnames)
+            fhandle = logging.FileHandler(self.paths["msg"])
+            fhandle.setFormatter(formatter)
+            self._logger.addHandler(fhandle)
+
+            self._logger.info("Saving logs data to %s", self.paths["logs"])
+            self._logger.info("Saving logs' fields to %s", self.paths["fields"])
+            if os.path.exists(self.paths["logs"]):
+                self._logger.warning(
+                    "Path to log file already exists. " "New data will be appended."
+                )
+                self._wrote_log_header = True
+                # Override default fieldnames.
+                with open(self.paths["fields"], "r") as csvfile:
+                    reader = csv.reader(csvfile)
+                    lines = list(reader)
+                    if len(lines) > 0:
+                        self.fieldnames = lines[-1]
+                # Override default tick: use the last tick from the logs file plus 1.
+                with open(self.paths["logs"], "r") as csvfile:
+                    reader = csv.reader(csvfile)
+                    lines = list(reader)
+                    # Skip non-numeric rows (for example trailing avg rows) when
+                    # recovering ticks from previous logs.
+                    for row in reversed(lines):
+                        if not row:
+                            continue
+                        tick = self._safe_float(row[0])
+                        if tick is None:
+                            continue
+                        self._tick = int(tick) + 1
+                        break
+
+            self._fieldfile = open(self.paths["fields"], "a")
+            self._fieldwriter = csv.writer(self._fieldfile)
+            self._logfile = open(self.paths["logs"], "a")
+            self._logwriter = csv.DictWriter(self._logfile, fieldnames=self.fieldnames)
+            self._levelweightsfile = open(self.paths["level_weights"], "a")
+            self._levelweightswriter = csv.writer(self._levelweightsfile)
+            self._levelseedsfile = open(self.paths["level_seeds"], "a")
+            self._levelseedswriter = csv.DictWriter(
+                self._levelseedsfile,
+                fieldnames=self.level_seeds_fieldnames,
+            )
+            self._finaltestfile = open(self.paths["final_test_eval"], "a")
+            self._finaltestwriter = csv.DictWriter(
+                self._finaltestfile,
+                fieldnames=self.final_test_eval_fieldnames,
+            )
+        else:
+            self._logger.info("Train file outputs disabled under %s", self.basepath)
         self.tensor_board_writer = None
         if self._local_tensorboard:
             self.tensor_board_writer = SummaryWriter(
@@ -265,13 +286,24 @@ class FileWriter:
         }
 
         if self.seeds and not self.record_seed_diffs:
-            self._levelweightsfile.write("# %s\n" % ",".join(self.seeds))
-            self._levelweightsfile.flush()
+            if self._levelweightsfile is not None:
+                self._levelweightsfile.write("# %s\n" % ",".join(self.seeds))
+                self._levelweightsfile.flush()
 
-        self._finaltestwriter.writeheader()
-        self._finaltestfile.flush()
+        if self._finaltestwriter is not None:
+            self._finaltestwriter.writeheader()
+            self._finaltestfile.flush()
 
     def log(self, to_log: Dict, tick: int = None, verbose: bool = False) -> None:
+        if not self._write_file_outputs:
+            if tick is None:
+                self._tick += 1
+            else:
+                tick = int(tick)
+                if tick >= self._tick:
+                    self._tick = tick + 1
+            return
+
         prioritized_fields = [
             '_tick',
             'process_idx',
@@ -362,6 +394,9 @@ class FileWriter:
         self._logfile.flush()
 
     def log_level_weights(self, weights, seeds=None):
+        if not self._write_file_outputs:
+            return
+
         if self.record_seed_diffs and seeds is not None:
             curr_seeds = np.asarray(seeds)
             if self.seeds is None:
@@ -387,6 +422,8 @@ class FileWriter:
         self._levelweightsfile.flush()
 
     def log_final_test_eval(self, to_log):
+        if not self._write_file_outputs:
+            return
         self._finaltestwriter.writerow(to_log)
         self._finaltestfile.flush()
 
@@ -409,7 +446,7 @@ class FileWriter:
         self.report_step_metrics(stats)
 
     def close(self, successful: bool = True) -> None:
-        if successful:
+        if successful and self._write_file_outputs:
             self._append_avg_row()
 
         self.metadata["date_end"] = datetime.datetime.now().strftime(
@@ -418,8 +455,15 @@ class FileWriter:
         self.metadata["successful"] = successful
         self._save_metadata()
 
-        for f in [self._logfile, self._fieldfile]:
-            f.close()
+        for f in [
+            self._logfile,
+            self._fieldfile,
+            self._levelweightsfile,
+            self._levelseedsfile,
+            self._finaltestfile,
+        ]:
+            if f is not None:
+                f.close()
         self._flush_tb_process_avg_buffers()
         if self.tensor_board_writer is not None:
             self.tensor_board_writer.close()
@@ -429,6 +473,8 @@ class FileWriter:
             json.dump(self.metadata, jsonfile, indent=4, sort_keys=True)
 
     def latest_tick(self):
+        if not self._write_file_outputs or not os.path.exists(self.paths["logs"]):
+            return 0
         with open(self.paths["logs"], "r") as logsfile:
             csvreader = csv.reader(logsfile)
             latest = None
