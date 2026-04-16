@@ -502,7 +502,7 @@ parser.add_argument(
     type=str2bool,
     nargs="?",
     const=True,
-    default=True,
+    default=False,
     help=(
         "Write train file outputs under log_dir/xpid "
         "(out.log, logs.csv, fields.csv, final_test_eval.csv, "

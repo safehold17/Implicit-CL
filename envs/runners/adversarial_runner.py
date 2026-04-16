@@ -655,7 +655,11 @@ class AdversarialRunner(object):
         self.level_store.reconcile_seeds(all_replay_seeds)
 
     def _get_weighted_num_edits(self):
-        level_sampler = self._default_level_sampler or self._default_warmup_level_sampler
+        level_sampler = (
+            self._default_warmup_level_sampler
+            if self._is_warmup_replay_plr_active()
+            else self._default_level_sampler
+        )
         seed_num_edits = np.zeros(level_sampler.seed_buffer_size)
         for idx, value in enumerate(self.level_store.seed2parent.values()):
             seed_num_edits[idx] = len(value)
