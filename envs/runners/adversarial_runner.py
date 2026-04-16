@@ -118,6 +118,10 @@ class AdversarialRunner(object):
         self.warmup_level_samplers = {}
         self.current_level_seeds = None
         self._default_level_sampler = None
+        self._enhanced_regret_base_sum = 0.0
+        self._enhanced_regret_base_count = 0
+        self._enhanced_regret_delta_sum = 0.0
+        self._enhanced_regret_delta_count = 0
         self._default_warmup_level_sampler = None
         self.weighted_num_edits = 0
         self.latest_env_stats = defaultdict(float)
@@ -130,6 +134,45 @@ class AdversarialRunner(object):
 
         # Runtime gate for PLR (enabled by default across stages).
         self.plr_active = True
+
+    def _get_enhanced_regret_running_means(
+        self,
+    ) -> tuple[float | None, float | None]:
+        """Return current running means for top-level enhanced regret normalization."""
+        base_count = int(getattr(self, "_enhanced_regret_base_count", 0))
+        delta_count = int(getattr(self, "_enhanced_regret_delta_count", 0))
+        base_mean = None
+        delta_mean = None
+        if base_count > 0:
+            base_mean = float(
+                getattr(self, "_enhanced_regret_base_sum", 0.0)
+            ) / float(base_count)
+        if delta_count > 0:
+            delta_mean = float(
+                getattr(self, "_enhanced_regret_delta_sum", 0.0)
+            ) / float(delta_count)
+        return base_mean, delta_mean
+
+    def _update_enhanced_regret_running_means(
+        self,
+        *,
+        base_regret_by_seed: dict[int, float],
+        delta_rtg_by_seed: dict[int, float],
+    ) -> None:
+        """Update running means from per-seed raw enhanced regret terms."""
+        if not hasattr(self, "_enhanced_regret_base_sum"):
+            self._enhanced_regret_base_sum = 0.0
+            self._enhanced_regret_base_count = 0
+        if not hasattr(self, "_enhanced_regret_delta_sum"):
+            self._enhanced_regret_delta_sum = 0.0
+            self._enhanced_regret_delta_count = 0
+
+        for value in base_regret_by_seed.values():
+            self._enhanced_regret_base_sum += float(value)
+            self._enhanced_regret_base_count += 1
+        for value in delta_rtg_by_seed.values():
+            self._enhanced_regret_delta_sum += float(value)
+            self._enhanced_regret_delta_count += 1
 
     def _build_level_samplers(self, plr_args):
         level_samplers = {}
@@ -978,25 +1021,28 @@ class AdversarialRunner(object):
             if not update_agent_separately:
                 enhanced_regret_external_scores = None
                 enhanced_regret_external_score_metrics = {}
-                use_enhanced_regret_sampler_scores = (
+                should_compute_enhanced_regret_scores = (
                     track_nocturne_enhanced_regret
+                )
+                use_enhanced_regret_sampler_scores = (
+                    should_compute_enhanced_regret_scores
                     and plr_runtime_enabled
                     and level_sampler
                     and update_level_sampler
                 )
-                if use_enhanced_regret_sampler_scores:
-                    regret_term_weights = (
-                        float(getattr(args, "regret_enhancement_w1", 0.1)),
-                        float(getattr(args, "regret_enhancement_w2", 1.0)),
-                        float(getattr(args, "regret_enhancement_w3", 0.1)),
-                    )
+                if should_compute_enhanced_regret_scores:
+                    (
+                        running_mean_base_regret,
+                        running_mean_delta_rtg,
+                    ) = self._get_enhanced_regret_running_means()
                     (
                         enhanced_regret_external_scores,
                         enhanced_regret_external_score_metrics,
                     ) = compute_nocturne_enhanced_regret_scores(
                         agent.storage,
                         rollout_info,
-                        regret_term_weights=regret_term_weights,
+                        running_mean_base_regret=running_mean_base_regret,
+                        running_mean_delta_rtg=running_mean_delta_rtg,
                         use_solvable_rate=bool(
                             getattr(args, "regret_enhancement_use_solvable_rate", True)
                         ),
@@ -1005,6 +1051,16 @@ class AdversarialRunner(object):
                         ),
                     )
                     rollout_info.update(enhanced_regret_external_score_metrics)
+                    self._update_enhanced_regret_running_means(
+                        base_regret_by_seed=enhanced_regret_external_score_metrics.get(
+                            "base_regret_by_seed",
+                            {},
+                        ),
+                        delta_rtg_by_seed=enhanced_regret_external_score_metrics.get(
+                            "delta_rtg_by_seed",
+                            {},
+                        ),
+                    )
 
                 if sample_only:
                     rollout_info.update(

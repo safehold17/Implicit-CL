@@ -82,22 +82,41 @@ def compute_learnability(
     return float(solvable_rate * (1.0 - solvable_rate))
 
 
+def normalize_learnability(learnability: float | None) -> float | None:
+    """Map p * (1 - p) into [0, 1] for top-level score aggregation."""
+    if learnability is None:
+        return None
+    return float(4.0 * float(learnability))
+
+
+def normalize_by_running_mean(
+    raw_value: float | None,
+    running_mean: float | None,
+    *,
+    eps: float = 1e-6,
+) -> float | None:
+    """Scale a raw metric by its running mean, using raw on cold start."""
+    if raw_value is None:
+        return None
+    if running_mean is None or float(running_mean) <= float(eps):
+        return float(raw_value)
+    return float(raw_value) / float(running_mean)
+
+
 def combine_enhanced_regret_score(
     *,
     base_regret: float,
     learnability: float | None = None,
     delta_rtg: float | None = None,
-    regret_term_weights: Sequence[float] = (0.1, 1.0, 0.1),
     use_solvable_rate: bool = True,
     use_ctrlsim_rtg_gap: bool = True,
 ) -> float:
-    """Combine base regret, solvability, and RTG gap terms."""
-    solvable_weight, base_weight, rtg_weight = map(float, regret_term_weights)
-    score = base_weight * float(base_regret)
+    """Combine normalized base regret, learnability, and RTG gap terms."""
+    score = float(base_regret)
     if use_solvable_rate and learnability is not None:
-        score += solvable_weight * float(learnability)
+        score += float(learnability)
     if use_ctrlsim_rtg_gap and delta_rtg is not None:
-        score += rtg_weight * float(delta_rtg)
+        score += float(delta_rtg)
     return float(score)
 
 

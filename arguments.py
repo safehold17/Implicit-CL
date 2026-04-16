@@ -1253,24 +1253,6 @@ parser.add_argument(
     help="Whether to enable runner-side enhanced regret scoring for PLR/ACCEL.",
 )
 parser.add_argument(
-    "--regret_enhancement_w1",
-    type=float,
-    default=1.0,
-    help="Weight for the solvable boundary term p * (1 - p).",
-)
-parser.add_argument(
-    "--regret_enhancement_w2",
-    type=float,
-    default=1.0,
-    help="Weight for the base positive value-loss regret term.",
-)
-parser.add_argument(
-    "--regret_enhancement_w3",
-    type=float,
-    default=1.0,
-    help="Weight for the CtrlSim RTG gap term.",
-)
-parser.add_argument(
     "--regret_enhancement_use_solvable_rate",
     type=str2bool,
     nargs="?",

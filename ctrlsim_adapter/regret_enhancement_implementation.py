@@ -13,6 +13,8 @@ from ctrlsim_adapter.regret_enhancement_helper import (
     compute_learnability,
     compute_mean_delta_rtg,
     compute_truncated_episode_rtg_gap,
+    normalize_by_running_mean,
+    normalize_learnability,
 )
 
 
@@ -116,7 +118,8 @@ def compute_nocturne_enhanced_regret_scores(
     rollouts,
     rollout_info: Mapping[str, object],
     *,
-    regret_term_weights: Sequence[float] = (0.1, 1.0, 0.1),
+    running_mean_base_regret: float | None = None,
+    running_mean_delta_rtg: float | None = None,
     use_solvable_rate: bool = True,
     use_ctrlsim_rtg_gap: bool = True,
 ) -> tuple[torch.Tensor, dict[str, object]]:
@@ -137,30 +140,54 @@ def compute_nocturne_enhanced_regret_scores(
     solvable_rate_by_seed = {}
     learnability_by_seed = {}
     delta_rtg_by_seed = {}
+    base_regret_norm_by_seed = {}
+    learnability_norm_by_seed = {}
+    delta_rtg_norm_by_seed = {}
     enhanced_regret_score_by_seed = {}
 
     for seed in all_seeds:
+        seed_int = int(seed)
         base_regret = float(base_regret_by_seed.get(seed, 0.0))
         attempt_count = int(attempt_count_by_seed.get(seed, 0))
         success_count = int(success_count_by_seed.get(seed, 0))
+        solvable_rate = None
+        if attempt_count > 0:
+            solvable_rate = success_count / float(attempt_count)
         learnability = compute_learnability(
             success_count=success_count,
             attempt_count=attempt_count,
         )
-        if attempt_count > 0:
-            solvable_rate_by_seed[int(seed)] = success_count / float(attempt_count)
+        if solvable_rate is not None:
+            solvable_rate_by_seed[seed_int] = solvable_rate
         if learnability is not None:
-            learnability_by_seed[int(seed)] = learnability
+            learnability_by_seed[seed_int] = learnability
 
         delta_rtg = compute_mean_delta_rtg(delta_rtg_segments_by_seed.get(seed, ()))
         if delta_rtg is not None:
-            delta_rtg_by_seed[int(seed)] = delta_rtg
+            delta_rtg_by_seed[seed_int] = delta_rtg
 
-        enhanced_regret_score_by_seed[int(seed)] = combine_enhanced_regret_score(
-            base_regret=base_regret,
-            learnability=learnability,
-            delta_rtg=delta_rtg,
-            regret_term_weights=regret_term_weights,
+        base_regret_norm = normalize_by_running_mean(
+            base_regret,
+            running_mean_base_regret,
+        )
+        if base_regret_norm is not None:
+            base_regret_norm_by_seed[seed_int] = base_regret_norm
+
+        learnability_norm = normalize_learnability(learnability)
+        if learnability_norm is not None:
+            learnability_norm_by_seed[seed_int] = learnability_norm
+
+        delta_rtg_norm = normalize_by_running_mean(
+            delta_rtg,
+            running_mean_delta_rtg,
+        )
+        if delta_rtg_norm is not None:
+            delta_rtg_norm_by_seed[seed_int] = delta_rtg_norm
+
+        enhanced_regret_score_by_seed[seed_int] = combine_enhanced_regret_score(
+            base_regret=base_regret_norm if base_regret_norm is not None else 0.0,
+            learnability=learnability_norm,
+            delta_rtg=delta_rtg_norm,
             use_solvable_rate=use_solvable_rate,
             use_ctrlsim_rtg_gap=use_ctrlsim_rtg_gap,
         )
@@ -179,20 +206,23 @@ def compute_nocturne_enhanced_regret_scores(
         "solvable_rate_by_seed": solvable_rate_by_seed,
         "learnability_by_seed": learnability_by_seed,
         "delta_rtg_by_seed": delta_rtg_by_seed,
+        "base_regret_norm_by_seed": base_regret_norm_by_seed,
+        "learnability_norm_by_seed": learnability_norm_by_seed,
+        "delta_rtg_norm_by_seed": delta_rtg_norm_by_seed,
         "enhanced_regret_score_by_seed": enhanced_regret_score_by_seed,
         "use_enhanced_regret": True,
     }
-    for key in (
-        "base_regret",
-        "solvable_rate",
-        "learnability",
-        "delta_rtg",
-        "enhanced_regret_score",
-    ):
-        by_seed_key = f"{key}_by_seed"
-        values = list(metrics.get(by_seed_key, {}).values())
+    scalar_sources = {
+        "base_regret": "base_regret_norm_by_seed",
+        "solvable_rate": "solvable_rate_by_seed",
+        "learnability": "learnability_norm_by_seed",
+        "delta_rtg": "delta_rtg_norm_by_seed",
+        "enhanced_regret_score": "enhanced_regret_score_by_seed",
+    }
+    for scalar_name, by_seed_name in scalar_sources.items():
+        values = list(metrics[by_seed_name].values())
         if values:
-            metrics[key] = float(np.mean(values))
+            metrics[scalar_name] = float(np.mean(values))
 
     return external_scores, metrics
 
