@@ -119,6 +119,7 @@ class PPO():
     
         # Running accumulator for the ego_ctrlsim teacher-vs-student KL term.
         ego_ctrlsim_kl_loss_epoch = 0
+        ego_ctrlsim_kl_loss_updates = 0
 
         if self.log_grad_norm:
             grad_norms = []
@@ -275,6 +276,7 @@ class PPO():
                     kl_loss_epoch += kl_loss.item()
                 if use_ego_ctrlsim_kl_loss:
                     ego_ctrlsim_kl_loss_epoch += ego_ctrlsim_kl_loss.item()
+                    ego_ctrlsim_kl_loss_updates += 1
 
         num_updates = self.ppo_epoch * self.num_mini_batch
 
@@ -284,9 +286,8 @@ class PPO():
         if use_model_kl_loss:
             kl_loss_epoch /= num_updates
     
-        # 即使某些 batch 没启用 ego_ctrlsim KL，也统一按 num_updates 做 epoch 平均
-        # Average ego_ctrlsim KL over the full update count for consistent epoch-level logging.
-        ego_ctrlsim_kl_loss_epoch /= num_updates
+        if ego_ctrlsim_kl_loss_updates > 0:
+            ego_ctrlsim_kl_loss_epoch /= ego_ctrlsim_kl_loss_updates
 
         info = {}
         if self.log_grad_norm:

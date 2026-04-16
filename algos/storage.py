@@ -264,11 +264,12 @@ class RolloutStorage(object):
             self.ego_ctrlsim_valid[self.step].fill_(False)
             if ego_ctrlsim_valid is not None:
                 self.ego_ctrlsim_valid[self.step].copy_(ego_ctrlsim_valid)
-        if (
-            self.ego_ctrlsim_action_logits is not None
-            and ego_ctrlsim_action_logits is not None
-        ):
-            self.ego_ctrlsim_action_logits[self.step].copy_(ego_ctrlsim_action_logits)
+        if self.ego_ctrlsim_action_logits is not None:
+            self.ego_ctrlsim_action_logits[self.step].zero_()
+            if ego_ctrlsim_action_logits is not None:
+                self.ego_ctrlsim_action_logits[self.step].copy_(
+                    ego_ctrlsim_action_logits
+                )
 
         self.step = (self.step + 1) % self.num_steps
 
