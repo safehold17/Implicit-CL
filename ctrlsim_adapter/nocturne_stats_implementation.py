@@ -17,9 +17,9 @@ def build_nocturne_tilting_columns(
     opp_count = max(0, int(info.get("opponent_k", 7)))
 
     tilts = []
-    ego_goal_tilt = 0.0
-    ego_veh_veh_tilt = 0.0
-    ego_veh_edge_tilt = 0.0
+    ego_goal_tilt = float(info.get("ego_goal_tilt", 0.0))
+    ego_veh_veh_tilt = float(info.get("ego_veh_veh_tilt", 0.0))
+    ego_veh_edge_tilt = float(info.get("ego_veh_edge_tilt", 0.0))
 
     if tilting_mode == "per_vehicle":
         for i in range(opp_count):
