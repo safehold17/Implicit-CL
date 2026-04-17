@@ -1,19 +1,26 @@
 """Run ego-policy evaluation for every numbered model checkpoint in a run dir."""
 
 import argparse
-import csv
 import os
 import re
 import sys
+from pathlib import Path
 
 from tqdm import tqdm
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from evaluation.evaluation_common import (
+    start_headless_display,
+    stop_headless_display,
+    validate_nocturne_env_names,
+    write_episode_metrics_csv,
+)
 from util import DotDict, ignore_warning, str2bool
 
 from evaluation.ego_policy_evaluation import (
-    EPISODE_METRIC_FIELDS,
-    _build_episode_metrics_mean_row,
-    _validate_env_names,
     run_single_checkpoint_evaluation,
 )
 
@@ -82,26 +89,6 @@ def find_model_checkpoints(base_path: str) -> list[str]:
     matched.sort(key=lambda item: item[0])
     return [stem for _, stem in matched]
 
-
-def write_episode_metrics_csv(
-    *,
-    result_path: str,
-    model_tar: str,
-    episode_metrics: list[dict[str, float | str]],
-) -> None:
-    """Write one checkpoint's per-episode metrics CSV."""
-    result_fpath = os.path.join(result_path, f"eval-{model_tar}.csv")
-    with open(result_fpath, "w", newline="") as csvout:
-        csvwriter = csv.writer(csvout)
-        csvwriter.writerow(list(EPISODE_METRIC_FIELDS))
-        for idx, row in enumerate(episode_metrics, start=1):
-            csvwriter.writerow(
-                [idx, *[row[field] for field in EPISODE_METRIC_FIELDS[1:]]]
-            )
-        mean_row = _build_episode_metrics_mean_row(episode_metrics)
-        csvwriter.writerow([mean_row[field] for field in EPISODE_METRIC_FIELDS])
-
-
 def main():
     """Evaluate all numbered checkpoints under one base path."""
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -109,30 +96,23 @@ def main():
     args.num_processes = min(args.num_processes, args.num_episodes)
     args.record_video = False
 
-    display = None
-    if sys.platform.startswith("linux"):
-        import pyvirtualdisplay
-
-        display = pyvirtualdisplay.Display(visible=0, size=(1400, 900), color_depth=24)
-        display.start()
-
-    device = "cuda"
-    base_path = os.path.expandvars(os.path.expanduser(args.base_path))
-    result_path = os.path.join(base_path, "evaluation")
-    os.makedirs(result_path, exist_ok=True)
-
-    env_names = args.env_names.split(",")
-    _validate_env_names(env_names)
-
-    model_tars = find_model_checkpoints(base_path)
-    if not model_tars:
-        raise FileNotFoundError(
-            f"No numbered checkpoints found under {base_path}: expected model_<step>.tar"
-        )
-
-    eval_args = DotDict(dict(args))
-
+    display = start_headless_display()
     try:
+        device = "cuda"
+        base_path = os.path.expandvars(os.path.expanduser(args.base_path))
+        result_path = os.path.join(base_path, "evaluation")
+        os.makedirs(result_path, exist_ok=True)
+
+        env_names = args.env_names.split(",")
+        validate_nocturne_env_names(env_names)
+
+        model_tars = find_model_checkpoints(base_path)
+        if not model_tars:
+            raise FileNotFoundError(
+                f"No numbered checkpoints found under {base_path}: expected model_<step>.tar"
+            )
+
+        eval_args = DotDict(dict(args))
         pbar = tqdm(total=len(model_tars), position=0) if args.verbose else None
         try:
             for model_tar in model_tars:
@@ -148,9 +128,8 @@ def main():
                     progress_position=1,
                 )
                 write_episode_metrics_csv(
-                    result_path=result_path,
-                    model_tar=model_tar,
-                    episode_metrics=episode_metrics,
+                    os.path.join(result_path, f"eval-{model_tar}.csv"),
+                    episode_metrics,
                 )
                 if pbar is not None:
                     pbar.update(1)
@@ -158,8 +137,7 @@ def main():
             if pbar is not None:
                 pbar.close()
     finally:
-        if display:
-            display.stop()
+        stop_headless_display(display)
 
 
 if __name__ == "__main__":
