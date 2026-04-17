@@ -17,7 +17,7 @@ if PROJECT_ROOT not in sys.path:
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 from envs.wrappers import ParallelAdversarialVecEnv
-from eval import Evaluator
+from evaluation.eval import Evaluator
 from util import is_discrete_actions
 
 

@@ -10,6 +10,7 @@ import csv
 import json
 import argparse
 from collections import defaultdict
+from typing import Any
 
 import numpy as np
 import torch
@@ -42,10 +43,20 @@ from arguments import parser
 from util import ignore_warning
 ignore_warning.configure_subprocess_env()
 
+EPISODE_METRIC_FIELDS = (
+	"number",
+	"scenario_id",
+	"collision",
+	"offroad",
+	"position_reached",
+	"progress",
+	"total_episode_reward",
+)
+
 """
 Example usage:
 
-python -m eval \
+python -m evaluation.eval \
 --env_name=MultiGrid-SixteenRooms-v0 \
 --base_path="~/logs/dcd/latest" \
 --verbose
@@ -169,6 +180,52 @@ def parse_args():
 		help='Inference precision for batched ExternalTeacher inference.')
 
 	return parser.parse_args()
+
+
+def _extract_episode_metrics(info: dict[str, Any]) -> dict[str, float | str]:
+	"""Extract one completed Nocturne episode's CSV metrics from info."""
+	episode_info = info.get("episode", {})
+	total_episode_reward = episode_info.get("r", info.get("episode_reward", 0.0))
+	return {
+		"scenario_id": info.get("scenario_id", ""),
+		"collision": float(info.get("collision_occurred", info.get("collision", 0.0))),
+		"offroad": float(info.get("offroad_occurred", info.get("offroad", 0.0))),
+		"position_reached": float(
+			info.get("position_reached_occurred", info.get("position_reached", 0.0))
+		),
+		"progress": float(info.get("max_progress", info.get("progress", 0.0))),
+		"total_episode_reward": float(total_episode_reward),
+	}
+
+
+def _build_episode_metrics_mean_row(
+	episode_metrics: list[dict[str, float | str]],
+) -> dict[str, float | str]:
+	"""Build the final CSV mean row for per-episode metrics."""
+	mean_row: dict[str, float | str] = {"number": "mean", "scenario_id": ""}
+	for field in EPISODE_METRIC_FIELDS[2:]:
+		values = [float(row[field]) for row in episode_metrics]
+		mean_row[field] = float(np.mean(values)) if values else 0.0
+	return mean_row
+
+
+def load_actor_critic_checkpoint(actor_critic, state_dict: dict[str, Any]) -> None:
+	"""Load checkpoint weights into compiled or eager actor_critic modules."""
+	if hasattr(actor_critic, "_orig_mod"):
+		if any(key.startswith("_orig_mod.") for key in state_dict):
+			actor_critic.load_state_dict(state_dict)
+		else:
+			actor_critic._orig_mod.load_state_dict(state_dict)
+		return
+
+	if any(key.startswith("_orig_mod.") for key in state_dict):
+		trimmed_state_dict = {
+			key.removeprefix("_orig_mod."): value for key, value in state_dict.items()
+		}
+		actor_critic.load_state_dict(trimmed_state_dict)
+		return
+
+	actor_critic.load_state_dict(state_dict)
 
 
 class Evaluator(object):
@@ -460,16 +517,19 @@ class Evaluator(object):
 		render=False,
 		accumulator='mean',
 		return_episode_returns=False,
+		return_episode_metrics=False,
 		external_teacher=None):
 
 		# Evaluate agent for N episodes
 		venv = self.venv
 		env_returns = {}
 		env_solved_episodes = {}
+		env_episode_metrics = {}
 		
 		for env_name, venv in self.venv.items():
 			returns = []
 			solved_episodes = 0
+			episode_metrics = []
 			episode_counts = [0 for _ in range(self.num_processes)]
 			if self.eval_screenshot and self.eval_screenshot_dir:
 				os.makedirs(self.eval_screenshot_dir, exist_ok=True)
@@ -538,6 +598,8 @@ class Evaluator(object):
 				for i, info in enumerate(infos):
 					if 'episode' in info.keys():
 						returns.append(info['episode']['r'])
+						if env_name.startswith('Nocturne'):
+							episode_metrics.append(_extract_episode_metrics(info))
 						if returns[-1] > self.solved_threshold:
 							solved_episodes += 1
 						if pbar:
@@ -565,6 +627,7 @@ class Evaluator(object):
 	
 			env_returns[env_name] = returns
 			env_solved_episodes[env_name] = solved_episodes
+			env_episode_metrics[env_name] = episode_metrics
 
 		stats = {}
 		for env_name in self.env_names:
@@ -576,6 +639,10 @@ class Evaluator(object):
 			else:
 				stats[f"test_returns:{env_name}"] = env_returns[env_name]
 
+		if return_episode_returns and return_episode_metrics:
+			return stats, env_returns, env_episode_metrics
+		if return_episode_metrics:
+			return stats, env_episode_metrics
 		if return_episode_returns:
 			return stats, env_returns
 		return stats
@@ -702,6 +769,7 @@ if __name__ == '__main__':
 	csvwriter = csv.writer(csvout)
 
 	env_results = defaultdict(list)
+	episode_metrics_rows = []
 
 	# Get envs
 	if args.benchmark == 'maze':
@@ -751,13 +819,16 @@ if __name__ == '__main__':
 		except:
 			checkpoint = None
 
-		if checkpoint is not None:
-			model_name = args.model_name
+			if checkpoint is not None:
+				model_name = args.model_name
 
-			if 'runner_state_dict' in checkpoint:
-				agent.algo.actor_critic.load_state_dict(checkpoint['runner_state_dict']['agent_state_dict'][model_name])
-			else:
-				agent.algo.actor_critic.load_state_dict(checkpoint)
+				if 'runner_state_dict' in checkpoint:
+					load_actor_critic_checkpoint(
+						agent.algo.actor_critic,
+						checkpoint['runner_state_dict']['agent_state_dict'][model_name],
+					)
+				else:
+					load_actor_critic_checkpoint(agent.algo.actor_critic, checkpoint)
 
 			num_seeds = 1
 
@@ -782,6 +853,10 @@ if __name__ == '__main__':
 			for i in range(num_chunks):
 				start_idx = i*chunk_size
 				env_names_ = env_names[start_idx:start_idx+chunk_size]
+				collect_episode_metrics = (
+					args.accumulator is None
+					and all(name.startswith("Nocturne") for name in env_names_)
+				)
 
 				# Evaluate the model
 				xpid_flags.update(args)
@@ -800,12 +875,19 @@ if __name__ == '__main__':
 					**nocturne_required,
 					record_video=args.record_video)
 
-				stats = evaluator.evaluate(agent,
+				eval_output = evaluator.evaluate(agent,
 					deterministic=args.deterministic,
 					show_progress=args.verbose,
 					render=args.render,
 					accumulator=args.accumulator,
+					return_episode_metrics=collect_episode_metrics,
 					external_teacher=external_teacher)
+				if collect_episode_metrics:
+					stats, env_episode_metrics = eval_output
+					for env_name in env_names_:
+						episode_metrics_rows.extend(env_episode_metrics.get(env_name, []))
+				else:
+					stats = eval_output
 
 				for k,v in stats.items():
 					if args.accumulator:
@@ -817,27 +899,36 @@ if __name__ == '__main__':
 	else:
 		raise FileNotFoundError(f'No model path {checkpoint_path}')
 
-	output_results = {}
-	for k,_ in stats.items():
-		results = env_results[k]
-		output_results[k] = f'{np.mean(results):.2f} +/- {np.std(results):.2f}'
-		q1 = np.percentile(results, 25, method='midpoint')
-		q3 = np.percentile(results, 75, method='midpoint')
-		median = np.median(results)
-		output_results[f'iq_{k}'] = f'{q1:.2f}--{median:.2f}--{q3:.2f}'
-		print(f"{k}: {output_results[k]}")
-	key_excluded = {k: () for k in output_results.keys()}
-	HumanOutputFormat(sys.stdout).write(output_results, key_excluded=key_excluded, step=0)
+	if episode_metrics_rows:
+		csvwriter.writerow(list(EPISODE_METRIC_FIELDS))
+		for idx, row in enumerate(episode_metrics_rows, start=1):
+			csvwriter.writerow([idx, *[row[field] for field in EPISODE_METRIC_FIELDS[1:]]])
+		mean_row = _build_episode_metrics_mean_row(episode_metrics_rows)
+		csvwriter.writerow([mean_row[field] for field in EPISODE_METRIC_FIELDS])
+	else:
+		output_results = {}
+		for k,_ in stats.items():
+			results = env_results[k]
+			output_results[k] = f'{np.mean(results):.2f} +/- {np.std(results):.2f}'
+			q1 = np.percentile(results, 25, method='midpoint')
+			q3 = np.percentile(results, 75, method='midpoint')
+			median = np.median(results)
+			output_results[f'iq_{k}'] = f'{q1:.2f}--{median:.2f}--{q3:.2f}'
+			print(f"{k}: {output_results[k]}")
+		key_excluded = {k: () for k in output_results.keys()}
+		HumanOutputFormat(sys.stdout).write(output_results, key_excluded=key_excluded, step=0)
 
-	first_metric_values = next(iter(env_results.values()), [])
-	csvwriter.writerow(
-		build_eval_csv_headers(
-			accumulator=args.accumulator,
-			value_count=len(first_metric_values),
+		first_metric_values = next(iter(env_results.values()), [])
+		csvwriter.writerow(
+			build_eval_csv_headers(
+				accumulator=args.accumulator,
+				value_count=len(first_metric_values),
+			)
 		)
-	)
-	for metric_key, values in env_results.items():
-		csvwriter.writerow(build_eval_csv_row(metric_key, values))
+		for metric_key, values in env_results.items():
+			csvwriter.writerow(build_eval_csv_row(metric_key, values))
+
+	csvout.close()
 
 	if display:
 		display.stop()

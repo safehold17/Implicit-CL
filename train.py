@@ -139,7 +139,7 @@ def main(args, clearml_task=None):
     import envs.nocturne_ctrlsim
     from envs.bipedalwalker import bipedalwalker_df_from_encodings
     from envs.runners.adversarial_runner import AdversarialRunner
-    from eval import Evaluator
+    from evaluation.eval import Evaluator
 
     ignore_warning.configure_subprocess_env()
     display = setup_virtual_display()

@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 _GYM_MINIGRID_WARNING_RE = r"The package name gym_minigrid has been deprecated.*"
+_PYGAME_PKGDATA_WARNING_RE = r"pkg_resources is deprecated as an API\..*"
 _original_filterwarnings = warnings.filterwarnings
 _INSTALLED = False
 
@@ -19,6 +20,13 @@ def _install_warning_filters() -> None:
         "ignore",
         message=_GYM_MINIGRID_WARNING_RE,
         category=DeprecationWarning,
+        append=False,
+    )
+    _original_filterwarnings(
+        "ignore",
+        message=_PYGAME_PKGDATA_WARNING_RE,
+        category=UserWarning,
+        module=r"pygame\.pkgdata",
         append=False,
     )
 
