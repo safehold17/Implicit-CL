@@ -31,26 +31,6 @@ class AdversarialRTGRunningStats:
     error_sigma: float
     error_count: float
 
-
-def should_trigger_policy_reweighting_step(
-    *,
-    t: int,
-    history_steps: int,
-    reweighting_frequency: int,
-) -> bool:
-    """Return whether the current step should emit a new delayed reweighting signal."""
-    if reweighting_frequency < 1:
-        raise ValueError(
-            f"reweighting_frequency must be >= 1, got {reweighting_frequency}"
-        )
-
-    anchor_t = int(history_steps) - 1
-    if int(t) < anchor_t:
-        return False
-    phase = (int(t) - anchor_t) % int(reweighting_frequency)
-    return phase == 0
-
-
 def _to_numpy_vector(
     rtg_value: Sequence[float] | np.ndarray | torch.Tensor,
 ) -> np.ndarray:

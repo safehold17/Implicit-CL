@@ -285,9 +285,6 @@ def _make_env(args):
             'policy_reweighting_target': getattr(
                 args, 'policy_reweighting_target', 'rtg'
             ),
-            'reweighting_frequency': getattr(
-                args, 'reweighting_frequency', 1
-            ),
         }
         env_kwargs.update(nocturne_kwargs)
         return gym_make(args.env_name, **env_kwargs)

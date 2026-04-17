@@ -68,7 +68,6 @@ class CtrlSimOpponentAdapter:
         policy_reweighting_reward_scale: float = 1.0,
         policy_reweighting_epsilon: float = 1e-6,
         policy_reweighting_target: str = "rtg",
-        reweighting_frequency: int = 1,
         load_on_init: bool = True,
     ):
         """
@@ -98,7 +97,6 @@ class CtrlSimOpponentAdapter:
         policy_reweighting_reward_scale: policy reweighting scalar multiplier.
         policy_reweighting_epsilon: numerical-stability term for policy reweighting.
         policy_reweighting_target: delayed reweighting target, either rtg or action.
-        reweighting_frequency: cadence for active policy reweighting steps.
         load_on_init: 是否在初始化时立即加载模型/数据集
         load_on_init: whether to load the model and dataset during initialization.
         """
@@ -124,7 +122,6 @@ class CtrlSimOpponentAdapter:
         self.use_enhanced_regret = bool(use_enhanced_regret)
         self.use_policy_reweighting = bool(use_policy_reweighting)
         self.policy_reweighting_target = str(policy_reweighting_target)
-        self.reweighting_frequency = int(reweighting_frequency)
         self.policy_reweighting_config = AdversarialRTGConfig(
             enabled=self.use_policy_reweighting,
             reward_scale=float(policy_reweighting_reward_scale),

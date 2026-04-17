@@ -599,6 +599,12 @@ class AdversarialRunner(object):
             return self.warmup_level_samplers
         return self.level_samplers
 
+    def _get_active_default_level_sampler(self):
+        """Return the default sampler active for the current runtime stage."""
+        if self._is_warmup_replay_plr_active():
+            return self._default_warmup_level_sampler
+        return self._default_level_sampler
+
     @property
     def active_level_samplers(self):
         """Return active sampler instances for the current runtime stage."""
@@ -655,11 +661,7 @@ class AdversarialRunner(object):
         self.level_store.reconcile_seeds(all_replay_seeds)
 
     def _get_weighted_num_edits(self):
-        level_sampler = (
-            self._default_warmup_level_sampler
-            if self._is_warmup_replay_plr_active()
-            else self._default_level_sampler
-        )
+        level_sampler = self._get_active_default_level_sampler()
         seed_num_edits = np.zeros(level_sampler.seed_buffer_size)
         for idx, value in enumerate(self.level_store.seed2parent.values()):
             seed_num_edits[idx] = len(value)
@@ -695,8 +697,7 @@ class AdversarialRunner(object):
         return int(root_seed)
 
     def _sample_replay_decision(self):
-        default_level_sampler = self._default_warmup_level_sampler \
-            if self._is_warmup_replay_plr_active() else self._default_level_sampler
+        default_level_sampler = self._get_active_default_level_sampler()
         return default_level_sampler.sample_replay_decision()
 
     def _consume_pending_replay_obs(self):
@@ -1670,6 +1671,12 @@ class AdversarialRunner(object):
             for key in enhanced_regret_metric_keys
             if (value := agent_info.get(key)) is not None
         })
+        if (
+            is_nocturne_env
+            and self.external_teacher is not None
+            and bool(getattr(args, "use_policy_reweighting", False))
+        ):
+            stats.update(self.external_teacher.consume_policy_reweighting_update_stats())
 
         if args.log_grad_norm:
             def _get_mean_grad_norm(rollout_info):

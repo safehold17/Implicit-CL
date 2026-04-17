@@ -45,7 +45,6 @@ class NocturneCtrlSimEnvConfig:
     use_enhanced_regret: bool
     use_policy_reweighting: bool
     policy_reweighting_target: str
-    reweighting_frequency: int
     policy_reweighting_config: AdversarialRTGConfig
     inference_precision: str
     opponent_runtime_mode: str
@@ -129,11 +128,6 @@ def build_nocturne_ctrlsim_env_config(
         kwargs.get("kl_loss_computation_frequency", 2),
         1,
     )
-    reweighting_frequency = _validate_min_int(
-        "reweighting_frequency",
-        kwargs.get("reweighting_frequency", 1),
-        1,
-    )
     opponent_k = int(kwargs.get("opponent_k", 7))
     if opponent_k < 0:
         raise ValueError(f"opponent_k must be non-negative, got {opponent_k}")
@@ -208,7 +202,6 @@ def build_nocturne_ctrlsim_env_config(
         use_enhanced_regret=bool(kwargs.get("use_enhanced_regret", False)),
         use_policy_reweighting=use_policy_reweighting,
         policy_reweighting_target=policy_reweighting_target,
-        reweighting_frequency=reweighting_frequency,
         policy_reweighting_config=policy_reweighting_config,
         inference_precision=str(kwargs.get("inference_precision", "fp32")),
         opponent_runtime_mode=str(kwargs.get("opponent_runtime_mode", "normal")),

@@ -15,9 +15,6 @@ from batch_inference.batch_ipc import pack_prepared
 from ctrlsim_adapter.regret_enhancement_helper import (
     should_collect_ego_ctrlsim_rtg_step,
 )
-from ctrlsim_adapter.policy_reweighting_helpers import (
-    should_trigger_policy_reweighting_step,
-)
 
 from .sampling_rng import resolve_sampling_seed
 
@@ -339,7 +336,12 @@ def prepare_step_pack(
             ),
         )
     )
-    ego_needs_prepare = ego_needs_kl_prepare or ego_needs_rtg_prepare
+    use_policy_reweighting = bool(getattr(adapter, "use_policy_reweighting", False))
+    ego_needs_prepare = (
+        ego_needs_kl_prepare
+        or ego_needs_rtg_prepare
+        or (ego_policy_ready and opponent_needs_prepare and use_policy_reweighting)
+    )
 
     shared_context = None
     if opponent_needs_prepare or ego_needs_prepare:
@@ -354,14 +356,8 @@ def prepare_step_pack(
             owner_focal_id = ego_id_int
 
     delayed_ego_action_scale = 1.0
-    if owner_focal_id is not None and bool(getattr(adapter, "use_policy_reweighting", False)):
-        should_trigger = should_trigger_policy_reweighting_step(
-            t=t,
-            history_steps=int(adapter.history_steps),
-            reweighting_frequency=int(adapter.reweighting_frequency),
-        )
-        if should_trigger:
-            delayed_ego_action_scale = float(getattr(adapter, "_ego_action_scale", 1.0))
+    if owner_focal_id is not None and opponent_needs_prepare and use_policy_reweighting:
+        delayed_ego_action_scale = float(getattr(adapter, "_ego_action_scale", 1.0))
     ego_reweight_tilt = tuple(
         int(v) for v in getattr(adapter, "_ego_reweight_tilt", (0, 0, 0))
     )

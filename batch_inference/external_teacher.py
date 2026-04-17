@@ -123,6 +123,7 @@ class ExternalTeacher:
             epsilon=float(policy_reweighting_epsilon),
         )
         self._policy_reweighting_error_rms = RunningMeanStd(shape=())
+        self._reset_policy_reweighting_update_accumulator()
 
         (
             self._autocast_enabled,
@@ -401,6 +402,61 @@ class ExternalTeacher:
         rms = self._get_policy_reweighting_error_rms()
         rms.update(np.asarray([error_value], dtype=np.float64))
 
+    @staticmethod
+    def _normalize_policy_reweighting_error(
+        error_value: float,
+        running_stats: AdversarialRTGRunningStats,
+    ) -> float:
+        """Normalize one RTG error value with the current running statistics."""
+        if float(running_stats.error_count) < 2.0:
+            return 0.0
+        if float(running_stats.error_sigma) <= 0.0:
+            return 0.0
+        return (float(error_value) - float(running_stats.error_mean)) / float(
+            running_stats.error_sigma
+        )
+
+    def _accumulate_policy_reweighting_update_sample(
+        self,
+        *,
+        effective_scale: float,
+        raw_rtg_error: float,
+        normalized_rtg_error: float,
+    ) -> None:
+        """Accumulate one effective reweighting sample into update-level means."""
+        stats = self._policy_reweighting_update_accumulator
+        stats["count"] += 1.0
+        stats["effective_scale_sum"] += float(effective_scale)
+        stats["raw_rtg_error_sum"] += float(raw_rtg_error)
+        stats["normalized_rtg_error_sum"] += float(normalized_rtg_error)
+
+    def _reset_policy_reweighting_update_accumulator(self) -> None:
+        """Reset the update-level policy reweighting accumulator to zeros."""
+        self._policy_reweighting_update_accumulator = {
+            "count": 0.0,
+            "effective_scale_sum": 0.0,
+            "raw_rtg_error_sum": 0.0,
+            "normalized_rtg_error_sum": 0.0,
+        }
+
+    def consume_policy_reweighting_update_stats(self) -> Dict[str, float]:
+        """Return update-level mean reweighting stats and clear the accumulator."""
+        stats = self._policy_reweighting_update_accumulator
+        count = float(stats["count"])
+        if count <= 0.0:
+            return {}
+        result = {
+            "policy_reweighting_scale": float(stats["effective_scale_sum"]) / count,
+            "policy_reweighting_raw_rtg_error": float(
+                stats["raw_rtg_error_sum"]
+            ) / count,
+            "policy_reweighting_normalized_rtg_error": float(
+                stats["normalized_rtg_error_sum"]
+            ) / count,
+        }
+        self._reset_policy_reweighting_update_accumulator()
+        return result
+
     def _compute_ego_action_scales_by_job(
         self,
         *,
@@ -519,6 +575,10 @@ class ExternalTeacher:
         for idx, job_idx in enumerate(valid_job_indices):
             running_stats = self._get_policy_reweighting_running_stats()
             error_value = float(error_values[idx])
+            normalized_error = self._normalize_policy_reweighting_error(
+                error_value=error_value,
+                running_stats=running_stats,
+            )
             if self.policy_reweighting_config.enabled and any(
                 float(value) != 0.0 for value in ego_reweight_tilts[idx]
             ):
@@ -526,6 +586,11 @@ class ExternalTeacher:
                     error_value=error_value,
                     config=self.policy_reweighting_config,
                     running_stats=running_stats,
+                )
+                self._accumulate_policy_reweighting_update_sample(
+                    effective_scale=scales[job_idx],
+                    raw_rtg_error=error_value,
+                    normalized_rtg_error=normalized_error,
                 )
             self._update_policy_reweighting_error_stats(error_value)
 

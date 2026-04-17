@@ -1236,12 +1236,6 @@ parser.add_argument(
     default="rtg",
     help="Which opponent logits to reweight on the delayed step.",
 )
-parser.add_argument(
-    "--reweighting_frequency",
-    type=int,
-    default=1,
-    help="Apply reweighting every N active ctrl-sim inference steps.",
-)
 
 # ============== Regret Enhancement ==============
 parser.add_argument(

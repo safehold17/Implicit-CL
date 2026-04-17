@@ -65,6 +65,37 @@ def check_done(env) -> bool:
     return False
 
 
+def _build_policy_reweighting_info(env) -> Dict[str, float]:
+    """Build step-level policy reweighting info for logging."""
+    scale = 1.0
+    ego_reweight_tilt = (0.0, 0.0, 0.0)
+
+    if (
+        bool(getattr(env, 'use_policy_reweighting', False))
+        and str(getattr(env, 'opponent_runtime_mode', 'normal')) == 'normal'
+        and len(getattr(env, 'opponent_vehicle_ids', ())) > 0
+    ):
+        opponent = getattr(env, 'opponent', None)
+        if opponent is not None:
+            raw_scale = float(getattr(opponent, '_ego_action_scale', 1.0))
+            if np.isfinite(raw_scale):
+                scale = raw_scale
+
+        raw_tilt = tuple(
+            float(v)
+            for v in getattr(env, 'current_ego_reweight_tilt', (0.0, 0.0, 0.0))
+        )
+        if len(raw_tilt) == 3 and all(np.isfinite(v) for v in raw_tilt):
+            ego_reweight_tilt = raw_tilt
+
+    return {
+        'ego_action_scale': scale,
+        'ego_goal_tilt': ego_reweight_tilt[0],
+        'ego_veh_veh_tilt': ego_reweight_tilt[1],
+        'ego_veh_edge_tilt': ego_reweight_tilt[2],
+    }
+
+
 def get_info(env) -> Dict[str, Any]:
     """Return additional information."""
     done = check_done(env)
@@ -94,28 +125,7 @@ def get_info(env) -> Dict[str, Any]:
 
     # Always add complexity info (real-time data)
     info.update(get_complexity_info(env))
-    scale = 1.0
-    ego_reweight_tilt = (0.0, 0.0, 0.0)
-    if (
-        bool(getattr(env, 'use_policy_reweighting', False))
-        and str(getattr(env, 'opponent_runtime_mode', 'normal')) == 'normal'
-        and len(getattr(env, 'opponent_vehicle_ids', ())) > 0
-    ):
-        opponent = getattr(env, 'opponent', None)
-        if opponent is not None:
-            raw_scale = float(getattr(opponent, '_ego_action_scale', 1.0))
-            if np.isfinite(raw_scale):
-                scale = raw_scale
-        raw_tilt = tuple(
-            float(v)
-            for v in getattr(env, 'current_ego_reweight_tilt', (0.0, 0.0, 0.0))
-        )
-        if len(raw_tilt) == 3 and all(np.isfinite(v) for v in raw_tilt):
-            ego_reweight_tilt = raw_tilt
-    info['ego_action_scale'] = scale
-    info['ego_goal_tilt'] = ego_reweight_tilt[0]
-    info['ego_veh_veh_tilt'] = ego_reweight_tilt[1]
-    info['ego_veh_edge_tilt'] = ego_reweight_tilt[2]
+    info.update(_build_policy_reweighting_info(env))
     if bool(getattr(env, 'use_enhanced_regret', False)):
         student_component_applied_return = getattr(
             env,
