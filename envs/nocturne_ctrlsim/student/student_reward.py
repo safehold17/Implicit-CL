@@ -278,6 +278,13 @@ def compute_student_reward(env) -> float:
     if veh_edge_collision:
         env._offroad_occurred = True
 
+    unsafe_trajectory = bool(
+        getattr(env, '_episode_collision_occurred', False)
+        or getattr(env, '_episode_offroad_occurred', False)
+        or veh_veh_collision
+        or veh_edge_collision
+    )
+
     # Store reward vector in vehicle_data_dict (for compute_reward's history check)
     if ego_id in env._ego_vehicle_data_dict:
         env._ego_vehicle_data_dict[ego_id]['reward'].append(reward_vector)
@@ -292,6 +299,8 @@ def compute_student_reward(env) -> float:
     approaching_goal_term = (
         approaching_goal_scaling * goal_improve if use_approaching_goal else 0.0
     )
+    if unsafe_trajectory:
+        position_reward_term = 0.0
     use_speed_shaped = getattr(env, 'use_speed_shaped', True)
     use_heading_shaped = getattr(env, 'use_heading_shaped', True)
     use_speed_heading_target = getattr(env, 'use_speed_heading_target', True)

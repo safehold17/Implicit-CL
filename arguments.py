@@ -958,7 +958,7 @@ parser.add_argument(
 parser.add_argument(
     "--pos_target_achieved_rew_multiplier",
     type=float,
-    default=10.0,
+    default=15.0,
     help="Goal position achieved reward multiplier for student reward (ctrl-sim default).",
 )
 parser.add_argument(
@@ -970,7 +970,7 @@ parser.add_argument(
 parser.add_argument(
     "--approaching_goal_scaling",
     type=float,
-    default=1.0,
+    default=0.2,
     help="Scaling factor for approaching-goal reward in student reward.",
 )
 parser.add_argument(
@@ -978,7 +978,7 @@ parser.add_argument(
     type=str2bool,
     nargs="?",
     const=True,
-    default=False,
+    default=True,
     help="Whether to include approaching-goal reward in student reward aggregation.",
 )
 parser.add_argument(
@@ -1002,7 +1002,7 @@ parser.add_argument(
     type=str2bool,
     nargs="?",
     const=True,
-    default=True,
+    default=False,
     help="Whether to include shaped heading reward in student reward aggregation.",
 )
 parser.add_argument(

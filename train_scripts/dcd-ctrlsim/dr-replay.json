@@ -12,7 +12,7 @@
     "use_gae": [true],
     "gae_lambda": [0.95],
     "handle_timelimits": [false],
-    "num_steps": [512],
+    "num_steps": [256],
     "ppo_epoch": [10],
     "num_mini_batch": [32],
     "recurrent_agent": [false],
@@ -33,6 +33,7 @@
     "level_replay_score_transform": ["rank"],
     "level_replay_temperature": [0.3],
     "staleness_coef": [0.3],
+    "no_exploratory_grad_updates": [false],
 
     "__note3__": ["ACCEL parameters"],
     "use_editor": [false],
@@ -49,14 +50,17 @@
     "tilt_range_max": [25],
 
     "__note5__": ["warmup parameters"],
+    "use_warmup_level_replay": [false],
+    "warmup_level_replay_seed_buffer_size": [8000],
     "warmup_opponent_disable_ratio": [0.0],
     "warmup_opponent_replay_ratio": [1.0],
 
     "__note6__": ["logging parameters"],
     "verbose": [false],
+    "write_file_outputs": [false],
     "test_env_names": [""],
     "log_plr_buffer_stats": [false],
-    "screenshot_interval": [1000000],
+    "screenshot_interval": [0],
     "log_interval": [1000000],
     "checkpoint_interval": [1000],
     "archive_interval": [1000],
@@ -64,13 +68,13 @@
     "__note7__": ["student reward setup"],
     "use_approaching_goal" : [true],
     "use_persistent_position_reward": [false],
-    "use_heading_shaped": [true],
+    "use_heading_shaped": [false],
     "use_veh_veh_shaped": [false],
     "use_veh_edge_shaped": [false],
     "veh_veh_collision_rew_multiplier": [10.0],
     "veh_edge_collision_rew_multiplier": [10.0],
-    "pos_target_achieved_rew_multiplier": [10.0],
-    "approaching_goal_scaling": [1.0],
+    "pos_target_achieved_rew_multiplier": [15.0],
+    "approaching_goal_scaling": [0.2],
 
     "__note8__": ["inference parameters"],
     "sparse_inference_action_repeat": [true],
@@ -94,9 +98,9 @@
     "log_dir": ["~/logs/dcd"],
 
     "__note11__": ["clearml"],
-    "use_clearml": ["true"],
+    "use_clearml": [false],
     "clearml_task": ["dcd-ctrlsim"],
-    "clearml_monitor_only": [false],
+    "clearml_monitor_only": [true],
     "local_tensorboard": [false]
   }
 }

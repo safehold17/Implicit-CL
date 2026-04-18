@@ -228,7 +228,7 @@ def _make_env(args):
             'veh_veh_collision_rew_multiplier': getattr(args, 'veh_veh_collision_rew_multiplier', 10.0),
             'veh_edge_collision_rew_multiplier': getattr(args, 'veh_edge_collision_rew_multiplier', 10.0),
             'pos_target_achieved_rew_multiplier': getattr(
-                args, 'pos_target_achieved_rew_multiplier', 10.0
+                args, 'pos_target_achieved_rew_multiplier', 15.0
             ),
             'use_persistent_position_reward': getattr(
                 args, 'use_persistent_position_reward', False
