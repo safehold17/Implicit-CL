@@ -205,9 +205,12 @@ def update_vehicle_data_dict(
     if vehicles_by_id is None:
         vehicles_by_id = {}
         adapter._vehicles_by_id_step = vehicles_by_id
-    vehicles_by_id.clear()
-    for veh in vehicles:
-        vehicles_by_id[veh.getID()] = veh
+    # The vehicles list is episode-stable (IDs never change mid-episode), so
+    # rebuild the dict only at t=0.
+    if t == 0:
+        vehicles_by_id.clear()
+        for veh in vehicles:
+            vehicles_by_id[veh.getID()] = veh
 
     update_vehicle_ids = get_state_update_vehicle_ids(
         adapter=adapter,

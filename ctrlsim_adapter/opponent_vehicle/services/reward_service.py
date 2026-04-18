@@ -60,17 +60,14 @@ class OpponentRewardService:
         t: int,
         pos_key: str,
     ) -> np.ndarray:
-        return np.asarray(
-            [
-                [
-                    OpponentRewardService._get_step_or_last(veh_data[pos_key], t)["x"],
-                    OpponentRewardService._get_step_or_last(veh_data[pos_key], t)["y"],
-                    OpponentRewardService._get_step_or_last(veh_data["existence"], t),
-                ]
-                for veh_data in veh_data_list
-            ],
-            dtype=np.float32,
-        )[:, np.newaxis, :]
+        rows = []
+        for veh_data in veh_data_list:
+            # Fetch the position entry once to avoid calling _get_step_or_last
+            # twice per vehicle (was previously called separately for "x" and "y").
+            pos_entry = OpponentRewardService._get_step_or_last(veh_data[pos_key], t)
+            exist = OpponentRewardService._get_step_or_last(veh_data["existence"], t)
+            rows.append([pos_entry["x"], pos_entry["y"], exist])
+        return np.asarray(rows, dtype=np.float32)[:, np.newaxis, :]
 
     def prepare_road_edge_cache(self) -> None:
         adapter = self.adapter

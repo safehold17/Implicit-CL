@@ -183,7 +183,8 @@ def _get_student_vehicle_cache(env) -> dict[str, np.ndarray]:
 
 def select_partner_vehicles(
     env,
-    ego_pos,
+    ego_pos_x: float,
+    ego_pos_y: float,
     angle: float,
     max_neighbors: int,
 ) -> dict[str, np.ndarray | int]:
@@ -204,8 +205,8 @@ def select_partner_vehicles(
         }
 
     partner_positions = vehicle_cache["positions"][partner_mask]
-    partner_dx = partner_positions[:, 0] - float(ego_pos.x)
-    partner_dy = partner_positions[:, 1] - float(ego_pos.y)
+    partner_dx = partner_positions[:, 0] - ego_pos_x
+    partner_dy = partner_positions[:, 1] - ego_pos_y
     partner_dist_sq = partner_dx * partner_dx + partner_dy * partner_dy
     selected_indices = np.argsort(partner_dist_sq, kind="stable")[:max_neighbors]
     selected_count = int(selected_indices.shape[0])
@@ -230,16 +231,23 @@ def select_partner_vehicles(
 
 def build_road_graph_obs_np(
     road_graph_np: dict[str, np.ndarray] | None,
-    ego_pos,
-    ego_heading: float,
+    ego_pos_x: float,
+    ego_pos_y: float,
+    angle: float,
     top_k: int,
+    out: np.ndarray | None = None,
 ) -> np.ndarray:
     """Build a flat road-graph observation segment from ``_road_graph_np``.
 
-    This is the only road-observation construction path used by the student
-    observation encoder. It returns a pre-flattened array so the caller can
-    write it directly into the final observation buffer without allocating an
-    intermediate ``(top_k, ROAD_FEATURE_DIM)`` matrix and then concatenating.
+    ``angle`` is the pre-computed ego-frame rotation (``angle_of_rotation``).
+    Accepting it as a parameter avoids recomputing it when the caller has
+    already evaluated it (e.g. ``get_student_observation``).
+
+    When ``out`` is provided it must have shape ``(top_k * ROAD_FEATURE_DIM,)``
+    and is assumed to be pre-zeroed by the caller (the obs buffer is zeroed at
+    the start of ``get_student_observation``). Providing ``out`` lets the
+    caller write the road features directly into the observation buffer,
+    eliminating a separate flat-array allocation and the subsequent copy.
 
     ``point_indices`` is used only as a deterministic tie-breaker after
     distance-based top-k selection. When multiple road points are exactly the
@@ -249,7 +257,11 @@ def build_road_graph_obs_np(
     if top_k <= 0:
         return np.zeros(0, dtype=np.float32)
 
-    out = np.zeros(top_k * ROAD_FEATURE_DIM, dtype=np.float32)
+    if out is None:
+        out = np.zeros(top_k * ROAD_FEATURE_DIM, dtype=np.float32)
+    # When ``out`` is provided the caller guarantees it is already zeroed,
+    # so padding slots require no additional work.
+
     if road_graph_np is None:
         return out
 
@@ -257,10 +269,9 @@ def build_road_graph_obs_np(
     if points.shape[0] == 0:
         return out
 
-    angle = angle_of_rotation(ego_heading)
     rel_x, rel_y = _to_local_array(
-        points[:, 0] - float(ego_pos.x),
-        points[:, 1] - float(ego_pos.y),
+        points[:, 0] - ego_pos_x,
+        points[:, 1] - ego_pos_y,
         angle,
     )
     dist_sq = rel_x * rel_x + rel_y * rel_y
@@ -280,13 +291,15 @@ def build_road_graph_obs_np(
     selected_indices = selected_indices[sort_order]
 
     num_selected = int(selected_indices.shape[0])
-    rows = np.zeros((num_selected, ROAD_FEATURE_DIM), dtype=np.float32)
+    # Write directly into a reshaped view of ``out`` — eliminates a separate
+    # (num_selected, ROAD_FEATURE_DIM) allocation and the final flatten+copy.
+    rows = out[: num_selected * ROAD_FEATURE_DIM].reshape(num_selected, ROAD_FEATURE_DIM)
     rows[:, 0] = rel_x[selected_indices]
     rows[:, 1] = rel_y[selected_indices]
     rows[:, 2] = road_graph_np["seg_len"][selected_indices]
-    
+
     # Legacy constant channels for compatibility with current 13-dim road feature layout.
-    rows[:, 3] = 1.0 
+    rows[:, 3] = 1.0
     rows[:, 4] = 1.0
 
     selected_is_line = road_graph_np["is_line"][selected_indices]
@@ -301,7 +314,6 @@ def build_road_graph_obs_np(
         )
 
     rows[:, 6:] = ROAD_TYPE_ONEHOT[road_graph_np["type_idx"][selected_indices]]
-    out[: num_selected * ROAD_FEATURE_DIM] = rows.reshape(-1)
     return out
 
 
@@ -326,22 +338,34 @@ def get_student_observation(env) -> np.ndarray:
     if env.ego_vehicle is None or env._ego_goal_dict is None:
         return obs
 
-    ego_pos = env.ego_vehicle.getPosition()
-    ego_heading = env.ego_vehicle.getHeading()
-    ego_speed = env.ego_vehicle.getSpeed()
+    # Read from the step-scoped cache populated once per step by
+    # _update_step_ego_cache() to avoid redundant C++ boundary crossings.
+    step_ego_pos_arr = getattr(env, "_step_ego_pos_arr", None)
+    if step_ego_pos_arr is not None:
+        ego_pos_x = float(step_ego_pos_arr[0])
+        ego_pos_y = float(step_ego_pos_arr[1])
+        ego_heading = env._step_ego_heading
+        ego_speed = env._step_ego_speed
+    else:
+        _pos = env.ego_vehicle.getPosition()
+        ego_pos_x = _pos.x
+        ego_pos_y = _pos.y
+        ego_heading = float(env.ego_vehicle.getHeading())
+        ego_speed = float(env.ego_vehicle.getSpeed())
 
     goal_pos = env._ego_goal_dict["pos"]
     angle = angle_of_rotation(ego_heading)
     rel_goal_x, rel_goal_y = to_local(
-        goal_pos[0] - ego_pos.x,
-        goal_pos[1] - ego_pos.y,
+        goal_pos[0] - ego_pos_x,
+        goal_pos[1] - ego_pos_y,
         angle,
     )
     collision_state = 1.0 if env._collision_occurred else 0.0
 
     obs[0] = ego_speed
-    obs[1] = env.ego_vehicle.getLength()
-    obs[2] = env.ego_vehicle.getWidth()
+    # Use episode-cached ego geometry (constant for the whole episode).
+    obs[1] = getattr(env, "_ego_length", env.ego_vehicle.getLength())
+    obs[2] = getattr(env, "_ego_width", env.ego_vehicle.getWidth())
     obs[3] = rel_goal_x
     obs[4] = rel_goal_y
     obs[5] = collision_state
@@ -349,19 +373,25 @@ def get_student_observation(env) -> np.ndarray:
     max_neighbors = getattr(env, "_max_observable_agents", 16)
     selected_partners = select_partner_vehicles(
         env=env,
-        ego_pos=ego_pos,
+        ego_pos_x=ego_pos_x,
+        ego_pos_y=ego_pos_y,
         angle=angle,
         max_neighbors=max_neighbors,
     )
     partner_start = EGO_FEAT_DIM
-    for slot in range(int(selected_partners["count"])):
-        base = partner_start + slot * PARTNER_FEAT_DIM
-        obs[base + 0] = selected_partners["speeds"][slot]
-        obs[base + 1] = selected_partners["rel_pos_x"][slot]
-        obs[base + 2] = selected_partners["rel_pos_y"][slot]
-        obs[base + 3] = selected_partners["rel_heading"][slot]
-        obs[base + 4] = selected_partners["lengths"][slot]
-        obs[base + 5] = selected_partners["widths"][slot]
+    count = int(selected_partners["count"])
+    if count > 0:
+        # Vectorized slice assignment into a reshaped view — replaces a Python
+        # for-loop over ``count`` partners.
+        obs_partner_view = obs[
+            partner_start : partner_start + count * PARTNER_FEAT_DIM
+        ].reshape(count, PARTNER_FEAT_DIM)
+        obs_partner_view[:, 0] = selected_partners["speeds"]
+        obs_partner_view[:, 1] = selected_partners["rel_pos_x"]
+        obs_partner_view[:, 2] = selected_partners["rel_pos_y"]
+        obs_partner_view[:, 3] = selected_partners["rel_heading"]
+        obs_partner_view[:, 4] = selected_partners["lengths"]
+        obs_partner_view[:, 5] = selected_partners["widths"]
 
     road_start = EGO_FEAT_DIM + max_neighbors * PARTNER_FEAT_DIM
     road_graph_np = getattr(env, "_road_graph_np", None)
@@ -371,11 +401,18 @@ def get_student_observation(env) -> np.ndarray:
             road_graph_np = road_data_to_numpy(road_graph_cache)
             env._road_graph_np = road_graph_np
 
-    road_flat = build_road_graph_obs_np(
+    top_k = getattr(env, "_top_k_road_points", 64)
+    # Pass a view of the obs buffer so build_road_graph_obs_np writes the road
+    # features directly into place — no separate flat array + copy needed.
+    # The obs buffer is already zeroed above so padding slots are correct.
+    # ``angle`` is pre-computed above and passed through to avoid a duplicate
+    # angle_of_rotation() call inside build_road_graph_obs_np.
+    build_road_graph_obs_np(
         road_graph_np,
-        ego_pos,
-        ego_heading,
-        getattr(env, "_top_k_road_points", 64),
+        ego_pos_x,
+        ego_pos_y,
+        angle,
+        top_k,
+        out=obs[road_start : road_start + top_k * ROAD_FEATURE_DIM],
     )
-    obs[road_start : road_start + road_flat.shape[0]] = road_flat
     return obs
