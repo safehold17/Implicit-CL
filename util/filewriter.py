@@ -286,6 +286,7 @@ class FileWriter:
             "eval_collision": ("collision_occurred", "collision"),
             "eval_offroad": ("offroad_occurred", "offroad"),
             "eval_position_reached": ("position_reached_occurred", "position_reached"),
+            "eval_solvable_rate": ("success",),
         }
 
         if self.seeds and not self.record_seed_diffs:
