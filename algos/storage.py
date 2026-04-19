@@ -298,15 +298,15 @@ class RolloutStorage(object):
         with torch.no_grad():
             # For each process, forward truncated obs
             for i in range(self.num_processes):
-                steps = (self.bad_masks[:,i,0] == 0).nonzero().squeeze()
-                if len(steps.shape) == 0 or steps.shape[0] == 0:
+                steps = (self.bad_masks[:,i,0] == 0).nonzero(as_tuple=False).squeeze(-1)
+                if steps.numel() == 0:
                     continue
 
                 if self.is_dict_obs:
-                    obs = {k:self.truncated_obs[k][steps.squeeze(), i, :] 
+                    obs = {k:self.truncated_obs[k][steps, i, :]
                         for k in self.truncated_obs.keys()}
                 else:
-                    obs = self.truncated_obs[steps.squeeze(),i,:]
+                    obs = self.truncated_obs[steps,i,:]
 
                 rnn_hxs = self.recurrent_hidden_states[steps,i,:]
                 if self.is_lstm:

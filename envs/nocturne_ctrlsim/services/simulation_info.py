@@ -2,7 +2,7 @@
 Simulation info helper functions for Nocturne CtrlSim adversarial env.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -15,12 +15,18 @@ def compute_current_progress(env) -> float:
     if env.ego_vehicle is None or env._ego_goal_dict is None:
         return 0.0
 
-    ego_pos = env.ego_vehicle.getPosition()
-    dist_to_goal = np.linalg.norm(
-        env._ego_goal_dict['pos'] - np.array([ego_pos.x, ego_pos.y])
-    )
     if env._ego_goal_dist_normalizer <= 0:
         return 0.0
+
+    # Use the step-scoped dist-to-goal already computed by _update_step_ego_cache
+    # to avoid an extra C++ getPosition() call.  Fall back to live computation
+    # when the cache is not yet available (e.g. at reset time).
+    dist_to_goal = getattr(env, "_step_dist_to_goal", None)
+    if dist_to_goal is None:
+        ego_pos = env.ego_vehicle.getPosition()
+        dist_to_goal = np.linalg.norm(
+            env._ego_goal_dict['pos'] - np.array([ego_pos.x, ego_pos.y])
+        )
 
     progress = 1.0 - dist_to_goal / env._ego_goal_dist_normalizer
     return clamp01(progress)
@@ -96,12 +102,22 @@ def _build_policy_reweighting_info(env) -> Dict[str, float]:
     }
 
 
-def get_info(env) -> Dict[str, Any]:
-    """Return additional information."""
-    done = check_done(env)
+def get_info(
+    env,
+    done: Optional[bool] = None,
+    current_progress: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Return additional information.
 
-    progress = compute_current_progress(env)
-    progress = max(progress, float(getattr(env, '_episode_progress', 0.0)))
+    ``done`` and ``current_progress`` may be passed in when the caller has
+    already computed them, avoiding a second redundant evaluation.
+    """
+    if done is None:
+        done = check_done(env)
+
+    if current_progress is None:
+        current_progress = compute_current_progress(env)
+    progress = max(current_progress, float(getattr(env, '_episode_progress', 0.0)))
 
     if done:
         # Cache an atomic completed-episode snapshot for get_complexity_info()
@@ -165,8 +181,10 @@ def get_complexity_info(env) -> Dict[str, Any]:
     returning zeros when called immediately after reset.
     """
     # Prioritize cached completed episode snapshot.
+    # Return the cached dict directly — callers only read from it (e.g. via
+    # info.update()), so no defensive copy is needed here.
     if env._last_completed_complexity_info is not None:
-        return dict(env._last_completed_complexity_info)
+        return env._last_completed_complexity_info
 
     if env.current_level is None:
         return {}

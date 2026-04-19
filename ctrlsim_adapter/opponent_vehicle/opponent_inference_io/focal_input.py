@@ -85,8 +85,11 @@ def _angle_sub_batched_np(
     """
     diff = (target_angle - current_angle) % (2 * np.pi)
     mask = diff > np.pi
-    diff = diff.copy()
-    diff[mask] = -(2 * np.pi - diff[mask])
+    # Guard the copy: only allocate a writable copy when there are actually
+    # wrapped values to fix (same pattern as _angle_sub_array in update.py).
+    if np.any(mask):
+        diff = diff.copy()
+        diff[mask] = -(2 * np.pi - diff[mask])
     return diff
 
 

@@ -14,6 +14,7 @@ bootstrapped. It is responsible for:
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -42,6 +43,29 @@ from ..student.student_reward import (
     reset_student_component_applied_return,
 )
 from ctrlsim_adapter._data_bridge.scenario import road_data_to_numpy
+
+
+def _update_step_ego_cache(env) -> None:
+    """Populate step-scoped ego state cache to eliminate redundant C++ calls.
+
+    Reads ego position, heading, speed, and distance-to-goal exactly once per
+    step and stores them on ``env`` so every downstream function (observation,
+    reward, position-reached check, info) can read from the cache instead of
+    re-crossing the C++/Python boundary independently.
+    """
+    if env.ego_vehicle is None or env._ego_goal_dict is None:
+        env._step_dist_to_goal = 0.0
+        return
+    pos = env.ego_vehicle.getPosition()
+    arr = env._step_ego_pos_arr
+    arr[0] = pos.x
+    arr[1] = pos.y
+    env._step_ego_heading = float(env.ego_vehicle.getHeading())
+    env._step_ego_speed = float(env.ego_vehicle.getSpeed())
+    goal_pos = env._ego_goal_dict["pos"]
+    dx = float(goal_pos[0]) - pos.x
+    dy = float(goal_pos[1]) - pos.y
+    env._step_dist_to_goal = math.sqrt(dx * dx + dy * dy)
 
 
 def split_prepared_pack_batch(
@@ -302,6 +326,28 @@ class NocturneCtrlSimRuntime:
         )
         refresh_student_vehicle_cache(env)
 
+        # Pre-allocate step-scoped ego state buffers; refreshed once per step
+        # in the hot path by _update_step_ego_cache().
+        env._step_ego_pos_arr = np.zeros(2, dtype=np.float32)
+        env._step_ego_heading = 0.0
+        env._step_ego_speed = 0.0
+        env._step_dist_to_goal = 0.0
+        # Cache opponent capability flags to avoid repeated hasattr() in hot path.
+        env._has_valid_pos_cache = hasattr(
+            env.opponent, "cache_last_valid_positions"
+        )
+        env._has_post_step_fix = hasattr(
+            env.opponent, "post_step_fix_opponent_positions"
+        )
+        # Cache ego geometry (constant for the whole episode).
+        if env.ego_vehicle is not None:
+            env._ego_length = float(env.ego_vehicle.getLength())
+            env._ego_width = float(env.ego_vehicle.getWidth())
+        # Populate the step-scoped cache immediately so the initial observation
+        # (built right after this method returns) reads the real ego state rather
+        # than the zero-initialised placeholders above.
+        _update_step_ego_cache(env)
+
     def step_prepare(self, action: np.ndarray) -> Dict[str, Optional[Dict]]:
         """Apply ego action locally and prepare model inputs for this step.
 
@@ -435,12 +481,12 @@ class NocturneCtrlSimRuntime:
 
         # Give the adapter a chance to save pre-step validity state, then
         # advance simulator dynamics exactly once for this env step.
-        if hasattr(env.opponent, "cache_last_valid_positions"):
+        if env._has_valid_pos_cache:
             env.opponent.cache_last_valid_positions(env.vehicles)
         env.sim.step(env.dt)
         # Some adapters perform post-step clamps or goal-based position fixes
         # after dynamics integration.
-        if hasattr(env.opponent, "post_step_fix_opponent_positions"):
+        if env._has_post_step_fix:
             env.opponent.post_step_fix_opponent_positions(
                 env.vehicles,
                 env._goal_points_by_id,
@@ -449,6 +495,10 @@ class NocturneCtrlSimRuntime:
         # Observation and reward code consume a per-step vehicle snapshot rather
         # than rescanning simulator objects independently.
         refresh_student_vehicle_cache(env)
+        # Populate the step-scoped ego state cache (position, heading, speed,
+        # dist-to-goal) in one pass so downstream functions read from cache
+        # instead of crossing the C++/Python boundary multiple times.
+        _update_step_ego_cache(env)
 
         if env.recording_video and env.video_recorder is not None:
             env.video_recorder.capture_frame(
@@ -499,5 +549,6 @@ class NocturneCtrlSimRuntime:
         done = check_done(env)
         if done:
             env.opponent.finalize(env.vehicles)
-        info = get_info(env)
+        # Pass pre-computed done/progress so get_info skips redundant recomputes.
+        info = get_info(env, done=done, current_progress=current_progress)
         return obs, reward, done, info

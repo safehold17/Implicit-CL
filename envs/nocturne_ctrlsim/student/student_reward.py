@@ -66,12 +66,7 @@ def _accumulate_student_component_applied_return(
 
 def _angle_diff(a: float, b: float) -> float:
     """Calculate the difference between two angles (handle wraparound)."""
-    diff = a - b
-    while diff > np.pi:
-        diff -= 2 * np.pi
-    while diff < -np.pi:
-        diff += 2 * np.pi
-    return diff
+    return (a - b + np.pi) % (2.0 * np.pi) - np.pi
 
 
 def _compute_raw_veh_veh_shaped_reward(
@@ -141,8 +136,16 @@ def _compute_raw_veh_edge_shaped_reward(env, ego_pos_arr: np.ndarray) -> float:
     if len(road_edge_polylines) == 0:
         return 0.0
 
-    center_x = np.array([[ego_pos_arr[0]]], dtype=np.float32)
-    center_y = np.array([[ego_pos_arr[1]]], dtype=np.float32)
+    # Reuse pre-allocated (1, 1) buffers to avoid per-step array allocation.
+    center_x = getattr(env, '_veh_edge_center_x', None)
+    if center_x is None:
+        center_x = np.zeros((1, 1), dtype=np.float32)
+        env._veh_edge_center_x = center_x
+        env._veh_edge_center_y = np.zeros((1, 1), dtype=np.float32)
+    center_x[0, 0] = ego_pos_arr[0]
+    center_y = env._veh_edge_center_y
+    center_y[0, 0] = ego_pos_arr[1]
+
     signed_distance = compute_distance_to_road_edge(
         center_x=center_x,
         center_y=center_y,
@@ -222,17 +225,18 @@ def compute_student_reward(env) -> float:
     veh_veh_collision = reward_vector[6]
     veh_edge_collision = reward_vector[7]
 
-    # Check goal achieved using current state (not CtrlSim's persistent logic)
-    ego_pos = env.ego_vehicle.getPosition()
-    ego_pos_arr = np.array([ego_pos.x, ego_pos.y])
-    ego_speed = env.ego_vehicle.getSpeed()
-    ego_heading = env.ego_vehicle.getHeading()
+    # Check goal achieved using current state (not CtrlSim's persistent logic).
+    # Read from the step-scoped cache populated once per step by
+    # _update_step_ego_cache() to avoid redundant C++ boundary crossings.
+    ego_pos_arr = env._step_ego_pos_arr  # pre-allocated float32[2]
+    ego_speed = env._step_ego_speed
+    ego_heading = env._step_ego_heading
 
     goal_pos = env._ego_goal_dict['pos']
     goal_speed = env._ego_goal_dict['speed']
     goal_heading = env._ego_goal_dict['heading']
 
-    dist_to_goal = np.linalg.norm(goal_pos - ego_pos_arr)
+    dist_to_goal = env._step_dist_to_goal
 
     # best_goal_distance: the closest distance to the goal so far.
     best_goal_distance = float(getattr(env, '_best_goal_distance', np.inf))
@@ -345,7 +349,7 @@ def compute_student_reward(env) -> float:
             + pos_shaped_term          # not using
             + approaching_goal_term    # not using
             + heading_target_term      # not using
-            + heading_shaped_term
+            + heading_shaped_term      # not using
             + speed_target_term        # not using
             + speed_shaped_term        # not using
             + veh_veh_shaped_term      # not using

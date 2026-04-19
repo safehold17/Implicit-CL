@@ -202,11 +202,15 @@ def is_ego_position_reached(env) -> bool:
     if env.ego_vehicle is None or env._ego_goal_dict is None:
         return False
 
-    ego_pos = env.ego_vehicle.getPosition()
-    ego_pos_arr = np.array([ego_pos.x, ego_pos.y])
-    goal_pos = env._ego_goal_dict.get('pos')
-    if goal_pos is None:
-        return False
-    dist_to_goal = np.linalg.norm(goal_pos - ego_pos_arr)
     goal_pos_tolerance = float(getattr(env, "goal_pos_tolerance", 2.0))
-    return dist_to_goal < goal_pos_tolerance
+    # Use the step-scoped dist-to-goal already computed by _update_step_ego_cache
+    # to avoid re-crossing the C++/Python boundary.
+    dist = getattr(env, "_step_dist_to_goal", None)
+    if dist is None:
+        goal_pos = env._ego_goal_dict.get("pos")
+        if goal_pos is None:
+            return False
+        ego_pos = env.ego_vehicle.getPosition()
+        ego_pos_arr = np.array([ego_pos.x, ego_pos.y])
+        dist = float(np.linalg.norm(goal_pos - ego_pos_arr))
+    return dist < goal_pos_tolerance
