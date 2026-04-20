@@ -25,7 +25,22 @@ from utils.sim import get_road_data
 from .state_helpers import extract_road_edge_polylines
 
 
-def reset(
+def _ensure_policy_for_control_set(adapter: Any) -> None:
+    """Ensure the adapter policy matches the current control-set mode."""
+    if adapter._vehicles_to_control:
+        if adapter._checkpoint_cfg is None:
+            adapter._load_checkpoint_cfg()
+            adapter._validate_external_cfg_compatibility()
+        if adapter.dataset is None:
+            adapter._load_dataset_only()
+        if adapter._policy is None:
+            adapter._policy = adapter._create_policy()
+        return
+
+    adapter._policy = None
+
+
+def bind_static_level_state(
     service: Any,
     scenario: Any,
     vehicles: List[Any],
@@ -35,16 +50,8 @@ def reset(
     ego_id: Optional[int],
     build_gt_action_target_cache_fn: Any,
 ) -> None:
+    """Bind scenario-scoped static state that can be reused across episodes."""
     adapter = service.adapter
-    if vehicles_to_control:
-        if adapter._checkpoint_cfg is None:
-            adapter._load_checkpoint_cfg()
-            adapter._validate_external_cfg_compatibility()
-        if adapter.dataset is None:
-            adapter._load_dataset_only()
-        adapter._policy = adapter._create_policy()
-    else:
-        adapter._policy = None
 
     adapter._gt_data_dict = gt_data_dict
     adapter._gt_traj_by_id = {
@@ -74,41 +81,22 @@ def reset(
     else:
         adapter._vehicles_to_control_sorted = []
     adapter._ego_id = ego_id
-    adapter._last_vehicles = None
-    adapter._last_vehicle_by_id = {}
+    _ensure_policy_for_control_set(adapter)
 
     road_data = get_road_data(scenario)
     adapter._road_edge_polylines = extract_road_edge_polylines(road_data)
-
-    adapter._vehicle_data_dict = {}
     adapter._goal_dict = {}
     adapter._goal_dist_normalizer = {}
-    adapter._opponent_vehicle_exits = {}
-    adapter._opponent_last_valid_pos = {}
-    adapter._opponent_goal_hold_until = {}
-    adapter._moving_agent_mask_cache = None
-    adapter._batch_prepare_cache = {}
-    adapter._step_tensor_context = None
-    adapter._pending_sparse_actions_step_t = None
-    adapter._pending_sparse_actions = {}
-    adapter._ego_action_scale = 1.0
-    initialize_episode_sampling_seed(adapter)
     adapter._constant_state_vehicle_ids = set()
     adapter._constant_state_by_id = {}
     static_speed_threshold = 1e-3
 
-    adapter._veh_id_to_idx = {}
-    for idx, veh in enumerate(vehicles):
+    for veh in vehicles:
         veh_id = veh.getID()
-        adapter._veh_id_to_idx[veh_id] = idx
         gt_traj_data = service._get_gt_traj_data(veh_id)
         if gt_traj_data is None:
             raise KeyError(f"Missing gt traj data for veh_id={veh_id}")
         adapter._goal_dict[veh_id] = service._initialize_goal_dict(veh, gt_traj_data)
-        adapter._vehicle_data_dict[veh_id] = service._initialize_vehicle_data_dict(
-            veh,
-            adapter._goal_dict[veh_id],
-        )
         adapter._goal_dist_normalizer[veh_id] = service._compute_goal_dist_normalizer(
             veh,
             adapter._goal_dict[veh_id]["pos"],
@@ -125,6 +113,42 @@ def reset(
                     "heading": float(veh.getHeading()),
                     "existence": 1 if sim_position_exists(pos.x, pos.y) else 0,
                 }
+
+    adapter._reward_service.prepare_road_edge_cache()
+
+
+def reset_current_episode(
+    service: Any,
+    vehicles: List[Any],
+) -> None:
+    """Reset episode-scoped runtime state while reusing bound static data."""
+    adapter = service.adapter
+    _ensure_policy_for_control_set(adapter)
+
+    adapter._gt_action_runtime_cache = {}
+    adapter._last_vehicles = None
+    adapter._last_vehicle_by_id = {}
+    adapter._vehicle_data_dict = {}
+    adapter._opponent_vehicle_exits = {}
+    adapter._opponent_last_valid_pos = {}
+    adapter._opponent_goal_hold_until = {}
+    adapter._moving_agent_mask_cache = None
+    adapter._batch_prepare_cache = {}
+    adapter._step_tensor_context = None
+    adapter._pending_sparse_actions_step_t = None
+    adapter._pending_sparse_actions = {}
+    adapter._ego_action_scale = 1.0
+    initialize_episode_sampling_seed(adapter)
+
+    adapter._veh_id_to_idx = {}
+    for idx, veh in enumerate(vehicles):
+        veh_id = veh.getID()
+        adapter._veh_id_to_idx[veh_id] = idx
+        goal_dict = adapter._goal_dict[veh_id]
+        adapter._vehicle_data_dict[veh_id] = service._initialize_vehicle_data_dict(
+            veh,
+            goal_dict,
+        )
         if veh_id in adapter._vehicles_to_control_set:
             pos = veh.getPosition()
             sim_exists = sim_position_exists(pos.x, pos.y)
@@ -132,8 +156,6 @@ def reset(
             if sim_exists:
                 adapter._opponent_last_valid_pos[veh_id] = (float(pos.x), float(pos.y))
             adapter._opponent_goal_hold_until[veh_id] = None
-
-    adapter._reward_service.prepare_road_edge_cache()
 
     adapter._all_vehicle_ids = list(adapter._vehicle_data_dict.keys())
     adapter._controlled_vehicle_ids_present = [
@@ -148,6 +170,30 @@ def reset(
     if adapter._policy is not None:
         adapter._policy.reset(adapter._vehicle_data_dict)
     adapter.sparse_inference.clear_on_reset()
+
+
+def reset(
+    service: Any,
+    scenario: Any,
+    vehicles: List[Any],
+    gt_data_dict: Dict,
+    preproc_data: Dict,
+    vehicles_to_control: List[int],
+    ego_id: Optional[int],
+    build_gt_action_target_cache_fn: Any,
+) -> None:
+    """Perform a full reset, including static level-state binding."""
+    bind_static_level_state(
+        service,
+        scenario=scenario,
+        vehicles=vehicles,
+        gt_data_dict=gt_data_dict,
+        preproc_data=preproc_data,
+        vehicles_to_control=vehicles_to_control,
+        ego_id=ego_id,
+        build_gt_action_target_cache_fn=build_gt_action_target_cache_fn,
+    )
+    reset_current_episode(service, vehicles)
 
 
 def cache_last_valid_positions(service: Any, vehicles: List[Any]) -> None:

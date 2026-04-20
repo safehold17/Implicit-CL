@@ -47,3 +47,8 @@ class TimeLimit(gym.Wrapper):
     def reset_agent(self):
         self._elapsed_steps = 0
         return self.env.reset_agent()
+
+    def reset_current_level(self):
+        """Reset the current level and clear the elapsed-step counter."""
+        self._elapsed_steps = 0
+        return self.env.reset_current_level()

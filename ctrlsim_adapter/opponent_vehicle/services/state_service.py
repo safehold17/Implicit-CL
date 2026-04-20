@@ -68,6 +68,10 @@ class OpponentStateService:
             build_gt_action_target_cache_fn=build_gt_action_target_cache,
         )
 
+    def reset_current_episode(self, vehicles: List):
+        """Reset only episode-scoped runtime state while reusing static bindings."""
+        _reset_module.reset_current_episode(self, vehicles)
+
     def cache_last_valid_positions(self, vehicles: List):
         _reset_module.cache_last_valid_positions(self, vehicles)
 

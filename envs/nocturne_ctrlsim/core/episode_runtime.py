@@ -45,6 +45,75 @@ from ..student.student_reward import (
 from ctrlsim_adapter._data_bridge.scenario import road_data_to_numpy
 
 
+def _reset_episode_runtime_state(env, level_seed: int) -> None:
+    """Reset per-episode bookkeeping while keeping level-scoped data intact."""
+    env.current_step = 0
+    env.reset_metrics()
+
+    env._collision_occurred = False
+    env._goal_reached = False
+    env._offroad_occurred = False
+    env._position_reached = False
+
+    env._episode_collision_occurred = False
+    env._episode_goal_reached = False
+    env._episode_offroad_occurred = False
+    env._episode_position_reached = False
+    env._episode_steps = 0
+    env._episode_progress = 0.0
+    reset_student_component_applied_return(env)
+    env._student_component_applied_return_before_inference_step = (
+        get_student_component_applied_return(env)
+    )
+
+    np.random.seed(level_seed)
+
+
+def _bind_live_vehicle_handles(
+    env,
+    ego_id: int,
+    opponent_ids: list[int],
+    ego_selection_mode: str,
+    opponent_vehicle_num: int,
+) -> None:
+    """Bind live simulator vehicle handles for ego and opponents."""
+    env._veh_id_to_vehicle = {veh.getID(): veh for veh in env.vehicles}
+    env._vehicle_by_id_cache = dict(env._veh_id_to_vehicle)
+    env._veh_id_to_preproc_idx = {
+        veh.getID(): idx for idx, veh in enumerate(env.vehicles)
+    }
+
+    env.ego_vehicle = env._veh_id_to_vehicle.get(ego_id)
+    if env.ego_vehicle is None:
+        raise ValueError(
+            f"ego_vehicle_id {ego_id} from vehicle map does not exist in scenario "
+            f"'{env.current_level.scenario_id}'."
+        )
+    env.ego_selection_mode = ego_selection_mode
+    env.current_opponent_vehicle_num = int(opponent_vehicle_num)
+
+    runtime_mode = getattr(env, "opponent_runtime_mode", "normal")
+    if runtime_mode == "disable":
+        env.opponent_vehicle_ids = []
+        env.opponent_vehicles = []
+        return
+
+    env.opponent_vehicle_ids = opponent_ids
+    env.opponent_vehicles = []
+    missing_opponent_ids = []
+    for veh_id in opponent_ids:
+        veh = env._veh_id_to_vehicle.get(veh_id)
+        if veh is None:
+            missing_opponent_ids.append(veh_id)
+            continue
+        env.opponent_vehicles.append(veh)
+    if missing_opponent_ids:
+        raise ValueError(
+            f"opponent_vehicle_ids {missing_opponent_ids} from vehicle map do not exist in scenario "
+            f"'{env.current_level.scenario_id}'."
+        )
+
+
 def _update_step_ego_cache(env) -> None:
     """Populate step-scoped ego state cache to eliminate redundant C++ calls.
 
@@ -120,31 +189,7 @@ class NocturneCtrlSimRuntime:
             return
 
         level = env.current_level
-        env.current_step = 0
-        env.reset_metrics()
-
-        # Per-step outcome flags are updated after every simulator transition.
-        env._collision_occurred = False
-        env._goal_reached = False
-        env._offroad_occurred = False
-        env._position_reached = False
-
-        # Episode-aggregated flags and counters accumulate over the whole
-        # rollout and are later reported through `info`.
-        env._episode_collision_occurred = False
-        env._episode_goal_reached = False
-        env._episode_offroad_occurred = False
-        env._episode_position_reached = False
-        env._episode_steps = 0
-        env._episode_progress = 0.0
-        reset_student_component_applied_return(env)
-        env._student_component_applied_return_before_inference_step = (
-            get_student_component_applied_return(env)
-        )
-
-        # Keep the episode boundary aligned with ``level.seed`` for downstream
-        # logic that still implicitly depends on NumPy's global RNG state.
-        np.random.seed(level.seed)
+        _reset_episode_runtime_state(env, level.seed)
 
         # Load GT and materialize any episode-scoped GT-derived caches before
         # the simulator starts stepping.
@@ -162,29 +207,19 @@ class NocturneCtrlSimRuntime:
         # Materialize the actual Nocturne scenario and populate `env.vehicles`.
         env._load_scenario_impl(env, level.scenario_id)
 
-        # Build fast lookup tables immediately after vehicles are available.
-        # These are reused throughout the runtime hot path.
-        env._veh_id_to_vehicle = {veh.getID(): veh for veh in env.vehicles}
-        env._veh_id_to_preproc_idx = {
-            veh.getID(): idx for idx, veh in enumerate(env.vehicles)
-        }
-
-        # Resolve which agents are controlled by ego/opponent for this
-        # scenario.
         (
             ego_id,
             opponent_ids,
             ego_selection_mode,
             opponent_vehicle_num,
         ) = env._load_vehicle_ids_for_scenario_impl(env, level.scenario_id)
-        env.ego_vehicle = env._veh_id_to_vehicle.get(ego_id)
-        if env.ego_vehicle is None:
-            raise ValueError(
-                f"ego_vehicle_id {ego_id} from vehicle map does not exist in scenario "
-                f"'{level.scenario_id}'."
-            )
-        env.ego_selection_mode = ego_selection_mode
-        env.current_opponent_vehicle_num = int(opponent_vehicle_num)
+        _bind_live_vehicle_handles(
+            env,
+            ego_id=ego_id,
+            opponent_ids=opponent_ids,
+            ego_selection_mode=ego_selection_mode,
+            opponent_vehicle_num=opponent_vehicle_num,
+        )
 
         # Load CtrlSim preprocessing artifacts that must stay aligned with the
         # selected scenario.
@@ -204,29 +239,6 @@ class NocturneCtrlSimRuntime:
             tilt_range=env.tilt_range,
             rng=env.np_random,
         )
-        if runtime_mode == "disable":
-            # Disable mode keeps the simulator alive but hands no non-ego agent
-            # to the opponent policy.
-            env.opponent_vehicle_ids = []
-            env.opponent_vehicles = []
-        else:
-            env.opponent_vehicle_ids = opponent_ids
-            env.opponent_vehicles = []
-            missing_opponent_ids = []
-            # Resolve direct vehicle references once so later code does not pay
-            # repeated ID lookup cost in hot paths.
-            for veh_id in opponent_ids:
-                veh = env._veh_id_to_vehicle.get(veh_id)
-                if veh is None:
-                    missing_opponent_ids.append(veh_id)
-                    continue
-                env.opponent_vehicles.append(veh)
-            if missing_opponent_ids:
-                raise ValueError(
-                    f"opponent_vehicle_ids {missing_opponent_ids} from vehicle map do not exist in scenario "
-                    f"'{level.scenario_id}'."
-                )
-
         # Initialize ego goal first, then collect all available goal points into
         # a single mapping shared by fixups and visualization.
         env._initialize_ego_goal_state_impl(env)
@@ -346,6 +358,98 @@ class NocturneCtrlSimRuntime:
         # Populate the step-scoped cache immediately so the initial observation
         # (built right after this method returns) reads the real ego state rather
         # than the zero-initialised placeholders above.
+        _update_step_ego_cache(env)
+
+    def reset_current_level(self) -> None:
+        """Reset the current simulator world without reloading the scenario file."""
+        env = self.env
+        if env.current_level is None:
+            raise ValueError("Must initialize a level before resetting the current level")
+        if getattr(env, "sim", None) is None:
+            raise ValueError("Simulation is not initialized for current level reset")
+        if env.ego_vehicle is None:
+            raise ValueError("ego_vehicle must exist before current level reset")
+
+        level = env.current_level
+        ego_id = env.ego_vehicle.getID()
+        opponent_ids = list(getattr(env, "opponent_vehicle_ids", []))
+        ego_selection_mode = str(getattr(env, "ego_selection_mode", "unknown"))
+        opponent_vehicle_num = int(
+            getattr(env, "current_opponent_vehicle_num", len(opponent_ids))
+        )
+
+        env.sim.reset()
+        env.scenario = env.sim.getScenario()
+        env.vehicles = list(env.scenario.vehicles())
+        for veh in env.vehicles:
+            veh.expert_control = False
+            veh.physics_simulated = True
+
+        _reset_episode_runtime_state(env, level.seed)
+        env._gt_action_runtime_cache = {}
+        _bind_live_vehicle_handles(
+            env,
+            ego_id=ego_id,
+            opponent_ids=opponent_ids,
+            ego_selection_mode=ego_selection_mode,
+            opponent_vehicle_num=opponent_vehicle_num,
+        )
+
+        runtime_mode = getattr(env, "opponent_runtime_mode", "normal")
+        env.current_ego_reweight_tilt = sample_policy_reweighting_ego_tilt(
+            use_policy_reweighting=env.use_policy_reweighting,
+            opponent_runtime_mode=runtime_mode,
+            tilt_range=env.tilt_range,
+            rng=env.np_random,
+        )
+        if runtime_mode == "normal":
+            if env.tilting_mode == "global":
+                env.opponent.set_tilting(
+                    level.goal_tilt,
+                    level.veh_veh_tilt,
+                    level.veh_edge_tilt,
+                )
+            elif env.tilting_mode == "per_vehicle":
+                sorted_opponent_ids = sorted(env.opponent_vehicle_ids)
+                per_vehicle_mapping = {}
+                per = level.per_vehicle_tilting
+                for idx, veh_id in enumerate(sorted_opponent_ids):
+                    base = 3 * idx
+                    if base + 2 < len(per):
+                        per_vehicle_mapping[veh_id] = (
+                            per[base],
+                            per[base + 1],
+                            per[base + 2],
+                        )
+                    else:
+                        per_vehicle_mapping[veh_id] = (0, 0, 0)
+                env.opponent.set_per_vehicle_tilting(per_vehicle_mapping)
+            else:
+                env.opponent.set_tilting(0, 0, 0)
+        else:
+            env.opponent.set_tilting(0, 0, 0)
+            env.opponent.per_vehicle_tilting = None
+
+        if env.remove_background_vehicles:
+            remove_background_moving_vehicles(env)
+
+        env.opponent._veh_id_to_preproc_idx = dict(env._veh_id_to_preproc_idx)
+        env.opponent.reset_current_episode(env.vehicles)
+        env.opponent._ego_reweight_tilt = tuple(env.current_ego_reweight_tilt)
+
+        refresh_student_vehicle_cache(env)
+        if not hasattr(env, "_step_ego_pos_arr"):
+            env._step_ego_pos_arr = np.zeros(2, dtype=np.float32)
+        env._step_ego_heading = 0.0
+        env._step_ego_speed = 0.0
+        env._step_dist_to_goal = 0.0
+        env._has_valid_pos_cache = hasattr(env.opponent, "cache_last_valid_positions")
+        env._has_post_step_fix = hasattr(
+            env.opponent, "post_step_fix_opponent_positions"
+        )
+        if env.ego_vehicle is not None:
+            env._ego_length = float(env.ego_vehicle.getLength())
+            env._ego_width = float(env.ego_vehicle.getWidth())
         _update_step_ego_cache(env)
 
     def step_prepare(self, action: np.ndarray) -> Dict[str, Optional[Dict]]:

@@ -295,6 +295,11 @@ class CtrlSimOpponentAdapter:
             ego_id=ego_id,
         )
 
+    def reset_current_episode(self, vehicles: List):
+        """Reset episode-scoped runtime state without rebuilding static bindings."""
+        self._ensure_services()
+        return self._state_service.reset_current_episode(vehicles)
+
     def cache_last_valid_positions(self, vehicles: List):
         self._ensure_services()
         return self._state_service.cache_last_valid_positions(vehicles)

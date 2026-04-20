@@ -215,6 +215,7 @@ def _make_env(args):
             'done_on_position_reached_only': getattr(
                 args, 'done_on_position_reached_only', True
             ),
+            'early_termination': getattr(args, 'early_termination', False),
             'goal_pos_tolerance': getattr(args, 'goal_pos_tolerance', 2.0),
             'device': env_device,
             'tilting_mode': getattr(args, 'tilting_mode', 'per_vehicle'),

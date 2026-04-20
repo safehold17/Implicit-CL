@@ -381,6 +381,14 @@ class NocturneCtrlSimAdversarial(gym.Env):
         self._initialize_simulation()
         
         return get_student_observation(self)
+
+    def reset_current_level(self) -> np.ndarray:
+        """Reset the currently loaded level without recreating the Simulation."""
+        if self.current_level is None:
+            raise ValueError("Must call reset_to_level or complete step_adversary first")
+
+        self.runtime.reset_current_level()
+        return get_student_observation(self)
     
     def mutate_level(
         self,

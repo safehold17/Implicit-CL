@@ -26,6 +26,20 @@ def clear_mpi_env_vars():
     yield
 
 
+def _reset_done_env(env, reset_random=False):
+    """Reset an env after done, preferring lightweight same-level reset when enabled."""
+    if reset_random:
+        env.reset_random()
+        return env.reset_agent()
+
+    if bool(getattr(env, "early_termination", False)) and hasattr(
+        env, "reset_current_level"
+    ):
+        return env.reset_current_level()
+
+    return env.reset_agent()
+
+
 def worker(remote, parent_remote, env_fn_wrappers):
     from util.ignore_warning import install as install_ignore_warning
 
@@ -42,11 +56,7 @@ def worker(remote, parent_remote, env_fn_wrappers):
         ob, reward, done, info = env.step(action)
 
         if done and auto_reset_on_done:
-            if reset_random:
-                env.reset_random()
-                ob = env.reset_agent()
-            else:
-                ob = env.reset_agent()
+            ob = _reset_done_env(env, reset_random=reset_random)
 
         return ob, reward, done, info
 
@@ -54,11 +64,7 @@ def worker(remote, parent_remote, env_fn_wrappers):
         ob, reward, done, info = env.step_complete(model_output)
 
         if done and auto_reset_on_done:
-            if reset_random:
-                env.reset_random()
-                ob = env.reset_agent()
-            else:
-                ob = env.reset_agent()
+            ob = _reset_done_env(env, reset_random=reset_random)
 
         return ob, reward, done, info
 

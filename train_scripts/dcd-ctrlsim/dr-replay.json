@@ -73,7 +73,7 @@
     "use_veh_edge_shaped": [false],
     "veh_veh_collision_rew_multiplier": [10.0],
     "veh_edge_collision_rew_multiplier": [10.0],
-    "pos_target_achieved_rew_multiplier": [15.0],
+    "pos_target_achieved_rew_multiplier": [20.0],
     "approaching_goal_scaling": [0.2],
 
     "__note8__": ["student vehicle setup"],
