@@ -58,6 +58,38 @@ def render(env, mode: str = "human"):
             ys = [p["y"] for p in geometry]
             ax.plot(xs, ys, color=color, linewidth=linewidth, zorder=1)
 
+    def _draw_goal_point(x, y, is_highlight=False, is_opponent=False):
+        if is_highlight:
+            color = "#ff6b6b"
+            alpha = 0.8
+        elif is_opponent:
+            color = "#4aa3ff"
+            alpha = 0.8
+        else:
+            color = "#ffde8b"
+            alpha = 0.5
+
+        inner = mpatches.Circle(
+            (x, y),
+            radius=0.6,
+            ec="none",
+            fc=color,
+            alpha=alpha,
+            zorder=5,
+        )
+        outer = mpatches.Circle(
+            (x, y),
+            radius=1.6,
+            fill=False,
+            ec=color,
+            linewidth=0.35,
+            linestyle=(0, (2, 2)),
+            alpha=alpha,
+            zorder=5,
+        )
+        ax.add_patch(inner)
+        ax.add_patch(outer)
+
     roads_data = env._road_graph_cache
     if roads_data is None and env.scenario is not None:
         roads_data = env.data_bridge.get_road_data(env.scenario)
@@ -195,6 +227,19 @@ def render(env, mode: str = "human"):
                     "text_artist": text_artist,
                 }
             )
+
+    goal_points_by_id = getattr(env, "_goal_points_by_id", None)
+    if goal_points_by_id:
+        for veh_id, goal_pos in goal_points_by_id.items():
+            if goal_pos is None or len(goal_pos) < 2:
+                continue
+            x = float(goal_pos[0])
+            y = float(goal_pos[1])
+            if not np.isfinite(x) or not np.isfinite(y):
+                continue
+            is_highlight = veh_id in highlight_ids
+            is_opponent = (not is_highlight) and veh_id in opponent_ids
+            _draw_goal_point(x, y, is_highlight, is_opponent)
 
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)

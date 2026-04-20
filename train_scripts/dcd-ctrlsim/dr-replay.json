@@ -76,12 +76,16 @@
     "pos_target_achieved_rew_multiplier": [15.0],
     "approaching_goal_scaling": [0.2],
 
-    "__note8__": ["inference parameters"],
+    "__note8__": ["student vehicle setup"],
+    "student_hidden_dim": [128],
+    "early_termination": [true],
+
+    "__note9__": ["inference parameters"],
     "sparse_inference_action_repeat": [true],
     "inference_precision": ["amp_bf16"],
     "action_repeat_frequency": [2],
 
-    "__note9__": ["KL loss parameters"],
+    "__note10__": ["KL loss parameters"],
     "use_ego_ctrlsim_kl_loss": [false],
     "ego_ctrlsim_kl_schedule": ["constant"],
     "kl_loss_coef": [0.2],
@@ -89,7 +93,7 @@
     "ego_ctrlsim_kl_init_coef" : [0.5],
     "ego_ctrlsim_kl_min_coef": [0.0],
 
-    "__note10__": ["dataset parameters"],
+    "__note11__": ["dataset parameters"],
     "scenario_index_path": ["preparation_file/scenario_index_10k_train.json"],
     "vehicle_map_path": ["preparation_file/vehicle_map_10k_train.json"],
     "scenario_data_dir": ["scenario_data/formatted_json_v2_no_tl_train"],
@@ -97,7 +101,7 @@
     "opponent_checkpoint": ["checkpoints/model_finetuning_patched_fp16.ckpt"],
     "log_dir": ["~/logs/dcd"],
 
-    "__note11__": ["clearml"],
+    "__note12__": ["clearml"],
     "use_clearml": [false],
     "clearml_task": ["dcd-ctrlsim"],
     "clearml_monitor_only": [true],

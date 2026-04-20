@@ -56,6 +56,11 @@ def check_done(env) -> bool:
     if env.current_step >= env.max_episode_steps:
         return True
 
+    if bool(getattr(env, "early_termination", False)) and (
+        env._collision_occurred or env._offroad_occurred
+    ):
+        return True
+
     done_on_position_reached_only = bool(
         getattr(env, 'done_on_position_reached_only', True)
     )

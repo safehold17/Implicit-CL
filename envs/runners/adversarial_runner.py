@@ -772,6 +772,13 @@ class AdversarialRunner(object):
         
         rollout_info = {}
         rollout_returns = [[] for _ in range(args.num_processes)]
+        rollout_done_count_by_process = np.zeros(args.num_processes, dtype=np.int64)
+        rollout_collision_done_count_by_process = np.zeros(
+            args.num_processes, dtype=np.int64
+        )
+        rollout_offroad_done_count_by_process = np.zeros(
+            args.num_processes, dtype=np.int64
+        )
         is_nocturne_rollout = (
             (not is_env)
             and (
@@ -828,7 +835,8 @@ class AdversarialRunner(object):
                     action_log_prob = action_log_dist
 
             # Observe reward and next obs
-            reset_random = self.is_dr and not args.use_plr
+            # Keep post-done resets on the current level for student rollouts.
+            reset_random = False
             auto_reset_on_done = not is_env
             _action = agent.process_action(action.cpu())
 
@@ -853,6 +861,16 @@ class AdversarialRunner(object):
                 )
                 if args.clip_reward:
                     reward = torch.clamp(reward, -args.clip_reward, args.clip_reward)
+
+            if not is_env:
+                rollout_done_count_by_process += done.astype(np.int64)
+                for process_idx, (done_, info) in enumerate(zip(done, infos)):
+                    if not bool(done_):
+                        continue
+                    if float(info.get("collision_occurred", 0.0)) > 0.0:
+                        rollout_collision_done_count_by_process[process_idx] += 1
+                    if float(info.get("offroad_occurred", 0.0)) > 0.0:
+                        rollout_offroad_done_count_by_process[process_idx] += 1
 
             if not is_env and step >= num_steps - 1:
                 # Handle early termination due to cliffhanger rollout
@@ -993,6 +1011,16 @@ class AdversarialRunner(object):
             })
 
         rollout_info.update(self._get_rollout_return_stats(rollout_returns))
+        if not is_env:
+            rollout_info["rollout_done_count_by_process"] = (
+                rollout_done_count_by_process.tolist()
+            )
+            rollout_info["rollout_collision_done_count_by_process"] = (
+                rollout_collision_done_count_by_process.tolist()
+            )
+            rollout_info["rollout_offroad_done_count_by_process"] = (
+                rollout_offroad_done_count_by_process.tolist()
+            )
         if is_nocturne_rollout:
             first_done_infos = [
                 first_done_info_by_process[i]
@@ -1623,6 +1651,66 @@ class AdversarialRunner(object):
                         venv=self.venv,
                         tilting_mode=tilting_mode,
                     )
+
+        rollout_done_count_by_process = agent_info.get("rollout_done_count_by_process")
+        if rollout_done_count_by_process is not None:
+            rollout_done_count_by_process = list(rollout_done_count_by_process)
+            if is_nocturne_env:
+                for process_idx, done_count in enumerate(rollout_done_count_by_process):
+                    if process_idx < len(per_process_stats):
+                        per_process_stats[process_idx]["rollout_done_count"] = int(done_count)
+                    if process_idx < len(tb_per_process_stats):
+                        tb_per_process_stats[process_idx]["rollout_done_count"] = int(done_count)
+            if len(rollout_done_count_by_process) > 0:
+                stats["avg_rollout_done_count"] = float(
+                    np.mean(rollout_done_count_by_process)
+                )
+        rollout_collision_done_count_by_process = agent_info.get(
+            "rollout_collision_done_count_by_process"
+        )
+        if rollout_collision_done_count_by_process is not None:
+            rollout_collision_done_count_by_process = list(
+                rollout_collision_done_count_by_process
+            )
+            if is_nocturne_env:
+                for process_idx, done_count in enumerate(
+                    rollout_collision_done_count_by_process
+                ):
+                    if process_idx < len(per_process_stats):
+                        per_process_stats[process_idx][
+                            "rollout_collision_done_count"
+                        ] = int(done_count)
+                    if process_idx < len(tb_per_process_stats):
+                        tb_per_process_stats[process_idx][
+                            "rollout_collision_done_count"
+                        ] = int(done_count)
+            if len(rollout_collision_done_count_by_process) > 0:
+                stats["avg_rollout_collision_done_count"] = float(
+                    np.mean(rollout_collision_done_count_by_process)
+                )
+        rollout_offroad_done_count_by_process = agent_info.get(
+            "rollout_offroad_done_count_by_process"
+        )
+        if rollout_offroad_done_count_by_process is not None:
+            rollout_offroad_done_count_by_process = list(
+                rollout_offroad_done_count_by_process
+            )
+            if is_nocturne_env:
+                for process_idx, done_count in enumerate(
+                    rollout_offroad_done_count_by_process
+                ):
+                    if process_idx < len(per_process_stats):
+                        per_process_stats[process_idx][
+                            "rollout_offroad_done_count"
+                        ] = int(done_count)
+                    if process_idx < len(tb_per_process_stats):
+                        tb_per_process_stats[process_idx][
+                            "rollout_offroad_done_count"
+                        ] = int(done_count)
+            if len(rollout_offroad_done_count_by_process) > 0:
+                stats["avg_rollout_offroad_done_count"] = float(
+                    np.mean(rollout_offroad_done_count_by_process)
+                )
 
         # Log PLR buffer stats
         if args.use_plr and args.log_plr_buffer_stats:

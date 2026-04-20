@@ -277,7 +277,10 @@ class FileWriter:
             "regret_enhancement_score": "enhanced_regret_score",
         }
         self._tb_mode_split_process_metric_keys = {
-            "train_total_episode_reward": ("episode_reward",),
+            "eval_total_episode_reward": ("episode_reward",),
+            "train_avg_rollout_done_count": ("rollout_done_count",),
+            "train_avg_rollout_collision_done_count": ("rollout_collision_done_count",),
+            "train_avg_rollout_offroad_done_count": ("rollout_offroad_done_count",),
             "tilting_opponent_num": ("opponent_vehicle_num",),
             "tilting_veh_goal_avg": ("veh_goal_avg",),
             "tilting_veh_veh_avg": ("veh_veh_avg",),

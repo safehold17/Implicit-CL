@@ -49,6 +49,7 @@ class NocturneCtrlSimEnvConfig:
     inference_precision: str
     opponent_runtime_mode: str
     done_on_position_reached_only: bool
+    early_termination: bool
     goal_pos_tolerance: float
     solvable_progress_threshold: float
     student_num_neighbors: int
@@ -208,6 +209,7 @@ def build_nocturne_ctrlsim_env_config(
         done_on_position_reached_only=bool(
             kwargs.get("done_on_position_reached_only", True)
         ),
+        early_termination=bool(kwargs.get("early_termination", False)),
         goal_pos_tolerance=float(kwargs.get("goal_pos_tolerance", 2.0)),
         solvable_progress_threshold=float(
             kwargs.get("solvable_progress_threshold", 0.85)

@@ -919,6 +919,14 @@ parser.add_argument(
     help="Whether Nocturne check_done should use position_reached as the success condition.",
 )
 parser.add_argument(
+    "--early_termination",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=False,
+    help="Whether Nocturne terminates episodes immediately on collision or offroad.",
+)
+parser.add_argument(
     "--goal_pos_tolerance",
     type=float,
     default=2.0,
