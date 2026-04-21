@@ -66,6 +66,7 @@ class NocturneCtrlSimEnvConfig:
     shaped_goal_reward: bool
     shaped_goal_distance_scaling: float
     approaching_goal_scaling: float
+    heading_dense_scaling: float
     use_veh_veh_shaped: bool
     use_veh_edge_shaped: bool
     max_veh_veh_distance: float
@@ -237,7 +238,8 @@ def build_nocturne_ctrlsim_env_config(
         shaped_goal_distance_scaling=float(
             kwargs.get("shaped_goal_distance_scaling", 0.2)
         ),
-        approaching_goal_scaling=float(kwargs.get("approaching_goal_scaling", 1.0)),
+        approaching_goal_scaling=float(kwargs.get("approaching_goal_scaling", 10.0)),
+        heading_dense_scaling=float(kwargs.get("heading_dense_scaling", 0.1)),
         use_veh_veh_shaped=bool(kwargs.get("use_veh_veh_shaped", True)),
         use_veh_edge_shaped=bool(kwargs.get("use_veh_edge_shaped", True)),
         max_veh_veh_distance=float(kwargs.get("max_veh_veh_distance", 15.0)),

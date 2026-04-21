@@ -230,6 +230,7 @@ def _init_environment_attributes(
     env.shaped_goal_reward = config.shaped_goal_reward
     env.shaped_goal_distance_scaling = config.shaped_goal_distance_scaling
     env.approaching_goal_scaling = config.approaching_goal_scaling
+    env.heading_dense_scaling = config.heading_dense_scaling
     env.use_veh_veh_shaped = config.use_veh_veh_shaped
     env.use_veh_edge_shaped = config.use_veh_edge_shaped
     env.max_veh_veh_distance = config.max_veh_veh_distance

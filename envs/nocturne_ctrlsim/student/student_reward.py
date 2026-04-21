@@ -171,6 +171,72 @@ def _compute_veh_edge_shaped_reward(
     return _compute_raw_veh_edge_shaped_reward(env, ego_pos_arr)
 
 
+def _get_aligned_heading_reference(
+    env,
+    ego_id: int,
+) -> float:
+    """Return the GT heading aligned with the current post-step ego state."""
+    current_step = int(getattr(env, "current_step", -1))
+    gt_traj_cache = getattr(env, "_gt_traj_cache", None)
+    if gt_traj_cache is not None and ego_id in gt_traj_cache:
+        gt_traj = gt_traj_cache[ego_id]
+    else:
+        gt_data_dict = getattr(env, "_gt_data_dict", {})
+        data = gt_data_dict.get(int(ego_id))
+        if not isinstance(data, dict) or "traj" not in data:
+            raise KeyError(f"Missing gt traj data for veh_id={int(ego_id)}")
+        gt_traj = np.asarray(data["traj"])
+        if gt_traj_cache is not None:
+            gt_traj_cache[ego_id] = gt_traj
+
+    if current_step < 0 or current_step >= len(gt_traj):
+        raise IndexError(
+            f"GT heading unavailable for veh_id={int(ego_id)} at step={current_step}"
+        )
+
+    return float(gt_traj[current_step][2])
+
+
+def _compute_progress_delta_reward(
+    env,
+    dist_to_goal: float,
+    position_reached: bool,
+) -> float:
+    """Compute the approaching-goal reward from squared progress delta."""
+    if not getattr(env, "use_approaching_goal", True):
+        return 0.0
+
+    goal_dist_normalizer = float(getattr(env, "_ego_goal_dist_normalizer", 0.0))
+    if goal_dist_normalizer <= 0.0:
+        return 0.0
+
+    previous_progress = float(
+        np.clip(getattr(env, "_episode_progress", 0.0), 0.0, 1.0)
+    )
+    current_progress = float(np.clip(1.0 - dist_to_goal / goal_dist_normalizer, 0.0, 1.0))
+    if position_reached:
+        current_progress = 1.0
+
+    progress_delta = max(
+        0.0,
+        current_progress - previous_progress,
+    )
+    progress_scale = float(getattr(env, "approaching_goal_scaling", 10.0))
+    return progress_scale * progress_delta
+
+
+def _compute_heading_dense_reward(
+    env,
+    ego_id: int,
+    ego_heading: float,
+) -> float:
+    """Compute dense heading reward against the aligned GT heading."""
+    heading_reference = _get_aligned_heading_reference(env, ego_id)
+    heading_delta = abs(_angle_diff(ego_heading, heading_reference))
+    heading_scale = float(getattr(env, "heading_dense_scaling", 0.1))
+    return heading_scale * float(np.cos(heading_delta))
+
+
 def compute_student_reward(env) -> float:
     """
     Compute student reward using CtrlSim's compute_reward function.
@@ -238,17 +304,15 @@ def compute_student_reward(env) -> float:
 
     dist_to_goal = env._step_dist_to_goal
 
-    # best_goal_distance: the closest distance to the goal so far.
-    best_goal_distance = float(getattr(env, '_best_goal_distance', np.inf))
-    # Keep state in reward logic: initialize once per episode (or when state missing).
-    if getattr(env, 'current_step', 0) <= 1 or not np.isfinite(best_goal_distance):
-        best_goal_distance = float(dist_to_goal)
-    goal_improve = max(0.0, best_goal_distance - float(dist_to_goal))
-    env._best_goal_distance = min(best_goal_distance, float(dist_to_goal))
-
     position_achieved_current = dist_to_goal < goal_pos_tolerance
     speed_achieved_current = abs(ego_speed - goal_speed) < 1.0  # speed_target_tolerance
     heading_achieved_current = abs(_angle_diff(ego_heading, goal_heading)) < 0.3  # heading_target_tolerance
+    heading_shaped = _compute_heading_dense_reward(
+        env,
+        ego_id,
+        ego_heading=ego_heading,
+    )
+    reward_vector[5] = heading_shaped
     reward_history = []
     if ego_id in env._ego_vehicle_data_dict:
         reward_history = env._ego_vehicle_data_dict[ego_id].get('reward', [])
@@ -298,10 +362,10 @@ def compute_student_reward(env) -> float:
     # goal_heading = achieved + shaped
     # goal_speed = achieved + shaped
     pos_shaped_term = pos_shaped if getattr(env, 'use_pos_shaped', False) else 0.0
-    use_approaching_goal = getattr(env, 'use_approaching_goal', True)
-    approaching_goal_scaling = getattr(env, 'approaching_goal_scaling', 1.0)
-    approaching_goal_term = (
-        approaching_goal_scaling * goal_improve if use_approaching_goal else 0.0
+    approaching_goal_term = _compute_progress_delta_reward(
+        env,
+        dist_to_goal=float(dist_to_goal),
+        position_reached=position_achieved_current,
     )
     if unsafe_trajectory:
         position_reward_term = 0.0

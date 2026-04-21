@@ -978,8 +978,14 @@ parser.add_argument(
 parser.add_argument(
     "--approaching_goal_scaling",
     type=float,
-    default=0.2,
+    default=3.0,
     help="Scaling factor for approaching-goal reward in student reward.",
+)
+parser.add_argument(
+    "--heading_dense_scaling",
+    type=float,
+    default=0.05,
+    help="Scaling factor for dense heading reward in student reward.",
 )
 parser.add_argument(
     "--use_approaching_goal",
