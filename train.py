@@ -217,22 +217,6 @@ def main(args, clearml_task=None):
                         reordered[k] = v
                 return reordered
 
-            per_process_stats = stats.get('_per_process_stats')
-            if per_process_stats:
-                shared_stats = {
-                    k: v for k, v in stats.items()
-                    if k not in ('_per_process_stats', '_tb_per_process_stats')
-                }
-                for process_stats in per_process_stats:
-                    row = shared_stats.copy()
-                    row.update(process_stats)
-                    row = normalize_and_reorder(row)
-                    filewriter.log(row, tick=tick)
-                    if args.verbose:
-                        key_excluded = {k: () for k in row.keys()}
-                        HumanOutputFormat(sys.stdout).write(row, key_excluded=key_excluded, step=0)
-                return
-
             stats = normalize_and_reorder(stats)
             filewriter.log(stats, tick=tick)
             if args.verbose:
@@ -518,8 +502,7 @@ def main(args, clearml_task=None):
                     update_start_time = update_end_time
                     stats.update({'sps': sps})
                     stats.update(test_stats) # Ensures sps column is always before test stats
-                    log_tick = j if '_per_process_stats' in stats else None
-                    log_stats(stats, tick=log_tick)
+                    log_stats(stats)
 
                 # === Log PLR level weights ===
                 if args.weight_log_interval > 0 and \

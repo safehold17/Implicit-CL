@@ -538,8 +538,6 @@ class FileWriter:
         """Write process-mean metrics under metric_name/{mode} TensorBoard tags."""
         per_process_stats = stats.get("_tb_per_process_stats")
         if not per_process_stats:
-            per_process_stats = stats.get("_per_process_stats")
-        if not per_process_stats:
             return
 
         for metric_name, metric_keys in self._tb_mode_split_process_metric_keys.items():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import re
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -98,27 +99,137 @@ def filter_nocturne_process_info(info: Mapping[str, Any]) -> dict[str, Any]:
     return filtered
 
 
+def _prepare_nocturne_stats_row(
+    info: Mapping[str, Any],
+    *,
+    tilting_mode: str,
+) -> dict[str, Any]:
+    """Prepare one Nocturne info row for aggregate stats and process logging."""
+    stats_row = filter_nocturne_process_info(info)
+    stats_row.update(build_nocturne_tilting_columns(info, tilting_mode=tilting_mode))
+    return stats_row
+
+
+def _resolve_nocturne_process_infos(
+    *,
+    infos: Sequence[Mapping[str, Any]] | None,
+    infos_by_process: Sequence[Sequence[Mapping[str, Any]]] | None,
+    venv: Any | None,
+    tilting_mode: str,
+) -> tuple[list[Mapping[str, Any]], bool]:
+    """Resolve Nocturne process infos and whether they were pre-aggregated."""
+    if infos_by_process is None and infos is None:
+        try:
+            infos = venv.get_complexity_info()
+        except AttributeError:
+            return [], False
+
+    if infos_by_process is not None:
+        return [
+            _average_nocturne_infos(
+                process_done_infos,
+                tilting_mode=tilting_mode,
+            )
+            for process_done_infos in infos_by_process
+        ], True
+
+    return list(infos or []), False
+
+
+def _average_nocturne_infos(
+    infos: Sequence[Mapping[str, Any]],
+    *,
+    tilting_mode: str,
+) -> dict[str, Any]:
+    """Average completed episodes for one process into one stats row."""
+    if not infos:
+        return {}
+
+    stats_rows = [
+        _prepare_nocturne_stats_row(info, tilting_mode=tilting_mode)
+        for info in infos
+    ]
+    averaged_info = {
+        k: v
+        for k, v in stats_rows[0].items()
+        if k != "seed" and (not isinstance(v, (int, float)) or np.isnan(v))
+    }
+    averaged_info["seed"] = None
+    sums = defaultdict(float)
+    counts = defaultdict(int)
+
+    for stats_row in stats_rows:
+        for key, value in stats_row.items():
+            if key == "seed":
+                continue
+            if isinstance(value, (int, float)) and not np.isnan(value):
+                sums[key] += float(value)
+                counts[key] += 1
+
+    for key, total in sums.items():
+        averaged_info[key] = total / counts[key]
+
+    return averaged_info
+
+
+def _pop_averaged_nocturne_tilting_columns(
+    info: dict[str, Any],
+) -> dict[str, Any]:
+    """Pop only the derived Nocturne tilting columns from one averaged row."""
+    return {
+        key: info.pop(key)
+        for key in list(info)
+        if _is_averaged_nocturne_tilting_key(key)
+    }
+
+
+def _is_averaged_nocturne_tilting_key(key: str) -> bool:
+    """Return whether one averaged key belongs to derived tilting columns."""
+    tilt_keys = {
+        "veh_goal_avg",
+        "veh_veh_avg",
+        "veh_edge_avg",
+        "ego_goal_tilt",
+        "ego_veh_veh_tilt",
+        "ego_veh_edge_tilt",
+    }
+    if key in tilt_keys:
+        return True
+    return bool(
+        re.fullmatch(r"opp\d+_(goal_tilt|veh_veh_tilt|veh_edge_tilt)", key)
+    )
+
+
 def build_nocturne_process_stats(
     *,
     infos: Sequence[Mapping[str, Any]] | None = None,
+    infos_by_process: Sequence[Sequence[Mapping[str, Any]]] | None = None,
     venv: Any | None = None,
     tilting_mode: str = "per_vehicle",
     log_replay_complexity: bool = False,
 ) -> list[dict[str, Any]]:
     """Build per-process Nocturne logging rows."""
-    if infos is None:
-        try:
-            infos = venv.get_complexity_info()
-        except AttributeError:
-            return []
-
     process_stats = []
-    for process_idx, info in enumerate(infos):
+    process_infos, infos_are_averaged = _resolve_nocturne_process_infos(
+        infos=infos,
+        infos_by_process=infos_by_process,
+        venv=venv,
+        tilting_mode=tilting_mode,
+    )
+
+    for process_idx, info in enumerate(process_infos):
         process_log = {"process_idx": process_idx}
-        process_log.update(filter_nocturne_process_info(info))
-        max_progress = process_log.pop("max_progress", None)
-        if max_progress is not None:
-            process_log["max_progress"] = max_progress
+        if infos_are_averaged:
+            base_info = dict(info)
+            tilting_columns = _pop_averaged_nocturne_tilting_columns(base_info)
+        else:
+            base_info = filter_nocturne_process_info(info)
+            tilting_columns = build_nocturne_tilting_columns(
+                info,
+                tilting_mode=tilting_mode,
+            )
+        process_log.update(base_info)
+        max_progress = base_info.get("max_progress")
         opponent_vehicle_num = process_log.get("opponent_vehicle_num")
         if log_replay_complexity:
             process_log["max_progress"] = None
@@ -128,10 +239,6 @@ def build_nocturne_process_stats(
         else:
             process_log["plr_progress"] = None
             process_log["plr_opponent_vehicle_num"] = None
-        tilting_columns = build_nocturne_tilting_columns(
-            info,
-            tilting_mode=tilting_mode,
-        )
         if log_replay_complexity:
             process_log.update({k: None for k in tilting_columns})
             process_log.update({f"plr_{k}": v for k, v in tilting_columns.items()})
@@ -156,23 +263,20 @@ def compute_nocturne_env_stats(
         except AttributeError:
             return {}
 
-    if len(infos) == 0:
+    stats_rows = [
+        _prepare_nocturne_stats_row(info, tilting_mode=tilting_mode)
+        for info in infos
+    ]
+
+    if not stats_rows:
         return {}
 
     sums = defaultdict(float)
     counts = defaultdict(int)
-    for info in infos:
-        merged_info = filter_nocturne_process_info(info)
-        merged_info.update(
-            build_nocturne_tilting_columns(info, tilting_mode=tilting_mode)
-        )
-        for k, v in merged_info.items():
+    for stats_row in stats_rows:
+        for k, v in stats_row.items():
             if isinstance(v, (int, float)) and not np.isnan(v):
-                if k in ("opponent_k", "scenario_pool_size"):
-                    continue
-                if k == "max_progress":
-                    continue
-                if k == "seed":
+                if k in {"opponent_k", "scenario_pool_size", "max_progress", "seed"}:
                     continue
                 if k.endswith("_occurred"):
                     continue

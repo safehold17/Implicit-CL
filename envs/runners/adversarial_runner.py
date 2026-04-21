@@ -532,7 +532,13 @@ class AdversarialRunner(object):
 
         return stats
 
-    def _get_env_stats(self, agent_info, adversary_agent_info, log_replay_complexity=False, nocturne_infos=None):
+    def _get_env_stats(
+        self,
+        agent_info,
+        adversary_agent_info,
+        log_replay_complexity=False,
+        nocturne_infos=None,
+    ):
         env_name = self.args.env_name
         if env_name.startswith('MultiGrid'):
             stats = self._get_env_stats_multigrid(agent_info, adversary_agent_info)
@@ -786,7 +792,8 @@ class AdversarialRunner(object):
                 or args.env_name.startswith('nocturne')
             )
         )
-        first_done_info_by_process = {} if is_nocturne_rollout else None
+        done_infos = [] if is_nocturne_rollout else None
+        done_infos_by_process = defaultdict(list) if is_nocturne_rollout else None
         track_nocturne_enhanced_regret = (
             is_nocturne_rollout
             and bool(getattr(args, "use_enhanced_regret", False))
@@ -898,8 +905,9 @@ class AdversarialRunner(object):
 
                 if 'episode' in info.keys():
                     if is_nocturne_rollout:
-                        if i not in first_done_info_by_process:
-                            first_done_info_by_process[i] = dict(info)
+                        done_info = dict(info)
+                        done_infos.append(done_info)
+                        done_infos_by_process[i].append(done_info)
                     if track_nocturne_enhanced_regret:
                         seed = active_seed_by_process[i]
                         if seed is not None:
@@ -1022,12 +1030,11 @@ class AdversarialRunner(object):
                 rollout_offroad_done_count_by_process.tolist()
             )
         if is_nocturne_rollout:
-            first_done_infos = [
-                first_done_info_by_process[i]
-                for i in sorted(first_done_info_by_process.keys())
-            ]
-            rollout_info['nocturne_first_done_infos'] = first_done_infos
-            rollout_info['nocturne_first_done_info_by_process'] = first_done_info_by_process
+            rollout_info['nocturne_done_infos'] = list(done_infos)
+            rollout_info['nocturne_done_infos_by_process'] = {
+                int(process_idx): list(process_done_infos)
+                for process_idx, process_done_infos in done_infos_by_process.items()
+            }
         if self.use_accel_paired:
             rollout_info['actor_seeds'] = actor_seeds
 
@@ -1293,28 +1300,6 @@ class AdversarialRunner(object):
         adversary_env = self.agents['adversary_env']
         agent = self.agents['agent']
         adversary_agent = self.agents['adversary_agent']
-        nocturne_first_done_infos_for_update = []
-        nocturne_first_done_info_by_process = {}
-        has_merged_first_nocturne_rollout = False
-
-        def merge_nocturne_first_done_infos(rollout_info):
-            nonlocal has_merged_first_nocturne_rollout
-            if (not is_nocturne_env) or (not isinstance(rollout_info, dict)):
-                return
-            if has_merged_first_nocturne_rollout:
-                return
-
-            done_infos = rollout_info.get('nocturne_first_done_infos')
-            if done_infos:
-                nocturne_first_done_infos_for_update.extend(done_infos)
-
-            first_by_process = rollout_info.get('nocturne_first_done_info_by_process')
-            if isinstance(first_by_process, dict):
-                for process_idx, info in first_by_process.items():
-                    if info is None:
-                        continue
-                    nocturne_first_done_info_by_process[int(process_idx)] = info
-            has_merged_first_nocturne_rollout = True
 
         level_replay = False
         if plr_runtime_enabled and self.is_training:
@@ -1364,7 +1349,6 @@ class AdversarialRunner(object):
             sample_only=student_sample_only,
             kl_dict=kl_dict_agent,
             update_agent_separately=self.use_accel_paired)
-        merge_nocturne_first_done_infos(agent_info)
         
         if kl_dict_agent is not None:
             adversary_agent.train()
@@ -1403,7 +1387,6 @@ class AdversarialRunner(object):
                 discard_grad=student_discard_grad,
                 sample_only=student_sample_only,
                 kl_dict=kl_dict_adv_agent)
-            merge_nocturne_first_done_infos(adversary_agent_info)
             
             if kl_dict_adv_agent is not None:
                 agent.train()
@@ -1422,7 +1405,6 @@ class AdversarialRunner(object):
                 kl_dict=None,
                 update_agent_separately=self.use_accel_paired
             )
-            merge_nocturne_first_done_infos(adversary_agent_info)
             
             # calculate PAIRED regret estimate
             external_scores = self._calculate_paired_regret_scores(agent_info, adversary_agent_info, type=args.accel_paired_score_function)
@@ -1540,7 +1522,6 @@ class AdversarialRunner(object):
                     update_level_sampler=is_updateable,
                     update_agent_separately=self.use_accel_paired,
                     sample_only=True)
-                merge_nocturne_first_done_infos(agent_info_edited_level)
                 
                 if self.use_accel_paired:
                     adversary_agent_info_edited_level = self.agent_rollout(
@@ -1552,7 +1533,6 @@ class AdversarialRunner(object):
                         update_level_sampler=False,
                         update_agent_separately=self.use_accel_paired,
                         discard_grad=True)
-                    merge_nocturne_first_done_infos(adversary_agent_info_edited_level)
                     
                     external_scores = self._calculate_paired_regret_scores(agent_info_edited_level, adversary_agent_info_edited_level, type=args.accel_paired_score_function)
                     
@@ -1605,19 +1585,19 @@ class AdversarialRunner(object):
         # === LOGGING ===
         # Only update env-related stats when run generates new envs (not level replay)
         log_replay_complexity = level_replay and args.log_replay_complexity
-        per_process_stats = []
         tb_per_process_stats = []
         nocturne_infos = None
         nocturne_process_infos = None
         if is_nocturne_env:
             tilting_mode = getattr(args, 'tilting_mode', 'per_vehicle')
-            nocturne_infos = list(nocturne_first_done_infos_for_update)
-            nocturne_process_infos = []
-            for process_idx in range(args.num_processes):
-                process_info = nocturne_first_done_info_by_process.get(process_idx)
-                nocturne_process_infos.append(dict(process_info) if process_info else {})
+            nocturne_infos = list(agent_info.get('nocturne_done_infos', ()))
+            done_infos_by_process = agent_info.get('nocturne_done_infos_by_process', {})
+            nocturne_process_infos = [
+                list(done_infos_by_process.get(process_idx, ()))
+                for process_idx in range(args.num_processes)
+            ]
             tb_per_process_stats = build_nocturne_process_stats(
-                infos=nocturne_process_infos,
+                infos_by_process=nocturne_process_infos,
                 tilting_mode=tilting_mode,
                 log_replay_complexity=False,
             )
@@ -1627,11 +1607,6 @@ class AdversarialRunner(object):
             stats = self._get_env_stats(agent_info, adversary_agent_info, 
                 log_replay_complexity=log_replay_complexity,
                 nocturne_infos=nocturne_infos)
-            if is_nocturne_env:
-                per_process_stats = build_nocturne_process_stats(
-                    infos=nocturne_process_infos,
-                    tilting_mode=tilting_mode,
-                    log_replay_complexity=log_replay_complexity)
             stats.update({
                 'mean_env_return': env_return.mean().item(),
                 'adversary_env_pg_loss': adversary_env_info['action_loss'],
@@ -1640,25 +1615,14 @@ class AdversarialRunner(object):
             })
             if args.use_plr:
                 self.latest_env_stats.update(stats) # Log latest UED curriculum stats instead of PLR env stats
-                if is_nocturne_env:
-                    self.latest_env_process_stats = [s.copy() for s in per_process_stats]
         else:
             stats = self.latest_env_stats.copy()
-            if is_nocturne_env:
-                per_process_stats = [s.copy() for s in self.latest_env_process_stats]
-                if not per_process_stats:
-                    per_process_stats = build_nocturne_process_stats(
-                        venv=self.venv,
-                        tilting_mode=tilting_mode,
-                    )
 
         rollout_done_count_by_process = agent_info.get("rollout_done_count_by_process")
         if rollout_done_count_by_process is not None:
             rollout_done_count_by_process = list(rollout_done_count_by_process)
             if is_nocturne_env:
                 for process_idx, done_count in enumerate(rollout_done_count_by_process):
-                    if process_idx < len(per_process_stats):
-                        per_process_stats[process_idx]["rollout_done_count"] = int(done_count)
                     if process_idx < len(tb_per_process_stats):
                         tb_per_process_stats[process_idx]["rollout_done_count"] = int(done_count)
             if len(rollout_done_count_by_process) > 0:
@@ -1676,10 +1640,6 @@ class AdversarialRunner(object):
                 for process_idx, done_count in enumerate(
                     rollout_collision_done_count_by_process
                 ):
-                    if process_idx < len(per_process_stats):
-                        per_process_stats[process_idx][
-                            "rollout_collision_done_count"
-                        ] = int(done_count)
                     if process_idx < len(tb_per_process_stats):
                         tb_per_process_stats[process_idx][
                             "rollout_collision_done_count"
@@ -1699,10 +1659,6 @@ class AdversarialRunner(object):
                 for process_idx, done_count in enumerate(
                     rollout_offroad_done_count_by_process
                 ):
-                    if process_idx < len(per_process_stats):
-                        per_process_stats[process_idx][
-                            "rollout_offroad_done_count"
-                        ] = int(done_count)
                     if process_idx < len(tb_per_process_stats):
                         tb_per_process_stats[process_idx][
                             "rollout_offroad_done_count"
@@ -1798,8 +1754,6 @@ class AdversarialRunner(object):
                 'adversary_action_complexity': adversary_agent_info['action_complexity']  
             }) 
 
-        if per_process_stats:
-            stats['_per_process_stats'] = per_process_stats
         if tb_per_process_stats:
             stats['_tb_per_process_stats'] = tb_per_process_stats
 
