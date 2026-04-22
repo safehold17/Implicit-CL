@@ -28,19 +28,21 @@ def get_state_update_vehicle_ids(
     t: int,
     vehicles_by_id: Dict[int, Any],
 ) -> List[int]:
+    all_existing_ids = [
+        veh_id
+        for veh_id in adapter._all_vehicle_ids
+        if veh_id in vehicles_by_id
+    ]
     controlled_ids = [
         veh_id
         for veh_id in adapter._controlled_vehicle_ids_present
         if veh_id in vehicles_by_id
     ]
     if not controlled_ids:
+        if bool(getattr(adapter, "_require_policy", False)) and adapter._policy is not None:
+            return all_existing_ids
         return []
 
-    all_existing_ids = [
-        veh_id
-        for veh_id in adapter._all_vehicle_ids
-        if veh_id in vehicles_by_id
-    ]
     policy = adapter._policy
     if t <= adapter.history_steps - 1 or policy is None:
         return all_existing_ids

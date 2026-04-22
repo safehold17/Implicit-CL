@@ -27,7 +27,10 @@ from .state_helpers import extract_road_edge_polylines
 
 def _ensure_policy_for_control_set(adapter: Any) -> None:
     """Ensure the adapter policy matches the current control-set mode."""
-    if adapter._vehicles_to_control:
+    require_policy = bool(
+        adapter._vehicles_to_control or getattr(adapter, "_require_policy", False)
+    )
+    if require_policy:
         if adapter._checkpoint_cfg is None:
             adapter._load_checkpoint_cfg()
             adapter._validate_external_cfg_compatibility()
@@ -49,6 +52,7 @@ def bind_static_level_state(
     vehicles_to_control: List[int],
     ego_id: Optional[int],
     build_gt_action_target_cache_fn: Any,
+    require_policy: bool = False,
 ) -> None:
     """Bind scenario-scoped static state that can be reused across episodes."""
     adapter = service.adapter
@@ -81,6 +85,7 @@ def bind_static_level_state(
     else:
         adapter._vehicles_to_control_sorted = []
     adapter._ego_id = ego_id
+    adapter._require_policy = bool(require_policy)
     _ensure_policy_for_control_set(adapter)
 
     road_data = get_road_data(scenario)
@@ -181,6 +186,7 @@ def reset(
     vehicles_to_control: List[int],
     ego_id: Optional[int],
     build_gt_action_target_cache_fn: Any,
+    require_policy: bool = False,
 ) -> None:
     """Perform a full reset, including static level-state binding."""
     bind_static_level_state(
@@ -191,6 +197,7 @@ def reset(
         preproc_data=preproc_data,
         vehicles_to_control=vehicles_to_control,
         ego_id=ego_id,
+        require_policy=require_policy,
         build_gt_action_target_cache_fn=build_gt_action_target_cache_fn,
     )
     reset_current_episode(service, vehicles)

@@ -297,7 +297,7 @@ class PPO():
             info['kl_loss'] = kl_loss_epoch
         # 单独记录 ego_ctrlsim KL，避免和旧的在线 KL 指标混淆。
         # Log ego_ctrlsim KL separately so it does not get mixed with the legacy online KL metric.
-        if ego_ctrlsim_kl_loss_epoch > 0.0:
+        if ego_ctrlsim_kl_loss_updates > 0:
             info['ego_ctrlsim_kl_loss'] = ego_ctrlsim_kl_loss_epoch
 
         return value_loss_epoch, action_loss_epoch, dist_entropy_epoch, info

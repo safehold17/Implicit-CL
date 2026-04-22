@@ -312,6 +312,12 @@ class NocturneCtrlSimRuntime:
         vehicles_to_control = (
             env.opponent_vehicle_ids if runtime_mode == "normal" else []
         )
+        require_policy = bool(
+            vehicles_to_control
+            or getattr(env, "use_ego_ctrlsim_kl_loss", False)
+            or getattr(env, "use_policy_reweighting", False)
+            or getattr(env, "use_enhanced_regret", False)
+        )
         env.opponent._veh_id_to_preproc_idx = dict(env._veh_id_to_preproc_idx)
         env.opponent.reset(
             env.scenario,
@@ -320,6 +326,7 @@ class NocturneCtrlSimRuntime:
             env._preproc_data,
             vehicles_to_control,
             ego_id=env.ego_vehicle.getID() if env.ego_vehicle else None,
+            require_policy=require_policy,
         )
         env.opponent._ego_reweight_tilt = tuple(env.current_ego_reweight_tilt)
         # Build student-side caches used in the hot path:

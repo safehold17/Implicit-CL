@@ -284,6 +284,7 @@ class CtrlSimOpponentAdapter:
         preproc_data: Dict,
         vehicles_to_control: List[int],
         ego_id: Optional[int] = None,
+        require_policy: bool = False,
     ):
         self._ensure_services()
         return self._state_service.reset(
@@ -293,6 +294,7 @@ class CtrlSimOpponentAdapter:
             preproc_data,
             vehicles_to_control,
             ego_id=ego_id,
+            require_policy=require_policy,
         )
 
     def reset_current_episode(self, vehicles: List):

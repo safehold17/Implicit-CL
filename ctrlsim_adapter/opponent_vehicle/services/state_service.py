@@ -37,6 +37,7 @@ class OpponentStateService:
         preproc_data: Dict,
         vehicles_to_control: List[int],
         ego_id: Optional[int] = None,
+        require_policy: bool = False,
     ):
         """
         在每个 episode 开始时调用，初始化策略状态
@@ -65,6 +66,7 @@ class OpponentStateService:
             preproc_data=preproc_data,
             vehicles_to_control=vehicles_to_control,
             ego_id=ego_id,
+            require_policy=require_policy,
             build_gt_action_target_cache_fn=build_gt_action_target_cache,
         )
 
