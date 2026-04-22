@@ -143,6 +143,7 @@ def model_for_nocturne_agent(
     student_road_pooling="attention",
     recurrent=False,
     recurrent_arch=None,
+    recurrent_hidden_size=256,
     random_teacher=False,
 ):
     """    
@@ -157,8 +158,9 @@ def model_for_nocturne_agent(
         act_func: Activation function ("tanh" or "gelu")
         student_partner_pooling: Pooling mode for partner tokens
         student_road_pooling: Pooling mode for road tokens
-        recurrent: Whether to use recurrent network (adversary env only, for enhancement)
-        recurrent_arch: RNN architecture type ('lstm' or 'gru', Teacher only)
+        recurrent: Whether to use recurrent network
+        recurrent_arch: RNN architecture type ('lstm' or 'gru')
+        recurrent_hidden_size: Hidden size for recurrent policies
         random_teacher: Whether to use random Teacher (baseline comparison)
     
     Returns:
@@ -196,6 +198,9 @@ def model_for_nocturne_agent(
         act_func=act_func,
         student_partner_pooling=student_partner_pooling,
         student_road_pooling=student_road_pooling,
+        recurrent=recurrent,
+        recurrent_arch=recurrent_arch if recurrent else None,
+        recurrent_hidden_size=recurrent_hidden_size,
     )
     
     return model
@@ -255,7 +260,6 @@ def model_for_env_agent(
             recurrent_arch=recurrent_arch,
             use_lstm=use_lstm)
     elif env_name.startswith('Nocturne') or env_name.startswith('nocturne'):
-        # teacher using recurrent_arch, student not
         is_teacher = 'adversary_env' in agent_type
         model = model_for_nocturne_agent(
             env=env,
@@ -268,8 +272,9 @@ def model_for_env_agent(
             act_func=student_act_func,
             student_partner_pooling=student_partner_pooling,
             student_road_pooling=student_road_pooling,
-            recurrent=recurrent_arch is not None if is_teacher else False,
-            recurrent_arch=recurrent_arch if is_teacher else None,
+            recurrent=recurrent_arch is not None,
+            recurrent_arch=recurrent_arch,
+            recurrent_hidden_size=recurrent_hidden_size,
             random_teacher=random_teacher,
         )
     else:
@@ -286,7 +291,9 @@ def make_agent(name, env, args, device='cpu'):
         observation_space = env.adversary_observation_space
         action_space = env.adversary_action_space
         num_steps = observation_space['time_step'].high[0]
-        recurrent_arch = args.recurrent_adversary_env and args.recurrent_arch
+        recurrent_arch = (
+            args.recurrent_arch if args.recurrent_adversary_env else None
+        )
         entropy_coef = args.adv_entropy_coef
         ppo_epoch = args.adv_ppo_epoch
         num_mini_batch = args.adv_num_mini_batch
@@ -296,7 +303,7 @@ def make_agent(name, env, args, device='cpu'):
         observation_space = env.observation_space
         action_space = env.action_space
         num_steps = args.num_steps
-        recurrent_arch = args.recurrent_agent and args.recurrent_arch
+        recurrent_arch = args.recurrent_arch if args.recurrent_agent else None
         entropy_coef = args.entropy_coef
         ppo_epoch = args.ppo_epoch
         num_mini_batch = args.num_mini_batch

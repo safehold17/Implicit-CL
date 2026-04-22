@@ -598,6 +598,8 @@ class RolloutStorage(object):
             masks_batch = []
             old_action_log_probs_batch = []
             adv_targ = []
+            ego_ctrlsim_action_logits_batch = []
+            ego_ctrlsim_valid_batch = []
 
             for offset in range(num_envs_per_batch):
                 ind = perm[start_ind + offset]
@@ -614,6 +616,14 @@ class RolloutStorage(object):
                 old_action_log_probs_batch.append(
                     self.action_log_probs[:, ind])
                 adv_targ.append(advantages[:, ind])
+                if self.ego_ctrlsim_action_logits is not None:
+                    ego_ctrlsim_action_logits_batch.append(
+                        self.ego_ctrlsim_action_logits[:, ind]
+                    )
+                if self.ego_ctrlsim_valid is not None:
+                    ego_ctrlsim_valid_batch.append(
+                        self.ego_ctrlsim_valid[:, ind]
+                    )
 
             T, N = self.num_steps, num_envs_per_batch
             # These are all tensors of size (T, N, -1)
@@ -629,6 +639,18 @@ class RolloutStorage(object):
             old_action_log_probs_batch = torch.stack(
                 old_action_log_probs_batch, 1)
             adv_targ = torch.stack(adv_targ, 1)
+            if self.ego_ctrlsim_action_logits is not None:
+                ego_ctrlsim_action_logits_batch = torch.stack(
+                    ego_ctrlsim_action_logits_batch, 1
+                )
+            else:
+                ego_ctrlsim_action_logits_batch = None
+            if self.ego_ctrlsim_valid is not None:
+                ego_ctrlsim_valid_batch = torch.stack(
+                    ego_ctrlsim_valid_batch, 1
+                )
+            else:
+                ego_ctrlsim_valid_batch = None
 
             # States is just a (N, -1) tensor
             recurrent_hidden_states_batch = torch.stack(
@@ -643,6 +665,14 @@ class RolloutStorage(object):
             old_action_log_probs_batch = _flatten_helper(T, N, \
                     old_action_log_probs_batch)
             adv_targ = _flatten_helper(T, N, adv_targ)
+            if ego_ctrlsim_action_logits_batch is not None:
+                ego_ctrlsim_action_logits_batch = _flatten_helper(
+                    T, N, ego_ctrlsim_action_logits_batch
+                )
+            if ego_ctrlsim_valid_batch is not None:
+                ego_ctrlsim_valid_batch = _flatten_helper(
+                    T, N, ego_ctrlsim_valid_batch
+                )
 
             if self.is_lstm: 
                 # Split into (hxs, cxs) for LSTM
@@ -650,4 +680,5 @@ class RolloutStorage(object):
                     self._split_batched_lstm_recurrent_hidden_states(recurrent_hidden_states_batch)
 
             yield obs_batch, recurrent_hidden_states_batch, actions_batch, \
-                value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ
+                value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ, \
+                ego_ctrlsim_action_logits_batch, ego_ctrlsim_valid_batch

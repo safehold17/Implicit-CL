@@ -136,7 +136,7 @@ class PPO():
         for e in range(self.ppo_epoch):
         # The `feed_forward_generator` flattens the rollout into independent samples and randomly forms mini-batches for training a feedforward policy.
         # The `recurrent_generator` samples complete time sequences on a per-environment basis and provides the corresponding initial hidden states for training RNN/LSTM-based policies.
-            if self.actor_critic.is_recurrent:  # not using recurrent policy in this project
+            if self.actor_critic.is_recurrent:
                 data_generator = rollouts.recurrent_generator(
                     advantages, self.num_mini_batch)
             else:
@@ -145,8 +145,9 @@ class PPO():
 
             for sample in data_generator:
                 if self.actor_critic.is_recurrent:
-                    # not using a recurrent policy
-                    raise NotImplementedError("recurrent PPO update currently unsupported")
+                    obs_batch, recurrent_hidden_states_batch, actions_batch, \
+                    value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \
+                            adv_targ, ego_ctrlsim_action_logits_batch, ego_ctrlsim_valid_batch = sample
                 else:
                     obs_batch, recurrent_hidden_states_batch, actions_batch, \
                     value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \

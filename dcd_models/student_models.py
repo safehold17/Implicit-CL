@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .common import DeviceAwareModule
+from .common import DeviceAwareModule, RNN
 from .distributions import Categorical
 from envs.nocturne_ctrlsim.student.observation_action import (
     StudentObservationConfig,
@@ -331,6 +331,8 @@ class StudentPolicy(DeviceAwareModule):
         student_partner_pooling: str = "attention",
         student_road_pooling: str = "attention",
         recurrent: bool = False,
+        recurrent_arch: str = "lstm",
+        recurrent_hidden_size: int = 256,
         base_kwargs=None,
     ):
         super().__init__()
@@ -374,19 +376,24 @@ class StudentPolicy(DeviceAwareModule):
                 f"got {action_space.__class__.__name__}"
             )
         self.action_dim = int(action_space.n)
-        self.dist = Categorical(hidden_dim, self.action_dim)
+        self._recurrent = recurrent
+        self.rnn = None
+        if recurrent:
+            self.rnn = RNN(
+                input_size=hidden_dim,
+                hidden_size=recurrent_hidden_size,
+                arch=recurrent_arch,
+            )
+
+        actor_input_size = (
+            self.rnn.output_size if self.rnn is not None else hidden_dim
+        )
+        self.dist = Categorical(actor_input_size, self.action_dim)
         
         # Critic: output state value
         self.critic = self._layer_init(
-            nn.Linear(hidden_dim, 1), std=1.0
+            nn.Linear(actor_input_size, 1), std=1.0
         )
-        
-        # Recurrent network support (not implemented)
-        self._recurrent = recurrent
-        if recurrent:
-            raise NotImplementedError(
-                "Recurrent policies not yet supported for Student driving policy"
-            )
     
     def _layer_init(self, layer, std=np.sqrt(2), bias_const=0.0):
         """Weight initialization"""
@@ -402,7 +409,44 @@ class StudentPolicy(DeviceAwareModule):
     @property
     def recurrent_hidden_state_size(self):
         """Recurrent hidden state size (1 if not recurrent)"""
-        return 1
+        if not self.is_recurrent:
+            return 1
+        return self.rnn.recurrent_hidden_state_size
+
+    def _init_recurrent_state(self, batch_size: int, device: torch.device, dtype):
+        """Create a zero recurrent state for the current RNN architecture."""
+        zeros = torch.zeros(
+            batch_size,
+            self.recurrent_hidden_state_size,
+            device=device,
+            dtype=dtype,
+        )
+        if self.rnn.is_lstm:
+            return zeros, torch.zeros_like(zeros)
+        return zeros
+
+    def _encode_actor_features(self, inputs, rnn_hxs=None, masks=None):
+        """Encode observations and optionally run them through the RNN."""
+        hidden = self.base.encode_observations(inputs)
+        if not self.is_recurrent:
+            return hidden, rnn_hxs
+
+        if masks is None:
+            masks = torch.ones(
+                hidden.size(0),
+                1,
+                device=hidden.device,
+                dtype=hidden.dtype,
+            )
+        if rnn_hxs is None:
+            rnn_hxs = self._init_recurrent_state(
+                batch_size=hidden.size(0),
+                device=hidden.device,
+                dtype=hidden.dtype,
+            )
+
+        hidden, rnn_hxs = self.rnn(hidden, rnn_hxs, masks)
+        return hidden, rnn_hxs
     
     def forward(self, inputs):
         """Simplified forward pass (for inference)"""
@@ -417,8 +461,8 @@ class StudentPolicy(DeviceAwareModule):
         
         Args:
             inputs: Observations (batch_size, obs_dim)
-            rnn_hxs: Recurrent hidden states (currently unused)
-            masks: Episode masks (currently unused)
+            rnn_hxs: Recurrent hidden states used in recurrent mode
+            masks: Episode masks used to reset recurrent state
             deterministic: Whether to sample deterministically
         
         Returns:
@@ -427,8 +471,7 @@ class StudentPolicy(DeviceAwareModule):
             action_log_dist: Action logits (batch_size, action_dim)
             rnn_hxs: Updated hidden states
         """
-        # Feature extraction
-        hidden = self.base.encode_observations(inputs)
+        hidden, rnn_hxs = self._encode_actor_features(inputs, rnn_hxs, masks)
         
         # Critic: state value
         value = self.critic(hidden)
@@ -451,13 +494,13 @@ class StudentPolicy(DeviceAwareModule):
         
         Args:
             inputs: Observations (batch_size, obs_dim)
-            rnn_hxs: Recurrent hidden states
-            masks: Episode masks
+            rnn_hxs: Recurrent hidden states used in recurrent mode
+            masks: Episode masks used to reset recurrent state
         
         Returns:
             value: State value  (batch_size, 1)
         """
-        hidden = self.base.encode_observations(inputs)
+        hidden, _ = self._encode_actor_features(inputs, rnn_hxs, masks)
         return self.critic(hidden)
     
     def evaluate_actions(
@@ -468,8 +511,8 @@ class StudentPolicy(DeviceAwareModule):
         
         Args:
             inputs: Observations (batch_size, obs_dim)
-            rnn_hxs: Recurrent hidden states
-            masks: Episode masks
+            rnn_hxs: Recurrent hidden states used in recurrent mode
+            masks: Episode masks used to reset recurrent state
             action: Actions to evaluate (batch_size, action_dim)
             return_policy_logits: Whether to return the full distribution
         
@@ -480,7 +523,7 @@ class StudentPolicy(DeviceAwareModule):
             rnn_hxs: Updated hidden states
             [dist]: Optional, full distribution
         """
-        hidden = self.base.encode_observations(inputs)
+        hidden, rnn_hxs = self._encode_actor_features(inputs, rnn_hxs, masks)
         value = self.critic(hidden)
         
         dist = self.dist(hidden)
