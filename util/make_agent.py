@@ -283,6 +283,13 @@ def model_for_env_agent(
     return model
 
 
+def _arg_get(args, key, default):
+    """Return an argument value from Namespace-like or mapping-like inputs."""
+    if hasattr(args, 'get'):
+        return args.get(key, default)
+    return getattr(args, key, default)
+
+
 def make_agent(name, env, args, device='cpu'):
     # Create model instance
     is_adversary_env = 'env' in name
@@ -298,7 +305,7 @@ def make_agent(name, env, args, device='cpu'):
         ppo_epoch = args.adv_ppo_epoch
         num_mini_batch = args.adv_num_mini_batch
         max_grad_norm = args.adv_max_grad_norm
-        use_popart = vars(args).get('adv_use_popart', False)
+        use_popart = _arg_get(args, 'adv_use_popart', False)
     else:
         observation_space = env.observation_space
         action_space = env.action_space
@@ -308,7 +315,7 @@ def make_agent(name, env, args, device='cpu'):
         ppo_epoch = args.ppo_epoch
         num_mini_batch = args.num_mini_batch
         max_grad_norm = args.max_grad_norm
-        use_popart = vars(args).get('use_popart', False)
+        use_popart = _arg_get(args, 'use_popart', False)
 
     recurrent_hidden_size = args.recurrent_hidden_size
 
@@ -317,26 +324,28 @@ def make_agent(name, env, args, device='cpu'):
         recurrent_arch=recurrent_arch,
         recurrent_hidden_size=recurrent_hidden_size,
         use_global_critic=args.use_global_critic,
-        use_global_policy=vars(args).get('use_global_policy', False),
-        use_skip=vars(args).get('use_skip', False),
-        choose_start_pos=vars(args).get('choose_start_pos', False),
-        use_popart=vars(args).get('use_popart', False),
-        adv_use_popart=vars(args).get('adv_use_popart', False),
-        use_categorical_adv=vars(args).get('use_categorical_adv', False),
-        use_goal=vars(args).get('sparse_rewards', False),
-        num_goal_bins=vars(args).get('num_goal_bins', 1),
-        use_lstm=vars(args).get('use_lstm', False),
+        use_global_policy=_arg_get(args, 'use_global_policy', False),
+        use_skip=_arg_get(args, 'use_skip', False),
+        choose_start_pos=_arg_get(args, 'choose_start_pos', False),
+        use_popart=_arg_get(args, 'use_popart', False),
+        adv_use_popart=_arg_get(args, 'adv_use_popart', False),
+        use_categorical_adv=_arg_get(args, 'use_categorical_adv', False),
+        use_goal=_arg_get(args, 'sparse_rewards', False),
+        num_goal_bins=_arg_get(args, 'num_goal_bins', 1),
+        use_lstm=_arg_get(args, 'use_lstm', False),
         # Nocturne Student parameters
-        student_input_dim=vars(args).get('student_input_dim', 64),
-        student_hidden_dim=vars(args).get('student_hidden_dim', 128),
-        student_num_neighbors=vars(args).get('student_num_neighbors', 16),
-        student_top_k_road=vars(args).get('student_top_k_road', 64),
-        student_dropout=vars(args).get('student_dropout', 0.0),
-        student_act_func=vars(args).get('student_act_func', 'tanh'),
-        student_partner_pooling=vars(args).get('student_partner_pooling', 'attention'),
-        student_road_pooling=vars(args).get('student_road_pooling', 'attention'),
+        student_input_dim=_arg_get(args, 'student_input_dim', 64),
+        student_hidden_dim=_arg_get(args, 'student_hidden_dim', 128),
+        student_num_neighbors=_arg_get(args, 'student_num_neighbors', 16),
+        student_top_k_road=_arg_get(args, 'student_top_k_road', 64),
+        student_dropout=_arg_get(args, 'student_dropout', 0.0),
+        student_act_func=_arg_get(args, 'student_act_func', 'tanh'),
+        student_partner_pooling=_arg_get(
+            args, 'student_partner_pooling', 'attention'
+        ),
+        student_road_pooling=_arg_get(args, 'student_road_pooling', 'attention'),
         # Nocturne Teacher parameters
-        random_teacher=vars(args).get('random_teacher', False))
+        random_teacher=_arg_get(args, 'random_teacher', False))
 
     actor_critic = actor_critic.to(device)
 
@@ -373,7 +382,7 @@ def make_agent(name, env, args, device='cpu'):
     use_proper_time_limits = \
         hasattr(env, 'get_max_episode_steps') \
         and env.get_max_episode_steps() is not None \
-        and vars(args).get('handle_timelimits', False)
+        and _arg_get(args, 'handle_timelimits', False)
 
     if args.algo == 'ppo':
         # Create PPO
