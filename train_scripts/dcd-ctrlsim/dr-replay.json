@@ -79,7 +79,10 @@
 
     "__note8__": ["student vehicle setup"],
     "student_hidden_dim": [256],
+    "student_top_k_road": [200],
     "early_termination": [true],
+    "student_partner_pooling": ["attention"],
+    "student_road_pooling": ["attention"],
 
     "__note9__": ["inference parameters"],
     "sparse_inference_action_repeat": [true],

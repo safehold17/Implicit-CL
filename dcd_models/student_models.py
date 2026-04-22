@@ -19,6 +19,64 @@ from envs.nocturne_ctrlsim.student.observation_action import (
 )
 
 
+class QueryAttentionPooling(nn.Module):
+    """Pool a token set with an ego-conditioned attention query."""
+
+    def __init__(self, dim: int, dropout: float = 0.0):
+        super().__init__()
+        num_heads = 4 if dim % 4 == 0 else 1
+        self.attn = nn.MultiheadAttention(
+            embed_dim=dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm1 = nn.LayerNorm(dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, dim * 3),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * 3, dim),
+        )
+        self.norm2 = nn.LayerNorm(dim)
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        tokens: torch.Tensor,
+        key_padding_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Pool tokens into a single embedding per batch item."""
+        if tokens.shape[1] == 0:
+            return torch.zeros_like(query)
+
+        mask = key_padding_mask.to(dtype=torch.bool)
+        fully_padded = mask.all(dim=1)
+        if fully_padded.any():
+            # MultiheadAttention becomes unstable when every token is masked for
+            # a batch item. Temporarily expose one token to keep attention
+            # numerically defined. This does not change the final semantics
+            # because fully padded rows are overwritten with zeros below.
+            mask = mask.clone()
+            mask[fully_padded, 0] = False
+
+        attn_out, _ = self.attn(
+            query.unsqueeze(1),
+            tokens,
+            tokens,
+            key_padding_mask=mask,
+        )
+        pooled = self.norm1(query + attn_out.squeeze(1))
+        pooled = self.norm2(pooled + self.ffn(pooled))
+
+        if fully_padded.any():
+            pooled = pooled.clone()
+            # Restore the intended semantics: rows with no valid tokens should
+            # contribute a zero pooled embedding.
+            pooled[fully_padded] = 0.0
+        return pooled
+
+
 class LateFusionBase(nn.Module):
     """
     Late Fusion feature extraction base class
@@ -43,6 +101,8 @@ class LateFusionBase(nn.Module):
         top_k_road_points: int = 200,
         dropout: float = 0.0,
         act_func: str = "tanh",
+        student_partner_pooling: str = "attention",
+        student_road_pooling: str = "attention",
     ):
         super().__init__()
         
@@ -52,10 +112,26 @@ class LateFusionBase(nn.Module):
         self.max_observable_agents = max_controlled_agents - 1
         self.top_k_road_points = top_k_road_points
         self.num_modes = 3  # Ego, Partner, Road Graph
+        self.road_type_feat_dim = 7
+        self.student_partner_pooling = student_partner_pooling
+        self.student_road_pooling = student_road_pooling
         self.observation_config = StudentObservationConfig(
             max_neighbors=self.max_observable_agents,
             top_k_road_points=self.top_k_road_points,
         )
+        self.road_geom_feat_dim = (
+            self.observation_config.road_graph_feat_dim - self.road_type_feat_dim
+        )
+        if self.student_partner_pooling not in {"attention", "max"}:
+            raise ValueError(
+                "student_partner_pooling must be 'attention' or 'max', "
+                f"got {self.student_partner_pooling}"
+            )
+        if self.student_road_pooling not in {"attention", "max"}:
+            raise ValueError(
+                "student_road_pooling must be 'attention' or 'max', "
+                f"got {self.student_road_pooling}"
+            )
         
         # activation function
         if act_func == "tanh":
@@ -87,16 +163,32 @@ class LateFusionBase(nn.Module):
             nn.Dropout(dropout),
             self._layer_init(nn.Linear(input_dim, input_dim)),
         )
+        self.partner_attention_embed = QueryAttentionPooling(
+            input_dim,
+            dropout=dropout,
+        )
         
-        # Road Graph embedding
-        self.road_map_embed = nn.Sequential(
+        # Road geometry embedding
+        self.road_geom_embed = nn.Sequential(
             self._layer_init(
-                nn.Linear(self.observation_config.road_graph_feat_dim, input_dim)
+                nn.Linear(self.road_geom_feat_dim, input_dim)
             ),
             nn.LayerNorm(input_dim),
             self.act_func,
             nn.Dropout(dropout),
             self._layer_init(nn.Linear(input_dim, input_dim)),
+        )
+        self.road_type_embed = nn.Sequential(
+            self._layer_init(
+                nn.Linear(self.road_type_feat_dim, input_dim)
+            ),
+            self.act_func,
+            nn.Dropout(dropout),
+            self._layer_init(nn.Linear(input_dim, input_dim)),
+        )
+        self.road_attention_embed = QueryAttentionPooling(
+            input_dim,
+            dropout=dropout,
         )
         
         # Fusion layer
@@ -128,6 +220,22 @@ class LateFusionBase(nn.Module):
             self.observation_config,
         )
         return ego_state, road_objects, road_graph
+
+    def _build_padding_mask(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Return True for padding rows that should be ignored."""
+        # Padding is encoded as an all-zero raw token row in the flattened obs.
+        # Build this mask before the embedding MLP because the downstream
+        # Linear/LayerNorm stack destroys that zero pattern. After embedding we
+        # can no longer reliably distinguish padding rows from real tokens.
+        return tokens.eq(0).all(dim=-1)
+
+    def _encode_road_tokens(self, road_graph: torch.Tensor) -> torch.Tensor:
+        """Encode road tokens with separate geometry and type branches."""
+        road_geom = road_graph[..., : self.road_geom_feat_dim]
+        road_type = road_graph[..., self.road_geom_feat_dim :]
+        road_geom_tokens = self.road_geom_embed(road_geom)
+        road_type_tokens = self.road_type_embed(road_type)
+        return road_geom_tokens + road_type_tokens
     
     def encode_observations(self, observation: torch.Tensor) -> torch.Tensor:
         """
@@ -143,12 +251,30 @@ class LateFusionBase(nn.Module):
         
         # Independent embedding for each modality
         ego_embed = self.ego_embed(ego_state)
-        
-        # Partner: embed then max pooling
-        partner_embed, _ = self.partner_embed(road_objects).max(dim=1)
-        
-        # Road Graph: embed then max pooling
-        road_map_embed, _ = self.road_map_embed(road_graph).max(dim=1)
+        # Build masks from the raw token tensors, not from the embedded tokens.
+        # Raw zero rows are the only stable representation of padding.
+        partner_padding_mask = self._build_padding_mask(road_objects)
+        road_padding_mask = self._build_padding_mask(road_graph)
+        partner_tokens = self.partner_embed(road_objects)
+        road_tokens = self._encode_road_tokens(road_graph)
+
+        if self.student_partner_pooling == "attention":
+            partner_embed = self.partner_attention_embed(
+                ego_embed,
+                partner_tokens,
+                partner_padding_mask,
+            )
+        else:
+            partner_embed, _ = partner_tokens.max(dim=1)
+
+        if self.student_road_pooling == "attention":
+            road_map_embed = self.road_attention_embed(
+                ego_embed,
+                road_tokens,
+                road_padding_mask,
+            )
+        else:
+            road_map_embed, _ = road_tokens.max(dim=1)
         
         # Concatenate all embeddings
         embed = torch.cat([ego_embed, partner_embed, road_map_embed], dim=1)
@@ -202,6 +328,8 @@ class StudentPolicy(DeviceAwareModule):
         top_k_road_points: int = 200,
         dropout: float = 0.0,
         act_func: str = "tanh",
+        student_partner_pooling: str = "attention",
+        student_road_pooling: str = "attention",
         recurrent: bool = False,
         base_kwargs=None,
     ):
@@ -218,6 +346,8 @@ class StudentPolicy(DeviceAwareModule):
             top_k_road_points=top_k_road_points,
             dropout=dropout,
             act_func=act_func,
+            student_partner_pooling=student_partner_pooling,
+            student_road_pooling=student_road_pooling,
         )
 
         if isinstance(obs_shape, (tuple, list)):

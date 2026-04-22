@@ -139,6 +139,8 @@ def model_for_nocturne_agent(
     top_k_road_points=64,
     dropout=0.0,
     act_func="tanh",
+    student_partner_pooling="attention",
+    student_road_pooling="attention",
     recurrent=False,
     recurrent_arch=None,
     random_teacher=False,
@@ -153,6 +155,8 @@ def model_for_nocturne_agent(
         top_k_road_points: Number of road points to consider (R)
         dropout: Dropout probability
         act_func: Activation function ("tanh" or "gelu")
+        student_partner_pooling: Pooling mode for partner tokens
+        student_road_pooling: Pooling mode for road tokens
         recurrent: Whether to use recurrent network (adversary env only, for enhancement)
         recurrent_arch: RNN architecture type ('lstm' or 'gru', Teacher only)
         random_teacher: Whether to use random Teacher (baseline comparison)
@@ -190,6 +194,8 @@ def model_for_nocturne_agent(
         top_k_road_points=top_k_road_points,
         dropout=dropout,
         act_func=act_func,
+        student_partner_pooling=student_partner_pooling,
+        student_road_pooling=student_road_pooling,
     )
     
     return model
@@ -217,6 +223,8 @@ def model_for_env_agent(
     student_top_k_road=64,
     student_dropout=0.0,
     student_act_func="tanh",
+    student_partner_pooling="attention",
+    student_road_pooling="attention",
     # Nocturne Teacher parameters
     random_teacher=False):
     assert agent_type in ['agent', 'adversary_agent', 'adversary_env']
@@ -258,6 +266,8 @@ def model_for_env_agent(
             top_k_road_points=student_top_k_road,
             dropout=student_dropout,
             act_func=student_act_func,
+            student_partner_pooling=student_partner_pooling,
+            student_road_pooling=student_road_pooling,
             recurrent=recurrent_arch is not None if is_teacher else False,
             recurrent_arch=recurrent_arch if is_teacher else None,
             random_teacher=random_teacher,
@@ -316,6 +326,8 @@ def make_agent(name, env, args, device='cpu'):
         student_top_k_road=vars(args).get('student_top_k_road', 64),
         student_dropout=vars(args).get('student_dropout', 0.0),
         student_act_func=vars(args).get('student_act_func', 'tanh'),
+        student_partner_pooling=vars(args).get('student_partner_pooling', 'attention'),
+        student_road_pooling=vars(args).get('student_road_pooling', 'attention'),
         # Nocturne Teacher parameters
         random_teacher=vars(args).get('random_teacher', False))
 

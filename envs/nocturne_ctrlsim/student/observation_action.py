@@ -20,6 +20,14 @@ ROAD_FEATURE_DIM = 13
 ROAD_TYPE_DIM = 7
 ROAD_TYPE_ONEHOT = np.eye(ROAD_TYPE_DIM, dtype=np.float32)
 
+# taken from GPUDriving
+MAX_SPEED = 100.0
+MAX_VEH_LEN = 30.0
+MAX_VEH_WIDTH = 15.0
+MAX_REL_COORD = 1000.0
+MAX_ORIENTATION_RAD = float(2.0 * np.pi)
+MAX_ROAD_LINE_SEGMENT_LEN = 100.0
+
 
 @dataclass(frozen=True)
 class StudentObservationConfig:
@@ -125,6 +133,16 @@ def _normalize_angle_to_target(
     """Return wrapped angle deltas from current angles to a shared target."""
     diff = (float(target_angle) - current_angles + np.pi) % (2.0 * np.pi) - np.pi
     return diff.astype(np.float32)
+
+
+def _normalize_by_scale(values, scale: float):
+    """Normalize values by a fixed scale without clipping."""
+    return np.asarray(values, dtype=np.float32) / np.float32(scale)
+
+
+def _normalize_relative_coord(values):
+    """Normalize relative coordinates into [-1, 1]."""
+    return _normalize_by_scale(values, MAX_REL_COORD)
 
 
 def refresh_student_vehicle_cache(env) -> None:
@@ -294,9 +312,12 @@ def build_road_graph_obs_np(
     # Write directly into a reshaped view of ``out`` — eliminates a separate
     # (num_selected, ROAD_FEATURE_DIM) allocation and the final flatten+copy.
     rows = out[: num_selected * ROAD_FEATURE_DIM].reshape(num_selected, ROAD_FEATURE_DIM)
-    rows[:, 0] = rel_x[selected_indices]
-    rows[:, 1] = rel_y[selected_indices]
-    rows[:, 2] = road_graph_np["seg_len"][selected_indices]
+    rows[:, 0] = _normalize_relative_coord(rel_x[selected_indices])
+    rows[:, 1] = _normalize_relative_coord(rel_y[selected_indices])
+    rows[:, 2] = _normalize_by_scale(
+        road_graph_np["seg_len"][selected_indices],
+        MAX_ROAD_LINE_SEGMENT_LEN,
+    )
 
     # Legacy constant channels for compatibility with current 13-dim road feature layout.
     rows[:, 3] = 1.0
@@ -311,7 +332,7 @@ def build_road_graph_obs_np(
         rows[selected_is_line, 5] = _normalize_angle_to_target(
             selected_orientations[selected_is_line],
             -angle,
-        )
+        ) / np.float32(MAX_ORIENTATION_RAD)
 
     rows[:, 6:] = ROAD_TYPE_ONEHOT[road_graph_np["type_idx"][selected_indices]]
     return out
@@ -362,12 +383,18 @@ def get_student_observation(env) -> np.ndarray:
     )
     collision_state = 1.0 if env._collision_occurred else 0.0
 
-    obs[0] = ego_speed
+    obs[0] = _normalize_by_scale(ego_speed, MAX_SPEED)
     # Use episode-cached ego geometry (constant for the whole episode).
-    obs[1] = getattr(env, "_ego_length", env.ego_vehicle.getLength())
-    obs[2] = getattr(env, "_ego_width", env.ego_vehicle.getWidth())
-    obs[3] = rel_goal_x
-    obs[4] = rel_goal_y
+    obs[1] = _normalize_by_scale(
+        getattr(env, "_ego_length", env.ego_vehicle.getLength()),
+        MAX_VEH_LEN,
+    )
+    obs[2] = _normalize_by_scale(
+        getattr(env, "_ego_width", env.ego_vehicle.getWidth()),
+        MAX_VEH_WIDTH,
+    )
+    obs[3] = _normalize_relative_coord(rel_goal_x)
+    obs[4] = _normalize_relative_coord(rel_goal_y)
     obs[5] = collision_state
 
     max_neighbors = getattr(env, "_max_observable_agents", 16)
@@ -386,12 +413,28 @@ def get_student_observation(env) -> np.ndarray:
         obs_partner_view = obs[
             partner_start : partner_start + count * PARTNER_FEAT_DIM
         ].reshape(count, PARTNER_FEAT_DIM)
-        obs_partner_view[:, 0] = selected_partners["speeds"]
-        obs_partner_view[:, 1] = selected_partners["rel_pos_x"]
-        obs_partner_view[:, 2] = selected_partners["rel_pos_y"]
-        obs_partner_view[:, 3] = selected_partners["rel_heading"]
-        obs_partner_view[:, 4] = selected_partners["lengths"]
-        obs_partner_view[:, 5] = selected_partners["widths"]
+        obs_partner_view[:, 0] = _normalize_by_scale(
+            selected_partners["speeds"],
+            MAX_SPEED,
+        )
+        obs_partner_view[:, 1] = _normalize_relative_coord(
+            selected_partners["rel_pos_x"]
+        )
+        obs_partner_view[:, 2] = _normalize_relative_coord(
+            selected_partners["rel_pos_y"]
+        )
+        obs_partner_view[:, 3] = _normalize_by_scale(
+            selected_partners["rel_heading"],
+            MAX_ORIENTATION_RAD,
+        )
+        obs_partner_view[:, 4] = _normalize_by_scale(
+            selected_partners["lengths"],
+            MAX_VEH_LEN,
+        )
+        obs_partner_view[:, 5] = _normalize_by_scale(
+            selected_partners["widths"],
+            MAX_VEH_WIDTH,
+        )
 
     road_start = EGO_FEAT_DIM + max_neighbors * PARTNER_FEAT_DIM
     road_graph_np = getattr(env, "_road_graph_np", None)

@@ -853,6 +853,20 @@ parser.add_argument(
     choices=["tanh", "gelu", "relu"],
     help="The activation function of the Student network",
 )
+parser.add_argument(
+    "--student_partner_pooling",
+    type=str,
+    default="attention",
+    choices=["attention", "max"],
+    help="Pooling mode for partner tokens in the Student network.",
+)
+parser.add_argument(
+    "--student_road_pooling",
+    type=str,
+    default="attention",
+    choices=["attention", "max"],
+    help="Pooling mode for road tokens in the Student network.",
+)
 
 # ============== Nocturne-Ctrlsim environment configuration parameter ==============
 parser.add_argument(
