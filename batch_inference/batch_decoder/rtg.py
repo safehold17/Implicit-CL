@@ -319,27 +319,28 @@ def decode_rtg_jobs_batched_impl(
         job_idx_t = torch.as_tensor(decode_meta["job_idx"], dtype=torch.long, device=device)
     else:
         job_idx_t = job_idx_t.to(device=device, dtype=torch.long)
-    continuous_all = continuous_unique[inverse_t]
-    row_count = int(job_idx_t.shape[0])
+    unique_output_job_idx = job_idx_t[unique_row_indices_t]
+    unique_output_veh_id = veh_id_t[unique_row_indices_t]
+    unique_count = int(unique_row_indices_t.shape[0])
     ordered_row_indices_t = torch.argsort(
-        job_idx_t * row_count + torch.arange(row_count, device=device)
+        unique_output_job_idx * max(unique_count, 1) + unique_row_indices_t
     )
     sorted_job_idx = (
-        job_idx_t[ordered_row_indices_t]
+        unique_output_job_idx[ordered_row_indices_t]
         .detach()
         .cpu()
         .numpy()
         .astype(np.int64, copy=False)
     )
     sorted_veh_id = (
-        veh_id_t[ordered_row_indices_t]
+        unique_output_veh_id[ordered_row_indices_t]
         .detach()
         .cpu()
         .numpy()
         .astype(np.int64, copy=False)
     )
     sorted_values = (
-        continuous_all[ordered_row_indices_t]
+        continuous_unique[ordered_row_indices_t]
         .detach()
         .cpu()
         .numpy()

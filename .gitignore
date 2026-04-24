@@ -13,7 +13,7 @@ nocturne.egg-info/
 *.pyc
 .codex
 
-
+/tmp
 /vibe
 /docs
 /tests

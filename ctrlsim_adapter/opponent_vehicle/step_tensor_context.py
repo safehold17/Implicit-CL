@@ -43,6 +43,7 @@ class StepTensorContext:
     latest_dense_rewards: np.ndarray | None = None  # Updated-vehicle dense reward vectors.
     latest_nearest_dist: np.ndarray | None = None  # Updated-vehicle nearest distances.
     latest_rtgs: np.ndarray | None = None  # Updated-vehicle RTG vectors.
+    current_rtgs: np.ndarray | None = None  # Updated-vehicle current-step RTG vectors.
     latest_actions: np.ndarray | None = None  # Updated-vehicle latest actions with shape `[U, 2]`.
     context_vehicle_ids: List[int] | None = None  # Vehicle ids participating in reward context.
     context_positions_xy: np.ndarray | None = None  # Reward-context xy positions.
@@ -389,11 +390,22 @@ def _update_policy_window_cache_incrementally(
         cache.actions_values[:, :-1] = cache.actions_values[:, 1:]
         cache.rtgs_values[:, :-1] = cache.rtgs_values[:, 1:]
         cache.shared_timesteps[:, :-1] = cache.shared_timesteps[:, 1:]
-        update_col = current_width - 1
     else:
         return False
 
-    action_tail = policy.actions[:, t : t + 1].copy()
+    def window_column(abs_index: int) -> int | None:
+        """Map an absolute policy timestep to the current cached window column."""
+        col = int(abs_index) - int(window_start)
+        if col < 0 or col >= current_width:
+            return None
+        return col
+
+    action_source_index = max(int(t) - 1, 0)
+    action_update_col = window_column(action_source_index)
+    if action_update_col is None:
+        return False
+
+    action_tail = policy.actions[:, action_source_index : action_source_index + 1].copy()
     action_tail_buffer = _get_or_create_prepare_buffer(
         adapter=adapter,
         name="actions_tail_buffer",
@@ -409,34 +421,45 @@ def _update_policy_window_cache_incrementally(
         max_value=int(cache.action_dim) - 1,
     )
     if cache.actions_values.ndim == 2:
-        cache.actions_values[:, update_col] = sanitized_action_tail.reshape((-1,))
+        cache.actions_values[:, action_update_col] = sanitized_action_tail.reshape((-1,))
     else:
-        cache.actions_values[:, update_col] = sanitized_action_tail[:, 0]
+        cache.actions_values[:, action_update_col] = sanitized_action_tail[:, 0]
 
-    rtg_tail = policy.rtgs[:, t : t + 1].copy()
-    _normalize_rtgs_inplace(rtg_tail, policy.cfg_rl_waymo)
-    if bool(policy.discretize_rtgs):
-        rtg_tail_buffer = _get_or_create_prepare_buffer(
-            adapter=adapter,
-            name="rtgs_tail_buffer",
-            shape=(rtg_tail.shape[0] + 1, *rtg_tail.shape[1:]),
-            dtype=np.dtype(rtg_tail.dtype),
+    rtg_source_indices = {action_source_index}
+    if bool(getattr(policy, "real_time_rewards", False)) and bool(
+        getattr(policy, "use_rtg", False)
+    ):
+        rtg_source_indices.add(int(t))
+    for rtg_source_index in sorted(rtg_source_indices):
+        rtg_update_col = window_column(rtg_source_index)
+        if rtg_update_col is None:
+            continue
+        rtg_tail = policy.rtgs[:, rtg_source_index : rtg_source_index + 1].copy()
+        _normalize_rtgs_inplace(rtg_tail, policy.cfg_rl_waymo)
+        if bool(policy.discretize_rtgs):
+            rtg_tail_buffer = _get_or_create_prepare_buffer(
+                adapter=adapter,
+                name="rtgs_tail_buffer",
+                shape=(rtg_tail.shape[0] + 1, *rtg_tail.shape[1:]),
+                dtype=np.dtype(rtg_tail.dtype),
+            )
+            rtg_tail_buffer.fill(0)
+            rtg_tail_buffer[: rtg_tail.shape[0]] = rtg_tail
+            rtg_tail_discrete = adapter.dataset.discretize_rtgs(rtg_tail_buffer)
+            cache.rtgs_values[:, rtg_update_col] = _sanitize_index_array(
+                rtg_tail_discrete[: rtg_tail.shape[0]],
+                min_value=0,
+                max_value=int(cache.rtg_discretization) - 1,
+            )[:, 0]
+        else:
+            cache.rtgs_values[:, rtg_update_col] = rtg_tail[:, 0]
+
+    timestep_update_col = window_column(int(t))
+    if timestep_update_col is not None:
+        cache.shared_timesteps[:, timestep_update_col] = np.asarray(
+            policy.timesteps[0, t : t + 1],
+            dtype=np.int64,
         )
-        rtg_tail_buffer.fill(0)
-        rtg_tail_buffer[: rtg_tail.shape[0]] = rtg_tail
-        rtg_tail_discrete = adapter.dataset.discretize_rtgs(rtg_tail_buffer)
-        cache.rtgs_values[:, update_col] = _sanitize_index_array(
-            rtg_tail_discrete[: rtg_tail.shape[0]],
-            min_value=0,
-            max_value=int(cache.rtg_discretization) - 1,
-        )[:, 0]
-    else:
-        cache.rtgs_values[:, update_col] = rtg_tail[:, 0]
-
-    cache.shared_timesteps[:, update_col] = np.asarray(
-        policy.timesteps[0, t : t + 1],
-        dtype=np.int64,
-    )
     return True
 
 
@@ -532,6 +555,35 @@ def _get_step_or_last(entries: List[Any], t: int) -> Any:
     if t < len(entries):
         return entries[t]
     return entries[-1]
+
+
+def _get_rtg_history_row(
+    vehicle_data: Dict[str, Any],
+    rtg_index: int,
+) -> np.ndarray | None:
+    """Return one RTG history row if it exists."""
+    rtg_history = vehicle_data.get("rtgs")
+    if not rtg_history:
+        return None
+    if len(rtg_history) <= rtg_index:
+        return None
+    return np.asarray(rtg_history[rtg_index], dtype=np.float32)
+
+
+def _get_previous_policy_sync_rtg(
+    vehicle_data: Dict[str, Any],
+    t: int,
+) -> np.ndarray | None:
+    """Return the RTG row written back to policy timestep t-1."""
+    return _get_rtg_history_row(vehicle_data, max(int(t) - 1, 0))
+
+
+def _get_current_policy_sync_rtg(
+    vehicle_data: Dict[str, Any],
+    t: int,
+) -> np.ndarray | None:
+    """Return the RTG row written back to policy timestep t."""
+    return _get_rtg_history_row(vehicle_data, int(t))
 
 
 def _stack_xy(vehicle_data_list: List[Dict[str, Any]], t: int, key: str) -> np.ndarray:
@@ -638,6 +690,7 @@ def build_runtime_step_tensor_context(
     latest_rewards_list: List[np.ndarray] = []
     latest_dense_rewards_list: List[np.ndarray] = []
     latest_rtgs_list: List[np.ndarray] = []
+    current_rtgs_list: List[np.ndarray] = []
     latest_nearest_dist = np.zeros((len(vehicle_data_list),), dtype=np.float32)
     latest_actions = np.zeros((len(vehicle_data_list), 2), dtype=np.float32)
     for index, vehicle_data in enumerate(vehicle_data_list):
@@ -666,14 +719,12 @@ def build_runtime_step_tensor_context(
             np.asarray(dense_reward_value, dtype=np.float32)
         )
 
-        if use_rtg and vehicle_data.get("rtgs"):
-            latest_rtgs_list.append(
-                np.asarray(vehicle_data["rtgs"][-1], dtype=np.float32)
-            )
-        elif vehicle_data.get("rtgs"):
-            latest_rtgs_list.append(
-                np.asarray(vehicle_data["rtgs"][-1], dtype=np.float32)
-            )
+        rtg_value = _get_previous_policy_sync_rtg(vehicle_data, t)
+        if rtg_value is not None:
+            latest_rtgs_list.append(rtg_value)
+        current_rtg_value = _get_current_policy_sync_rtg(vehicle_data, t)
+        if current_rtg_value is not None:
+            current_rtgs_list.append(current_rtg_value)
 
         if vehicle_data.get("nearest_dist"):
             latest_nearest_dist[index] = float(vehicle_data["nearest_dist"][-1])
@@ -695,6 +746,11 @@ def build_runtime_step_tensor_context(
     latest_rtgs = (
         np.stack(latest_rtgs_list, axis=0)
         if latest_rtgs_list and latest_rtgs_list[0].size > 0
+        else np.zeros((len(vehicle_data_list), 0), dtype=np.float32)
+    )
+    current_rtgs = (
+        np.stack(current_rtgs_list, axis=0)
+        if current_rtgs_list and current_rtgs_list[0].size > 0
         else np.zeros((len(vehicle_data_list), 0), dtype=np.float32)
     )
 
@@ -751,6 +807,7 @@ def build_runtime_step_tensor_context(
         latest_dense_rewards=latest_dense_rewards,
         latest_nearest_dist=latest_nearest_dist,
         latest_rtgs=latest_rtgs,
+        current_rtgs=current_rtgs,
         latest_actions=latest_actions,
         context_vehicle_ids=context_vehicle_ids,
         context_positions_xy=context_positions_xy,

@@ -27,7 +27,7 @@ def pack_model_outputs(model_outputs: Optional[Dict[str, Any]]) -> Optional[Dict
     validate_model_outputs_payload(model_outputs)
     model_outputs_typed = cast(ModelOutputsPayload, model_outputs)
     status = require_valid_status(model_outputs_typed["status"], "model_outputs")
-    return {
+    packed = {
         "ipc_format": MODEL_OUTPUTS_IPC_FORMAT,
         "status": status,
         "env_idx": np.int32(int(model_outputs_typed["env_idx"])),
@@ -43,6 +43,7 @@ def pack_model_outputs(model_outputs: Optional[Dict[str, Any]]) -> Optional[Dict
         "processed_rtg_veh_ids": as_int32_array(model_outputs_typed["processed_rtg_veh_ids"]),
         "dead_ids": as_int32_array(model_outputs_typed["dead_ids"]),
     }
+    return packed
 
 
 def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -72,7 +73,7 @@ def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str,
         "packed model_outputs payload",
     )
     status = require_valid_status(packed["status"], "packed model_outputs payload")
-    return {
+    unpacked = {
         "status": status,
         "env_idx": int(packed["env_idx"]),
         "step_t": int(packed["step_t"]),
@@ -88,3 +89,4 @@ def unpack_model_outputs(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str,
         ),
         "dead_ids": np.asarray(packed["dead_ids"], dtype=np.int64),
     }
+    return unpacked

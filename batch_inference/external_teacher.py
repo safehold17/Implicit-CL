@@ -272,13 +272,10 @@ class ExternalTeacher:
     def _decode_prepared_batch(
         self, per_env_prepared: List[Optional[Dict[str, Any]]]
     ) -> List[Optional[Dict[str, Any]]]:
-        decoded_prepared: List[Optional[Dict[str, Any]]] = []
-        for prepared in per_env_prepared:
-            if prepared is None:
-                decoded_prepared.append(None)
-                continue
-            decoded_prepared.append(unpack_prepared(prepared))
-        return decoded_prepared
+        return [
+            None if prepared is None else unpack_prepared(prepared)
+            for prepared in per_env_prepared
+        ]
 
     def _pack_outputs(
         self, outputs: List[Optional[Dict[str, Any]]]
@@ -424,6 +421,8 @@ class ExternalTeacher:
         normalized_rtg_error: float,
     ) -> None:
         """Accumulate one effective reweighting sample into update-level means."""
+        if not hasattr(self, "_policy_reweighting_update_accumulator"):
+            self._reset_policy_reweighting_update_accumulator()
         stats = self._policy_reweighting_update_accumulator
         stats["count"] += 1.0
         stats["effective_scale_sum"] += float(effective_scale)

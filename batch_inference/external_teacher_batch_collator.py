@@ -253,6 +253,7 @@ def build_decode_metadata(
     action_idx_in_model_parts: List[np.ndarray] = []
     action_token_index_parts: List[np.ndarray] = []
     action_veh_id_parts: List[np.ndarray] = []
+    action_env_idx_parts: List[np.ndarray] = []
     action_step_t_parts: List[np.ndarray] = []
     action_sampling_seed_parts: List[np.ndarray] = []
     action_temperature_parts: List[np.ndarray] = []
@@ -273,7 +274,6 @@ def build_decode_metadata(
     rtg_road_tilt_parts: List[np.ndarray] = []
     rtg_effective_scale_parts: List[np.ndarray] = []
     rtg_job_offsets = [0]
-
     for batch_idx, job in enumerate(jobs):
         prepared = job["prepared"]
         focal_idx = int(job["focal_idx"])
@@ -301,6 +301,9 @@ def build_decode_metadata(
             )
             action_veh_id_parts.append(
                 data_veh_ids[valid_action_mask].astype(np.int64, copy=False)
+            )
+            action_env_idx_parts.append(
+                np.full((valid_action_count,), int(job["env_idx"]), dtype=np.int64)
             )
             action_step_t_parts.append(
                 np.full((valid_action_count,), step_t, dtype=np.int64)
@@ -384,6 +387,7 @@ def build_decode_metadata(
     return {
         "action": {
             "job_idx": _concat_or_empty(action_job_idx_parts, dtype=np.int64),
+            "env_idx": _concat_or_empty(action_env_idx_parts, dtype=np.int64),
             "idx_in_model": _concat_or_empty(action_idx_in_model_parts, dtype=np.int64),
             "token_index": _concat_or_empty(action_token_index_parts, dtype=np.int64),
             "veh_id": _concat_or_empty(action_veh_id_parts, dtype=np.int64),

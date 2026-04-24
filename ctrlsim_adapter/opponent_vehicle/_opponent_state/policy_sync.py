@@ -82,11 +82,11 @@ def update_policy_state(service: Any, t: int) -> None:
                 rtgs[policy_vehicle_indices, t - 1] = step_tensor_context.latest_rtgs
         if (
             use_real_time_rtgs
-            and step_tensor_context.latest_rtgs is not None
-            and step_tensor_context.latest_rtgs.shape[0] == len(policy_vehicle_indices)
-            and step_tensor_context.latest_rtgs.shape[1] > 0
+            and step_tensor_context.current_rtgs is not None
+            and step_tensor_context.current_rtgs.shape[0] == len(policy_vehicle_indices)
+            and step_tensor_context.current_rtgs.shape[1] > 0
         ):
-            rtgs[policy_vehicle_indices, t] = step_tensor_context.latest_rtgs
+            rtgs[policy_vehicle_indices, t] = step_tensor_context.current_rtgs
 
         goal_width = min(int(goal_dim), int(step_tensor_context.goals_state.shape[1]))
         goals[policy_vehicle_indices, t, :goal_width] = step_tensor_context.goals_state[

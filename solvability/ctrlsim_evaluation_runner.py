@@ -44,6 +44,7 @@ class CtrlSimEgoWrapper:
         student_accel_discretization: int = 20,
         student_steer_discretization: int = 50,
         collect_ego_ctrlsim_rtg: bool = False,
+        opponent_runtime_mode: str = "normal",
         **_kwargs,
     ):
         self.env = NocturneCtrlSimAdversarial(
@@ -64,6 +65,7 @@ class CtrlSimEgoWrapper:
             sparse_inference_action_repeat=sparse_inference_action_repeat,
             student_accel_discretization=student_accel_discretization,
             student_steer_discretization=student_steer_discretization,
+            opponent_runtime_mode=opponent_runtime_mode,
         )
         self.tilting_mode = tilting_mode
         self.device = device
@@ -85,6 +87,9 @@ class CtrlSimEgoWrapper:
             cfg=self.env.cfg,
             checkpoint_path=self.checkpoint_path,
             device=self.device,
+            action_repeat_frequency=action_repeat_frequency,
+            kl_loss_computation_frequency=kl_loss_computation_frequency,
+            sparse_inference_action_repeat=sparse_inference_action_repeat,
             use_enhanced_regret=self.collect_ego_ctrlsim_rtg,
         )
         self.ego_adapter.set_tilting(0, 0, 0)
@@ -175,13 +180,16 @@ class CtrlSimEgoWrapper:
             return self.env._ego_goal_dict.get("pos")
         return None
 
-    def _is_within_goal(self, veh, goal_pos) -> bool:
+    def _is_within_goal(self, veh, goal_pos, *, tolerance: float | None = None) -> bool:
         """Check whether one vehicle is within the goal tolerance."""
         if veh is None or goal_pos is None:
             return False
         pos = veh.getPosition()
         dist = np.linalg.norm(goal_pos - np.array([pos.x, pos.y]))
-        return dist < self.goal_pos_tolerance
+        goal_tolerance = (
+            self.goal_pos_tolerance if tolerance is None else float(tolerance)
+        )
+        return bool(dist < goal_tolerance)
 
     def _stop_vehicle(self, veh) -> str:
         """Stop one vehicle using the first supported API."""
@@ -216,6 +224,7 @@ class CtrlSimEgoWrapper:
 
     def _update_opponent_stop_states(self) -> None:
         """Freeze opponents once they reach their goals."""
+        goal_tolerance = float(getattr(self.env, "goal_pos_tolerance", 2.0))
         for veh in self.env.opponent_vehicles:
             if veh is None:
                 continue
@@ -226,16 +235,24 @@ class CtrlSimEgoWrapper:
             if veh_id in self._opponent_reached_goal_ids:
                 self._stop_vehicle(veh)
                 continue
-            if self._is_within_goal(veh, goal_pos):
+            if self._is_within_goal(veh, goal_pos, tolerance=goal_tolerance):
                 self._opponent_reached_goal_ids.add(veh_id)
                 self._stop_vehicle(veh)
 
     def _ego_reached_goal(self) -> bool:
         """Return whether ego is within the goal tolerance."""
+        if bool(getattr(self.env, "_position_reached", False)):
+            return True
         if self.ego_id is None or self.env.ego_vehicle is None:
             return False
         goal_pos = self._get_goal_pos(self.ego_id)
-        return self._is_within_goal(self.env.ego_vehicle, goal_pos)
+        if goal_pos is None:
+            return False
+        return self._is_within_goal(
+            self.env.ego_vehicle,
+            goal_pos,
+            tolerance=float(getattr(self.env, "goal_pos_tolerance", 2.0)),
+        )
 
     def reset_random(self):
         """Reset the wrapped env by sampling a random level."""
@@ -272,8 +289,14 @@ class CtrlSimEgoWrapper:
     def _postprocess_step(self, obs, reward, done, info):
         """Update post-step episode state and enrich step info."""
         self._update_opponent_stop_states()
-        position_reached = self._ego_reached_goal()
-        if position_reached:
+        info = dict(info)
+        position_reached = bool(info.get("position_reached", 0.0)) or self._ego_reached_goal()
+        position_reached_occurred = (
+            bool(info.get("position_reached_occurred", 0.0))
+            or self._episode_position_reached
+            or position_reached
+        )
+        if position_reached_occurred:
             self._episode_position_reached = True
 
         if position_reached and not done:
@@ -283,14 +306,19 @@ class CtrlSimEgoWrapper:
             if hasattr(self.env, "_get_info"):
                 info = self.env._get_info()
             else:
-                info = dict(info)
                 info.setdefault(
                     "episode",
                     {"r": reward, "l": self.env.current_step},
                 )
-        info = dict(info)
+            info = dict(info)
+            position_reached = bool(info.get("position_reached", 0.0)) or position_reached
+            position_reached_occurred = (
+                bool(info.get("position_reached_occurred", 0.0))
+                or self._episode_position_reached
+                or position_reached
+            )
         info["position_reached"] = float(position_reached)
-        info["position_reached_occurred"] = float(self._episode_position_reached)
+        info["position_reached_occurred"] = float(position_reached_occurred)
         if done:
             self._stop_recording()
         return obs, reward, done, info
@@ -371,7 +399,17 @@ class CtrlSimEgoWrapper:
     def step_complete(self, model_outputs):
         """Apply teacher outputs and advance the wrapped environment."""
         ego_actions = self.ego_adapter.apply_predictions(model_outputs.get("ego"))
-        accel, steer = ego_actions.get(self.ego_id, (0.0, 0.0))
+        if self.ego_id in ego_actions:
+            accel, steer = ego_actions[self.ego_id]
+        else:
+            history_steps = int(getattr(self.ego_adapter, "history_steps", 0))
+            current_step = int(getattr(self.env, "current_step", 0))
+            if self.ego_id is not None and current_step >= history_steps - 1:
+                raise ValueError(
+                    f"Missing ego CtrlSim action for ego_id={self.ego_id} "
+                    f"at step={current_step}."
+                )
+            accel, steer = 0.0, 0.0
 
         runtime_mode = getattr(self.env, "opponent_runtime_mode", "normal")
         opponent_actions = {}
@@ -463,6 +501,43 @@ def _attach_ego_ctrlsim_rtg_to_infos(
     return enriched_infos
 
 
+def _split_ctrlsim_eval_prepared_batch(per_env_prepared):
+    """Split current and legacy CtrlSim evaluator prepared payloads.
+
+    Current evaluator payloads are named dictionaries with separate ego,
+    opponent, and optional ego-RTG side-channel entries. Older wrappers return
+    the legacy packed batch, where the same prepared payload is used for both
+    ego and opponent teacher calls.
+    """
+    uses_named_payload = any(
+        item is not None
+        and (
+            ("ego" in item and "opponent" in item)
+            or "ego_ctrlsim" in item
+        )
+        for item in per_env_prepared
+    )
+    if not uses_named_payload:
+        legacy_prepared, ego_ctrlsim_prepared = split_prepared_pack_batch(
+            per_env_prepared
+        )
+        return legacy_prepared, ego_ctrlsim_prepared, legacy_prepared
+
+    ego_prepared = [
+        item.get("ego") if item else None
+        for item in per_env_prepared
+    ]
+    ego_ctrlsim_prepared = [
+        item.get("ego_ctrlsim") if item else None
+        for item in per_env_prepared
+    ]
+    opponent_prepared = [
+        item.get("opponent") if item else None
+        for item in per_env_prepared
+    ]
+    return ego_prepared, ego_ctrlsim_prepared, opponent_prepared
+
+
 def run_batched_ctrlsim_step(
     *,
     venv,
@@ -474,8 +549,11 @@ def run_batched_ctrlsim_step(
 ):
     """Run one batched CtrlSim step with optional ego RTG side-channel."""
     per_env_prepared = venv.step_prepare(action)
-    ego_prepared, ego_ctrlsim_prepared = split_prepared_pack_batch(per_env_prepared)
-    opponent_prepared = [item.get("opponent") if item else None for item in per_env_prepared]
+    (
+        ego_prepared,
+        ego_ctrlsim_prepared,
+        opponent_prepared,
+    ) = _split_ctrlsim_eval_prepared_batch(per_env_prepared)
 
     ego_results = external_teacher.run_batched_forward(ego_prepared)
     ego_ctrlsim_rtgs = [None] * len(per_env_prepared)

@@ -9,11 +9,13 @@
 # This file is an extended version of
 # https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/common/vec_env/vec_monitor.py
 
-from .vec_env import VecEnvWrapper
-from stable_baselines3.common.monitor import ResultsWriter
-import numpy as np
-import time
 from collections import deque
+import time
+
+import numpy as np
+from stable_baselines3.common.monitor import ResultsWriter
+
+from .vec_env import VecEnvWrapper
 
 class VecMonitor(VecEnvWrapper):
     def __init__(self, venv, filename=None, keep_buf=0, info_keywords=()):
@@ -33,28 +35,51 @@ class VecMonitor(VecEnvWrapper):
             self.epret_buf = deque([], maxlen=keep_buf)
             self.eplen_buf = deque([], maxlen=keep_buf)
 
+    def _reset_episode_tracking(self, indices=None) -> None:
+        """Reset episode trackers for all envs or a selected subset."""
+        if self.eprets is None or self.eplens is None:
+            self.eprets = np.zeros(self.num_envs, 'f')
+            self.eplens = np.zeros(self.num_envs, 'i')
+        if indices is None:
+            self.eprets.fill(0)
+            self.eplens.fill(0)
+            return
+        self.eprets[list(indices)] = 0
+        self.eplens[list(indices)] = 0
+
     def reset(self):
         obs = self.venv.reset()
-        self.eprets = np.zeros(self.num_envs, 'f')
-        self.eplens = np.zeros(self.num_envs, 'i')
+        self._reset_episode_tracking()
         return obs
 
     def reset_agent(self):
         obs = self.venv.reset_agent()
-        self.eprets = np.zeros(self.num_envs, 'f')
-        self.eplens = np.zeros(self.num_envs, 'i')
+        self._reset_episode_tracking()
         return obs
 
     def reset_random(self):
         obs = self.venv.reset_random()
-        self.eprets = np.zeros(self.num_envs, 'f')
-        self.eplens = np.zeros(self.num_envs, 'i')
+        self._reset_episode_tracking()
         return obs
 
     def reset_alp_gmm(self, level):
         obs = self.venv.reset_alp_gmm(level)
-        self.eprets = np.zeros(self.num_envs, 'f')
-        self.eplens = np.zeros(self.num_envs, 'i')
+        self._reset_episode_tracking()
+        return obs
+
+    def reset_to_level(self, level, index):
+        obs = self.venv.reset_to_level(level, index)
+        self._reset_episode_tracking(indices=[index])
+        return obs
+
+    def reset_to_level_batch(self, level):
+        obs = self.venv.reset_to_level_batch(level)
+        self._reset_episode_tracking()
+        return obs
+
+    def reset_to_level_indices(self, levels, indices):
+        obs = self.venv.reset_to_level_indices(levels, indices)
+        self._reset_episode_tracking(indices=indices)
         return obs
 
     def step_wait(self):

@@ -1,8 +1,6 @@
 """
-负责 adapter 侧推理桥的采样 seed 抓取、episode 初始化与默认解析。
-该模块把旧的可变 RNG state 协议收敛为稳定的无状态 sampling seed。
-Captures, initializes, and resolves sampling seeds for the adapter-side inference bridge.
-Collapses the old mutable RNG-state protocol into a stable stateless sampling-seed contract.
+负责 adapter 侧推理桥的无状态采样 seed 抓取、episode 初始化与默认解析。
+Captures, initializes, and resolves stateless sampling seeds for the adapter-side inference bridge.
 """
 
 from __future__ import annotations
