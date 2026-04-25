@@ -20,6 +20,7 @@ INTERNAL_DEFAULT_KEYS = {
     'num_processes',
     'num_steps',
     'seed',
+    'ego_ctrlsim_kl_safe_update',
     'use_editor',
     'use_ego_ctrlsim_kl_loss',
     'use_policy_reweighting',

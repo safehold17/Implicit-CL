@@ -785,6 +785,7 @@ class AdversarialRunner(object):
         rollout_offroad_done_count_by_process = np.zeros(
             args.num_processes, dtype=np.int64
         )
+        rollout_safe_done_count = 0
         is_nocturne_rollout = (
             (not is_env)
             and (
@@ -794,6 +795,25 @@ class AdversarialRunner(object):
         )
         done_infos = [] if is_nocturne_rollout else None
         done_infos_by_process = defaultdict(list) if is_nocturne_rollout else None
+        has_ego_ctrlsim_kl_storage = (
+            getattr(agent.storage, "ego_ctrlsim_valid", None) is not None
+        )
+        track_ego_ctrlsim_kl_safe_update = (
+            is_nocturne_rollout
+            and bool(getattr(args, "use_ego_ctrlsim_kl_loss", False))
+            and has_ego_ctrlsim_kl_storage
+            and bool(getattr(args, "ego_ctrlsim_kl_safe_update", True))
+        )
+        current_episode_kl_steps_by_process = (
+            [[] for _ in range(args.num_processes)]
+            if track_ego_ctrlsim_kl_safe_update
+            else None
+        )
+        current_episode_kl_disabled_by_process = (
+            [False for _ in range(args.num_processes)]
+            if track_ego_ctrlsim_kl_safe_update
+            else None
+        )
         track_nocturne_enhanced_regret = (
             is_nocturne_rollout
             and bool(getattr(args, "use_enhanced_regret", False))
@@ -878,6 +898,12 @@ class AdversarialRunner(object):
                         rollout_collision_done_count_by_process[process_idx] += 1
                     if float(info.get("offroad_occurred", 0.0)) > 0.0:
                         rollout_offroad_done_count_by_process[process_idx] += 1
+                    unsafe_done = (
+                        bool(info.get("collision_occurred", 0.0))
+                        or bool(info.get("offroad_occurred", 0.0))
+                    )
+                    if not unsafe_done:
+                        rollout_safe_done_count += 1
 
             if not is_env and step >= num_steps - 1:
                 # Handle early termination due to cliffhanger rollout
@@ -887,6 +913,23 @@ class AdversarialRunner(object):
                             infos[i]['cliffhanger'] = True
                             infos[i]['truncated'] = True
                             infos[i]['truncated_obs'] = get_obs_at_index(obs, i)
+                            unsafe_done = (
+                                bool(
+                                    infos[i].get(
+                                        "collision_occurred",
+                                        infos[i].get("collision", 0.0),
+                                    )
+                                )
+                                or bool(
+                                    infos[i].get(
+                                        "offroad_occurred",
+                                        infos[i].get("offroad", 0.0),
+                                    )
+                                )
+                            )
+                            if not unsafe_done:
+                                rollout_done_count_by_process[i] += 1
+                                rollout_safe_done_count += 1
 
                 done = np.ones_like(done, dtype=np.float64)
 
@@ -971,10 +1014,32 @@ class AdversarialRunner(object):
                 current_level_seeds = torch.tensor(self.current_level_seeds, dtype=torch.int).view(-1, 1)
             ego_ctrlsim_action_logits = None
             ego_ctrlsim_valid = None
+            current_step_unsafe_by_process = None
             if is_nocturne_rollout:
                 ego_ctrlsim_action_logits, ego_ctrlsim_valid = (
                     collect_ego_ctrlsim_action_logits(infos)
                 )
+                if track_ego_ctrlsim_kl_safe_update:
+                    current_step_unsafe_by_process = [
+                        (
+                            float(info.get("collision", 0.0)) > 0.0
+                            or float(info.get("offroad", 0.0)) > 0.0
+                        )
+                        for info in infos
+                    ]
+                    for process_idx, step_unsafe in enumerate(
+                        current_step_unsafe_by_process
+                    ):
+                        if ego_ctrlsim_valid is not None:
+                            if (
+                                current_episode_kl_disabled_by_process[process_idx]
+                                or step_unsafe
+                            ):
+                                ego_ctrlsim_valid[process_idx].fill_(False)
+                        if step_unsafe:
+                            current_episode_kl_disabled_by_process[
+                                process_idx
+                            ] = True
 
             agent.insert(
                 obs, recurrent_hidden_states, 
@@ -984,6 +1049,31 @@ class AdversarialRunner(object):
                 cliffhanger_masks=cliffhanger_masks,
                 ego_ctrlsim_action_logits=ego_ctrlsim_action_logits,
                 ego_ctrlsim_valid=ego_ctrlsim_valid)
+
+            if (
+                track_ego_ctrlsim_kl_safe_update
+                and getattr(agent.storage, "ego_ctrlsim_valid", None) is not None
+            ):
+                for process_idx, step_unsafe in enumerate(
+                    current_step_unsafe_by_process
+                ):
+                    if step_unsafe:
+                        for stored_step in current_episode_kl_steps_by_process[
+                            process_idx
+                        ]:
+                            agent.storage.ego_ctrlsim_valid[
+                                stored_step, process_idx
+                            ].fill_(False)
+                        current_episode_kl_steps_by_process[process_idx].clear()
+                    elif (
+                        ego_ctrlsim_valid is not None
+                        and bool(ego_ctrlsim_valid[process_idx].any().item())
+                    ):
+                        current_episode_kl_steps_by_process[process_idx].append(step)
+
+                    if bool(done[process_idx]):
+                        current_episode_kl_steps_by_process[process_idx].clear()
+                        current_episode_kl_disabled_by_process[process_idx] = False
 
         # Add generated env to level store (as a constructive string representation)
         if is_env and plr_runtime_enabled and not level_replay:
@@ -1029,6 +1119,7 @@ class AdversarialRunner(object):
             rollout_info["rollout_offroad_done_count_by_process"] = (
                 rollout_offroad_done_count_by_process.tolist()
             )
+            rollout_info["rollout_safe_done_count"] = int(rollout_safe_done_count)
         if is_nocturne_rollout:
             rollout_info['nocturne_done_infos'] = list(done_infos)
             rollout_info['nocturne_done_infos_by_process'] = {
@@ -1666,6 +1757,13 @@ class AdversarialRunner(object):
             if len(rollout_offroad_done_count_by_process) > 0:
                 stats["avg_rollout_offroad_done_count"] = float(
                     np.mean(rollout_offroad_done_count_by_process)
+                )
+        rollout_safe_done_count = agent_info.get("rollout_safe_done_count")
+        if rollout_safe_done_count is not None and rollout_done_count_by_process is not None:
+            total_done_count = int(sum(rollout_done_count_by_process))
+            if total_done_count > 0:
+                stats["safe_episode_rate"] = (
+                    float(rollout_safe_done_count) / float(total_done_count)
                 )
 
         # Log PLR buffer stats

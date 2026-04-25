@@ -1217,6 +1217,17 @@ parser.add_argument(
     help="Cycle length N for ego KL loss computation (the last step in each N-step block is active).",
 )
 parser.add_argument(
+    "--ego_ctrlsim_kl_safe_update",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=True,
+    help=(
+        "Whether ego ctrlsim KL should be applied only to rollout episodes "
+        "that stayed collision/offroad free within the current rollout."
+    ),
+)
+parser.add_argument(
     "--ego_ctrlsim_kl_schedule",
     type=str,
     choices=["constant", "cosine"],

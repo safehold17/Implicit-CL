@@ -266,6 +266,7 @@ class FileWriter:
             "train_agent_value_loss": "agent_value_loss",
             "train_agent_pg_loss": "agent_pg_loss",
             "train_agent_dist_entropy": "agent_dist_entropy",
+            "train_safe_episode_rate": "safe_episode_rate",
             "kl_loss_ego_ctrlsim": "ego_ctrlsim_kl_loss",
             "policy_reweighting_scale": "policy_reweighting_scale",
             "policy_reweighting_raw_rtg_error": "policy_reweighting_raw_rtg_error",
