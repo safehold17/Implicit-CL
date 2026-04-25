@@ -49,6 +49,7 @@ def _reset_episode_runtime_state(env, level_seed: int) -> None:
     """Reset per-episode bookkeeping while keeping level-scoped data intact."""
     env.current_step = 0
     env.reset_metrics()
+    env._last_completed_complexity_info = None
 
     env._collision_occurred = False
     env._goal_reached = False

@@ -384,6 +384,9 @@ class CtrlSimEgoWrapper:
                 or self._episode_position_reached
                 or position_reached
             )
+        if position_reached:
+            info["progress"] = 1.0
+            info["max_progress"] = 1.0
         info["position_reached"] = float(position_reached)
         info["position_reached_occurred"] = float(position_reached_occurred)
         if done:
