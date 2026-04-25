@@ -1228,6 +1228,12 @@ class AdversarialRunner(object):
                     if 'kl_loss' in info.keys():
                         kl_loss = info.pop('kl_loss')
                         rollout_info.update({'kl_loss': kl_loss})
+                    if 'ppo_loss' in info.keys():
+                        ppo_loss = info.pop('ppo_loss')
+                        rollout_info.update({'ppo_loss': ppo_loss})
+                    if 'ppo_total_loss' in info.keys():
+                        ppo_total_loss = info.pop('ppo_total_loss')
+                        rollout_info.update({'ppo_total_loss': ppo_total_loss})
                     if 'ego_ctrlsim_kl_loss' in info.keys():
                         ego_ctrlsim_kl_loss = info.pop('ego_ctrlsim_kl_loss')
                         rollout_info.update({'ego_ctrlsim_kl_loss': ego_ctrlsim_kl_loss})
@@ -1791,6 +1797,8 @@ class AdversarialRunner(object):
             'level_replay': level_replay,
 
             'mean_agent_return': mean_agent_return,
+            'ppo_loss': agent_info.get('ppo_loss', None),
+            'ppo_total_loss': agent_info.get('ppo_total_loss', None),
             'agent_value_loss': agent_info['value_loss'],
             'agent_pg_loss': agent_info['action_loss'],
             'agent_dist_entropy': agent_info['dist_entropy'],

@@ -114,6 +114,8 @@ class PPO():
         value_loss_epoch = 0
         action_loss_epoch = 0
         dist_entropy_epoch = 0
+        ppo_loss_epoch = 0
+        ppo_total_loss_epoch = 0
         if use_model_kl_loss:
             kl_loss_epoch = 0
     
@@ -248,13 +250,20 @@ class PPO():
 
                 # 在标准 PPO loss 上叠加两个互相独立的 KL 正则项
                 # Add the two independent KL regularizers on top of the standard PPO loss.
-                loss = (value_loss*self.value_loss_coef + action_loss - dist_entropy*self.entropy_coef)
+                ppo_loss = (
+                    value_loss * self.value_loss_coef
+                    + action_loss
+                    - dist_entropy * self.entropy_coef
+                )
+                total_loss = ppo_loss
                 if use_model_kl_loss:
-                    loss += (self.kl_loss_coef*kl_loss)
+                    total_loss = total_loss + (self.kl_loss_coef * kl_loss)
                 if use_ego_ctrlsim_kl_loss:
-                    loss += (ego_ctrlsim_kl_coef * ego_ctrlsim_kl_loss)
+                    total_loss = total_loss + (
+                        ego_ctrlsim_kl_coef * ego_ctrlsim_kl_loss
+                    )
 
-                loss.backward()  # compute the gradients of the combined loss with respect to the model parameters
+                total_loss.backward()  # compute the gradients of the combined loss with respect to the model parameters
 
                 if self.max_grad_norm is not None and self.max_grad_norm > 0:
                     # clip_grad_norm_ returns the pre-clip total norm — reuse it
@@ -273,6 +282,8 @@ class PPO():
                 value_loss_epoch += value_loss.item()  # Convert a tensor containing a single element (a scalar tensor) into a Python scalar (float` or `int`).
                 action_loss_epoch += action_loss.item()
                 dist_entropy_epoch += dist_entropy.item()
+                ppo_loss_epoch += ppo_loss.item()
+                ppo_total_loss_epoch += total_loss.item()
                 if use_model_kl_loss:
                     kl_loss_epoch += kl_loss.item()
                 if use_ego_ctrlsim_kl_loss:
@@ -284,6 +295,8 @@ class PPO():
         value_loss_epoch /= num_updates
         action_loss_epoch /= num_updates
         dist_entropy_epoch /= num_updates
+        ppo_loss_epoch /= num_updates
+        ppo_total_loss_epoch /= num_updates
         if use_model_kl_loss:
             kl_loss_epoch /= num_updates
     
@@ -293,6 +306,8 @@ class PPO():
         info = {}
         if self.log_grad_norm:
             info = {'grad_norms': grad_norms}
+        info["ppo_loss"] = ppo_loss_epoch
+        info["ppo_total_loss"] = ppo_total_loss_epoch
         if use_model_kl_loss:
             info['kl_loss'] = kl_loss_epoch
         # 单独记录 ego_ctrlsim KL，避免和旧的在线 KL 指标混淆。
