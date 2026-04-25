@@ -56,6 +56,12 @@ def check_done(env) -> bool:
     if env.current_step >= env.max_episode_steps:
         return True
 
+    # Position reached takes precedence over safety-triggered early termination.
+    # This keeps progress and termination semantics aligned when the ego reaches
+    # the goal on the same step that a collision/offroad flag is also raised.
+    if bool(getattr(env, "_position_reached", False)):
+        return True
+
     if bool(getattr(env, "early_termination", False)) and (
         env._collision_occurred or env._offroad_occurred
     ):
