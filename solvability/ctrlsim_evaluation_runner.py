@@ -45,8 +45,11 @@ class CtrlSimEgoWrapper:
         student_steer_discretization: int = 50,
         collect_ego_ctrlsim_rtg: bool = False,
         opponent_runtime_mode: str = "normal",
+        teacher_control_mode: str = "split",
+        ego_tilt_override: tuple[int, int, int] | None = None,
         **_kwargs,
     ):
+        """Initialize one evaluation wrapper for split or joint teacher control."""
         self.env = NocturneCtrlSimAdversarial(
             scenario_index_path=scenario_index_path,
             opponent_checkpoint=opponent_checkpoint,
@@ -82,6 +85,17 @@ class CtrlSimEgoWrapper:
         self._episode_position_reached = False
         self._single_env_teacher = None
         self.collect_ego_ctrlsim_rtg = bool(collect_ego_ctrlsim_rtg)
+        self.teacher_control_mode = str(teacher_control_mode)
+        if self.teacher_control_mode not in {"split", "joint"}:
+            raise ValueError(
+                "teacher_control_mode must be one of ['joint', 'split'], "
+                f"got {teacher_control_mode!r}."
+            )
+        self.ego_tilt_override = (
+            None
+            if ego_tilt_override is None
+            else tuple(int(v) for v in ego_tilt_override)
+        )
 
         self.ego_adapter = CtrlSimOpponentAdapter(
             cfg=self.env.cfg,
@@ -99,9 +113,62 @@ class CtrlSimEgoWrapper:
         self.action_space = self.env.action_space
         self.spec = getattr(self.env, "spec", None)
 
+    def _build_joint_teacher_tilt_mapping(self) -> dict[int, tuple[int, int, int]]:
+        """Build one per-vehicle tilt mapping for joint-teacher control."""
+        mapping = {}
+        opponent_tilt_by_id = dict(getattr(self.env.opponent, "per_vehicle_tilting", {}) or {})
+        current_tilt = getattr(self.env.opponent, "current_tilt", None)
+        default_opponent_tilt = (
+            0,
+            0,
+            0,
+        ) if current_tilt is None else (
+            int(current_tilt.goal_tilt),
+            int(current_tilt.veh_veh_tilt),
+            int(current_tilt.veh_edge_tilt),
+        )
+
+        for veh_id in getattr(self.env, "opponent_vehicle_ids", []):
+            mapping[int(veh_id)] = tuple(
+                int(v) for v in opponent_tilt_by_id.get(int(veh_id), default_opponent_tilt)
+            )
+
+        if self.ego_id is not None:
+            ego_tilt = getattr(self, "ego_tilt_override", None)
+            if ego_tilt is None:
+                ego_tilt = (0, 0, 0)
+            mapping[int(self.ego_id)] = tuple(int(v) for v in ego_tilt)
+        return mapping
+
     def _reset_ego_adapter(self) -> None:
-        """Reset ego adapter state after environment reset."""
+        """Reset the active teacher adapter state after environment reset."""
         self.ego_id = self.env.ego_vehicle.getID() if self.env.ego_vehicle else None
+        teacher_control_mode = getattr(self, "teacher_control_mode", "split")
+        if teacher_control_mode == "joint":
+            joint_controlled_ids = []
+            if self.ego_id is not None:
+                joint_controlled_ids.append(self.ego_id)
+            joint_controlled_ids.extend(
+                veh_id
+                for veh_id in self.env.opponent_vehicle_ids
+                if veh_id != self.ego_id
+            )
+            self.env.opponent.set_per_vehicle_tilting(
+                self._build_joint_teacher_tilt_mapping()
+            )
+            self.env.opponent._veh_id_to_preproc_idx = dict(
+                getattr(self.env, "_veh_id_to_preproc_idx", {})
+            )
+            self.env.opponent.reset(
+                self.env.scenario,
+                self.env.vehicles,
+                self.env._gt_data_dict,
+                self.env._preproc_data,
+                joint_controlled_ids,
+                ego_id=self.ego_id,
+                require_policy=True,
+            )
+            return
         self.ego_adapter._veh_id_to_preproc_idx = dict(
             getattr(self.env, "_veh_id_to_preproc_idx", {})
         )
@@ -340,18 +407,31 @@ class CtrlSimEgoWrapper:
         self.env._last_ego_student_action = (float(accel), float(steer))
         self._apply_ego_action(accel, steer)
         obs, reward, done, info = self.env.runtime.step_post_actions(opponent_actions)
-        self.ego_adapter.record_all_actions(
-            self.env.current_step - 1,
-            self.env.vehicles,
-            {self.ego_id: (accel, steer)} if self.ego_id is not None else {},
-        )
+        teacher_control_mode = getattr(self, "teacher_control_mode", "split")
+        if teacher_control_mode == "joint":
+            applied_actions = dict(opponent_actions)
+            if self.ego_id is not None:
+                applied_actions[self.ego_id] = (accel, steer)
+            self.env.opponent.record_all_actions(
+                self.env.current_step - 1,
+                self.env.vehicles,
+                applied_actions,
+            )
+        else:
+            self.ego_adapter.record_all_actions(
+                self.env.current_step - 1,
+                self.env.vehicles,
+                {self.ego_id: (accel, steer)} if self.ego_id is not None else {},
+            )
         return self._postprocess_step(obs, reward, done, info)
 
     def step(self, _action):
         """Run one single-env inference step through the local teacher."""
         prepared = self.step_prepare(_action)
         teacher = self._get_single_env_teacher()
-        ego_outputs = teacher.run_batched_forward([prepared["ego"]])[0]
+        ego_outputs = None
+        if prepared["ego"] is not None:
+            ego_outputs = teacher.run_batched_forward([prepared["ego"]])[0]
         opp_outputs = teacher.run_batched_forward([prepared["opponent"]])[0]
         return self.step_complete({"ego": ego_outputs, "opponent": opp_outputs})
 
@@ -377,13 +457,26 @@ class CtrlSimEgoWrapper:
     def step_prepare(self, _action):
         """Prepare ego/opponent inference payloads for one environment step."""
         t = self.env.current_step
+        runtime_mode = getattr(self.env, "opponent_runtime_mode", "normal")
+        teacher_control_mode = getattr(self, "teacher_control_mode", "split")
+        if teacher_control_mode == "joint":
+            joint_prepared = None
+            if runtime_mode == "normal":
+                joint_prepared = self.env.opponent.prepare_step(
+                    t,
+                    self.env.vehicles,
+                )
+            return {
+                "ego": None,
+                "ego_ctrlsim": None,
+                "opponent": joint_prepared,
+            }
         ego_pack = self.ego_adapter.prepare_step_pack(
             t,
             self.env.vehicles,
             ego_id=self.ego_id,
             include_ego_ctrlsim_prepared=self.collect_ego_ctrlsim_rtg,
         )
-        runtime_mode = getattr(self.env, "opponent_runtime_mode", "normal")
         opponent_prepared = None
         if runtime_mode == "normal" and len(self.env.opponent_vehicle_ids) > 0:
             opponent_prepared = self.env.opponent.prepare_step(
@@ -398,6 +491,29 @@ class CtrlSimEgoWrapper:
 
     def step_complete(self, model_outputs):
         """Apply teacher outputs and advance the wrapped environment."""
+        teacher_control_mode = getattr(self, "teacher_control_mode", "split")
+        if teacher_control_mode == "joint":
+            joint_actions = self.env.opponent.apply_predictions(
+                model_outputs.get("opponent")
+            )
+            if self.ego_id in joint_actions:
+                accel, steer = joint_actions[self.ego_id]
+            else:
+                history_steps = int(getattr(self.env.opponent, "history_steps", 0))
+                current_step = int(getattr(self.env, "current_step", 0))
+                if self.ego_id is not None and current_step >= history_steps - 1:
+                    raise ValueError(
+                        f"Missing ego CtrlSim action for ego_id={self.ego_id} "
+                        f"at step={current_step}."
+                    )
+                accel, steer = 0.0, 0.0
+            opponent_actions = {
+                veh_id: action
+                for veh_id, action in joint_actions.items()
+                if veh_id != self.ego_id
+            }
+            return self._step_with_ego_action(accel, steer, opponent_actions)
+
         ego_actions = self.ego_adapter.apply_predictions(model_outputs.get("ego"))
         if self.ego_id in ego_actions:
             accel, steer = ego_actions[self.ego_id]

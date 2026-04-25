@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--opponent_eval_mode",
         type=str,
-        choices=["replay", "teacher", "both"],
+        choices=["replay", "teacher", "joint_teacher", "both"],
         default="both",
         help="Opponent control protocol to evaluate.",
     )
@@ -102,6 +102,9 @@ def parse_args() -> argparse.Namespace:
         default="none",
         help="Kept for level metadata; replay opponents are not teacher-tilted.",
     )
+    parser.add_argument("--ego_goal_tilt", type=int, default=0)
+    parser.add_argument("--ego_veh_veh_tilt", type=int, default=0)
+    parser.add_argument("--ego_veh_edge_tilt", type=int, default=0)
     parser.add_argument("--tilt_range_min", type=float, default=0.0)
     parser.add_argument("--tilt_range_max", type=float, default=0.0)
     parser.add_argument("--show_level_log", action="store_true")
@@ -153,6 +156,14 @@ def evaluate_teacher_mode(
     opponent_mode: str,
 ) -> list[dict[str, float | str]]:
     """Evaluate one CtrlSim checkpoint under one opponent protocol."""
+    teacher_control_mode = "joint" if opponent_mode == "joint_teacher" else "split"
+    ego_tilt_override = None
+    if teacher_control_mode == "joint":
+        ego_tilt_override = (
+            int(getattr(args, "ego_goal_tilt", 0)),
+            int(getattr(args, "ego_veh_veh_tilt", 0)),
+            int(getattr(args, "ego_veh_edge_tilt", 0)),
+        )
     evaluator = CtrlSimEvaluator(
         env_names=["Nocturne-CtrlSim-v0"],
         num_processes=args.num_processes,
@@ -180,7 +191,13 @@ def evaluate_teacher_mode(
         student_accel_discretization=args.student_accel_discretization,
         student_steer_discretization=args.student_steer_discretization,
         collect_ego_ctrlsim_rtg=False,
-        opponent_runtime_mode="normal" if opponent_mode == "teacher" else "replay",
+        opponent_runtime_mode=(
+            "normal"
+            if opponent_mode in {"teacher", "joint_teacher"}
+            else "replay"
+        ),
+        teacher_control_mode=teacher_control_mode,
+        ego_tilt_override=ego_tilt_override,
     )
     external_teacher = build_ctrlsim_external_teacher(args, base_seed=args.seed)
     try:
