@@ -1,6 +1,7 @@
 """Run ego-policy evaluation for every numbered model checkpoint in a run dir."""
 
 import argparse
+import csv
 import os
 import re
 import sys
@@ -16,7 +17,6 @@ from evaluation.evaluation_common import (
     start_headless_display,
     stop_headless_display,
     validate_nocturne_env_names,
-    write_episode_metrics_csv,
 )
 from util import DotDict, ignore_warning, str2bool
 
@@ -27,6 +27,17 @@ from evaluation.ego_policy_evaluation import (
 ignore_warning.configure_subprocess_env()
 
 MODEL_TAR_PATTERN = re.compile(r"^model_(\d+)\.tar$")
+MULTI_CHECKPOINT_METRIC_FIELDS = (
+    "number",
+    "scenario_id",
+    "collision",
+    "offroad",
+    "position_reached",
+    "progress",
+    "solved",
+    "total_episode_reward",
+)
+SOLVED_PROGRESS_THRESHOLD = 0.85
 
 
 def parse_args():
@@ -89,6 +100,46 @@ def find_model_checkpoints(base_path: str) -> list[str]:
     matched.sort(key=lambda item: item[0])
     return [stem for _, stem in matched]
 
+
+def add_multi_checkpoint_solved_metric(
+    episode_metrics: list[dict[str, float | str]],
+) -> list[dict[str, float | str]]:
+    """Return per-episode metrics with the local solved flag appended."""
+    solved_metrics = []
+    for metrics in episode_metrics:
+        row = dict(metrics)
+        row["solved"] = (
+            1.0
+            if float(row["progress"]) > SOLVED_PROGRESS_THRESHOLD
+            and float(row["collision"]) == 0.0
+            and float(row["offroad"]) == 0.0
+            else 0.0
+        )
+        solved_metrics.append(row)
+    return solved_metrics
+
+
+def write_multi_checkpoint_metrics_csv(
+    output_path: str,
+    episode_metrics: list[dict[str, float | str]],
+) -> None:
+    """Write multi-checkpoint metrics with a local solved column and mean row."""
+    with open(output_path, "w", newline="") as csvout:
+        csvwriter = csv.writer(csvout)
+        csvwriter.writerow(list(MULTI_CHECKPOINT_METRIC_FIELDS))
+        for idx, row in enumerate(episode_metrics, start=1):
+            csvwriter.writerow(
+                [idx, *[row[field] for field in MULTI_CHECKPOINT_METRIC_FIELDS[1:]]]
+            )
+
+        mean_row: dict[str, float | str] = {"number": "mean", "scenario_id": ""}
+        for field in MULTI_CHECKPOINT_METRIC_FIELDS[2:]:
+            values = [float(row[field]) for row in episode_metrics]
+            mean_row[field] = sum(values) / len(values) if values else 0.0
+        csvwriter.writerow(
+            [mean_row[field] for field in MULTI_CHECKPOINT_METRIC_FIELDS]
+        )
+
 def main():
     """Evaluate all numbered checkpoints under one base path."""
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -127,9 +178,9 @@ def main():
                     video_dir=result_path,
                     progress_position=1,
                 )
-                write_episode_metrics_csv(
+                write_multi_checkpoint_metrics_csv(
                     os.path.join(result_path, f"eval-{model_tar}.csv"),
-                    episode_metrics,
+                    add_multi_checkpoint_solved_metric(episode_metrics),
                 )
                 if pbar is not None:
                     pbar.update(1)
