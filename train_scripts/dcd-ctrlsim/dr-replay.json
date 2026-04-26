@@ -90,11 +90,12 @@
     "action_repeat_frequency": [2],
 
     "__note10__": ["KL loss parameters"],
-    "use_ego_ctrlsim_kl_loss": [false],
+    "use_ego_ctrlsim_kl_loss": [true],
+    "ego_ctrlsim_kl_safe_update": [false],
     "ego_ctrlsim_kl_schedule": ["constant"],
-    "kl_loss_coef": [0.2],
+    "kl_loss_coef": [0.05],
     "kl_loss_computation_frequency": [2],
-    "ego_ctrlsim_kl_init_coef" : [0.5],
+    "ego_ctrlsim_kl_init_coef" : [0.1],
     "ego_ctrlsim_kl_min_coef": [0.0],
 
     "__note11__": ["dataset parameters"],

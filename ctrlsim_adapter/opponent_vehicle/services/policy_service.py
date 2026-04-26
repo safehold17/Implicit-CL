@@ -151,9 +151,12 @@ class OpponentPolicyService:
         仅加载 dataset，不加载模型。
         Load only the dataset without loading the model.
         """
+        waymo_cfg = getattr(getattr(self.adapter.cfg, "dataset", None), "waymo", None)
+        preprocess_dir = getattr(waymo_cfg, "preprocess_dir", "")
+        split_name = "" if preprocess_dir else "test"
         self.adapter.dataset = RLWaymoDatasetCtRLSim(
             self.adapter.cfg,
-            split_name="test",
+            split_name=split_name,
             mode="eval",
         )
 
