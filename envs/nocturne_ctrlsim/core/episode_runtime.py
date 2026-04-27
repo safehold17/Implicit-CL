@@ -532,6 +532,9 @@ class NocturneCtrlSimRuntime:
         teacher.validate_student_action_space(
             student_accel_discretization=env.student_accel_discretization,
             student_steer_discretization=env.student_steer_discretization,
+            use_ego_ctrlsim_kl_loss=bool(
+                getattr(env, "use_ego_ctrlsim_kl_loss", False)
+            ),
         )
         env._single_env_teacher = teacher
         return teacher

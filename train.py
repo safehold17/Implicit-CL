@@ -115,6 +115,7 @@ def _build_external_teacher(args, device):
     teacher.validate_student_action_space(
         student_accel_discretization=args.student_accel_discretization,
         student_steer_discretization=args.student_steer_discretization,
+        use_ego_ctrlsim_kl_loss=args.use_ego_ctrlsim_kl_loss,
     )
     return teacher
 

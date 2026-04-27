@@ -173,7 +173,11 @@ class ExternalTeacher:
         self,
         student_accel_discretization: int,
         student_steer_discretization: int,
+        use_ego_ctrlsim_kl_loss: bool,
     ) -> None:
+        """Validate student/teacher action discretization when ego KL needs aligned logits."""
+        if not use_ego_ctrlsim_kl_loss:
+            return
         if (
             self.accel_discretization != student_accel_discretization
             or self.steer_discretization != student_steer_discretization
