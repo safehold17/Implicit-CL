@@ -83,6 +83,8 @@
     "recurrent_agent": [true],
     "recurrent_arch": ["lstm"],
     "recurrent_hidden_size": [256],
+    "student_accel_discretization": [20],
+    "student_steer_discretization": [50],
 
     "__note9__": ["inference parameters"],
     "sparse_inference_action_repeat": [true],
@@ -93,7 +95,7 @@
     "use_ego_ctrlsim_kl_loss": [true],
     "ego_ctrlsim_kl_safe_update": [false],
     "ego_ctrlsim_kl_schedule": ["constant"],
-    "kl_loss_coef": [0.05],
+    "kl_loss_coef": [0.2],
     "kl_loss_computation_frequency": [2],
     "ego_ctrlsim_kl_init_coef" : [0.1],
     "ego_ctrlsim_kl_min_coef": [0.0],
@@ -103,13 +105,13 @@
     "vehicle_map_path": ["preparation_file/vehicle_map_10k_train.json"],
     "scenario_data_dir": ["scenario_data/formatted_json_v2_no_tl_train"],
     "preprocess_dir": ["compressed_preprocessed_data/train"],
-    "opponent_checkpoint": ["checkpoints/model_finetuning_patched_fp16.ckpt"],
+    "opponent_checkpoint": ["checkpoints/model_fp16.ckpt"],
     "log_dir": ["~/logs/dcd"],
 
     "__note12__": ["clearml"],
-    "use_clearml": [false],
+    "use_clearml": [true],
     "clearml_task": ["dcd-ctrlsim"],
-    "clearml_monitor_only": [true],
+    "clearml_monitor_only": [false],
     "local_tensorboard": [false]
   }
 }
