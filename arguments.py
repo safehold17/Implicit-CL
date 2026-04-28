@@ -876,6 +876,52 @@ parser.add_argument(
     help="Pooling mode for road tokens in the Student network.",
 )
 
+# CtRL-Sim aligned student model
+parser.add_argument(
+    "--student_model_type",
+    type=str,
+    default="late_fusion",
+    choices=["late_fusion", "ctrlsim"],
+    help="Student policy architecture: 'late_fusion' (default) or 'ctrlsim' "
+         "(CtRL-Sim state encoder + transformer decoder).",
+)
+parser.add_argument(
+    "--ctrlsim_student_hidden_dim",
+    type=int,
+    default=256,
+    help="Hidden dimension for the CtRL-Sim student transformer.",
+)
+parser.add_argument(
+    "--ctrlsim_student_num_heads",
+    type=int,
+    default=8,
+    help="Number of attention heads for the CtRL-Sim student transformer.",
+)
+parser.add_argument(
+    "--ctrlsim_student_encoder_layers",
+    type=int,
+    default=2,
+    help="Number of TransformerEncoder layers in the CtRL-Sim student.",
+)
+parser.add_argument(
+    "--ctrlsim_student_decoder_layers",
+    type=int,
+    default=4,
+    help="Number of TransformerDecoder layers in the CtRL-Sim student.",
+)
+parser.add_argument(
+    "--ctrlsim_student_seq_len",
+    type=int,
+    default=10,
+    help="History sequence length (steps) for the CtRL-Sim student observation.",
+)
+parser.add_argument(
+    "--ctrlsim_student_num_neighbors",
+    type=int,
+    default=8,
+    help="Number of nearest neighbours included in the CtRL-Sim student observation.",
+)
+
 # ============== Nocturne-Ctrlsim environment configuration parameter ==============
 parser.add_argument(
     "--tilting_mode",

@@ -57,6 +57,9 @@ class NocturneCtrlSimEnvConfig:
     solvable_progress_threshold: float
     student_num_neighbors: int
     student_top_k_road: int
+    student_model_type: str          # 'late_fusion' | 'ctrlsim'
+    ctrlsim_student_seq_len: int
+    ctrlsim_student_num_neighbors: int
     veh_veh_collision_rew_multiplier: float
     veh_edge_collision_rew_multiplier: float
     pos_target_achieved_rew_multiplier: float
@@ -223,6 +226,11 @@ def build_nocturne_ctrlsim_env_config(
         ),
         student_num_neighbors=int(kwargs.get("student_num_neighbors", 16)),
         student_top_k_road=int(kwargs.get("student_top_k_road", 64)),
+        student_model_type=str(kwargs.get("student_model_type", "late_fusion")),
+        ctrlsim_student_seq_len=int(kwargs.get("ctrlsim_student_seq_len", 10)),
+        ctrlsim_student_num_neighbors=int(
+            kwargs.get("ctrlsim_student_num_neighbors", 8)
+        ),
         veh_veh_collision_rew_multiplier=float(
             kwargs.get("veh_veh_collision_rew_multiplier", 10.0)
         ),

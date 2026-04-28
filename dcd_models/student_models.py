@@ -3,12 +3,13 @@
 Student model,Late Fusion architecture in gpudrive
 
 - gpudrive/networks/late_fusion.py: Late Fusion
-- dcd_models/walker_models.py: DCD Policy 
+- dcd_models/walker_models.py: DCD Policy
 """
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .common import DeviceAwareModule, RNN
 from .distributions import Categorical
@@ -532,5 +533,438 @@ class StudentPolicy(DeviceAwareModule):
         
         if return_policy_logits:
             return value, action_log_probs, dist_entropy, rnn_hxs, dist
-        
+
+        return value, action_log_probs, dist_entropy, rnn_hxs
+
+
+# =============================================================================
+# CtRL-Sim aligned student: CtrlSimStudentEncoder + CtrlSimStudentPolicy
+# =============================================================================
+
+class _MLPLayer(nn.Module):
+    """Linear → LayerNorm → ReLU → Linear  (matches ctrlsim/utils/layers.py)."""
+
+    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, out_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.mlp(x)
+
+
+class CtrlSimStudentEncoder(nn.Module):
+    """Scene encoder aligned with CtRL-Sim, with no RTG and no action tokens.
+
+    Token stacking: one state+goal token per (agent, timestep).
+    Map encoder: road polylines → encoder_embeddings (cross-attention memory).
+
+    Args:
+        num_agents:   ego + neighbours (e.g. 9).
+        seq_len:      history length (e.g. 10).
+        state_dim:    raw agent state features = 8 (px,py,vx,vy,hdg,len,wid,exist).
+        agent_type_dim: one-hot type width = 5.
+        goal_dim:     goal feature width = 5.
+        max_roads:    road polyline count (e.g. 64).
+        road_type_dim: road-type one-hot width = 8.
+        hidden_dim:   transformer hidden size (e.g. 256).
+        num_heads:    attention heads (e.g. 8).
+        dim_feedforward: transformer FFN size (e.g. 1024).
+        num_encoder_layers: TransformerEncoder depth (e.g. 2).
+        max_timestep: timestep embedding table size (>= seq_len).
+    """
+
+    def __init__(
+        self,
+        num_agents: int,
+        seq_len: int,
+        state_dim: int = 8,
+        agent_type_dim: int = 5,
+        goal_dim: int = 5,
+        max_roads: int = 64,
+        road_type_dim: int = 8,
+        hidden_dim: int = 256,
+        num_heads: int = 8,
+        dim_feedforward: int = 1024,
+        num_encoder_layers: int = 2,
+        max_timestep: int = 100,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.num_agents = num_agents
+        self.seq_len = seq_len
+        self.hidden_dim = hidden_dim
+        self.max_roads = max_roads
+
+        # State embedding: drop existence flag → 7 features + agent_type_dim
+        fused_state_dim = (state_dim - 1) + agent_type_dim  # e.g. 7 + 5 = 12
+        self.embed_state = _MLPLayer(fused_state_dim, hidden_dim, hidden_dim)
+        self.embed_goal = _MLPLayer(goal_dim, hidden_dim, hidden_dim)
+        self.embed_state_goal = nn.Linear(hidden_dim * 2, hidden_dim)
+
+        self.embed_timestep = nn.Embedding(max_timestep, hidden_dim)
+        self.embed_agent_id = nn.Embedding(num_agents, hidden_dim)
+        self.embed_ln = nn.LayerNorm(hidden_dim)
+
+        # Map encoder: attention-pool each polyline, then combine with road type.
+        map_attr = 2  # x, y (valid flag in last dim is mask, not a feature)
+        self.map_seeds = nn.Parameter(torch.empty(1, 1, hidden_dim))
+        nn.init.xavier_uniform_(self.map_seeds)
+        self.road_pts_encoder = _MLPLayer(map_attr, hidden_dim, hidden_dim)
+        self.road_pts_attn = nn.MultiheadAttention(
+            hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=False
+        )
+        self.road_norm1 = nn.LayerNorm(hidden_dim)
+        self.road_norm2 = nn.LayerNorm(hidden_dim)
+        self.road_feats = _MLPLayer(hidden_dim, hidden_dim, hidden_dim)
+        self.road_type_encoder = _MLPLayer(road_type_dim, hidden_dim, hidden_dim)
+        self.road_combine = _MLPLayer(hidden_dim * 2, hidden_dim, hidden_dim)
+
+        # TransformerEncoder: encodes map polylines + initial agent states.
+        # enable_nested_tensor=False prevents PyTorch from using a nested-tensor
+        # optimization that changes the output seq-length when masks are present,
+        # which would break the cross-attention memory shape in the decoder.
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_encoder_layers,
+            enable_nested_tensor=False,
+        )
+
+    # ------------------------------------------------------------------
+    # Map encoding
+    # ------------------------------------------------------------------
+
+    def _encode_map(
+        self, road_points: torch.Tensor, road_types: torch.Tensor
+    ):
+        """Return (batch, max_roads, hidden) and (batch, max_roads) valid mask."""
+        B, R, P, _ = road_points.shape
+
+        # Valid flag is last dim of road_points.
+        valid_flag = road_points[..., -1]           # (B, R, P)
+        pts_xy = road_points[..., :2].float()       # (B, R, P, 2)
+
+        # Per-point mask: True = padding (to match nn.MultiheadAttention convention).
+        # Flatten to (B*R, P) first so the NaN-guard and attention share the same layout.
+        road_pts_mask = (valid_flag < 0.5).view(B * R, P)   # True = invalid
+
+        # Road-level valid mask MUST be computed before the NaN-guard below.
+        # The guard forces point-0 to be "unmasked" on fully-empty rows so attention
+        # does not produce NaN, but that must not make an empty polyline appear valid.
+        road_valid = ~road_pts_mask.all(dim=-1).view(B, R)  # (B, R)  True = has valid pts
+
+        # NaN-guard: ensure every row has at least one unmasked key so attention
+        # never sees an all-True key_padding_mask (which produces NaN softmax).
+        all_invalid_rows = road_pts_mask.all(dim=-1)         # (B*R,)
+        road_pts_mask[all_invalid_rows, 0] = False
+
+        # Encode points: (B, R, P, 2) → (B*R, P, hidden).
+        pts_enc = self.road_pts_encoder(pts_xy).view(B * R, P, self.hidden_dim)
+        pts_enc = pts_enc.permute(1, 0, 2)          # (P, B*R, hidden)
+
+        seeds = self.map_seeds.repeat(1, B * R, 1)  # (1, B*R, hidden)
+        kpm = road_pts_mask                          # (B*R, P)
+
+        seg_emb = self.road_pts_attn(
+            query=seeds, key=pts_enc, value=pts_enc, key_padding_mask=kpm
+        )[0]                                         # (1, B*R, hidden)
+        seg_emb = self.road_norm1(seg_emb)
+        seg_emb = seg_emb + self.road_feats(seg_emb)
+        seg_emb = self.road_norm2(seg_emb)           # (1, B*R, hidden)
+
+        # Road type embedding.
+        rt_emb = self.road_type_encoder(road_types.float())  # (B, R, hidden)
+        rt_emb = rt_emb.view(1, B * R, self.hidden_dim)
+
+        # Combine.
+        combined = self.road_combine(
+            torch.cat([seg_emb, rt_emb], dim=-1)
+        )                                            # (1, B*R, hidden)
+        road_emb = combined.view(B, R, self.hidden_dim)
+        return road_emb, road_valid
+
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
+
+    def forward(self, data, eval: bool = True):
+        """Encode the scene and return embeddings for the decoder.
+
+        Args:
+            data: object with .agent and .map attributes (from unpack_obs).
+            eval:  passed through for consistency with CtRL-Sim API.
+
+        Returns dict with keys:
+            stacked_embeddings  : (B, seq_len*num_agents, hidden)
+            encoder_embeddings  : (B, max_roads + num_agents, hidden)
+            src_key_padding_mask: (B, max_roads + num_agents)  True = ignore
+            existence_mask_flat : (B, seq_len*num_agents, 1)
+        """
+        agent_states = data.agent.agent_states.float()  # (B, A, T, 8)
+        agent_types = data.agent.agent_types.float()    # (B, A, 5)
+        goals = data.agent.goals.float()                # (B, A, 5)
+        road_points = data.map.road_points.float()      # (B, R, P, 3)
+        road_types = data.map.road_types.float()        # (B, R, D)
+
+        B, A, T, _ = agent_states.shape
+
+        # Existence mask from last dim of agent_states.
+        existence_mask = agent_states[:, :, :, -1:]    # (B, A, T, 1)
+        # Drop existence flag; cat with agent_type.
+        states_no_exist = agent_states[:, :, :, :-1]  # (B, A, T, 7)
+        # Tile agent_types over timesteps: (B, A, T, type_dim)
+        types_tiled = agent_types.unsqueeze(2).expand(B, A, T, -1)
+        # Combined state: (B, A, T, 12) → transpose → (B, T, A, 12)
+        states_full = torch.cat([states_no_exist, types_tiled], dim=-1).transpose(1, 2)
+        # Goals tiled: (B, T, A, 5)
+        goals_tiled = goals.unsqueeze(1).expand(B, T, A, -1)
+
+        # Flatten time × agents: (B, T*A, 12) and (B, T*A, 5)
+        TA = T * A
+        states_flat = states_full.reshape(B, TA, -1)
+        goals_flat = goals_tiled.reshape(B, TA, -1)
+
+        # Embeddings.
+        state_emb = self.embed_state(states_flat)           # (B, T*A, H)
+        goal_emb = self.embed_goal(goals_flat)              # (B, T*A, H)
+        state_goal_emb = self.embed_state_goal(
+            torch.cat([state_emb, goal_emb], dim=-1)
+        )                                                    # (B, T*A, H)
+
+        # Positional embeddings.
+        t_idx = torch.arange(T, device=agent_states.device)
+        a_idx = torch.arange(A, device=agent_states.device)
+        # Broadcast: timestep repeats per agent, agent_id repeats per timestep.
+        t_idx_flat = t_idx.unsqueeze(1).expand(T, A).reshape(TA)  # (T*A,)
+        a_idx_flat = a_idx.unsqueeze(0).expand(T, A).reshape(TA)  # (T*A,)
+        t_emb = self.embed_timestep(t_idx_flat).unsqueeze(0)  # (1, T*A, H)
+        a_emb = self.embed_agent_id(a_idx_flat).unsqueeze(0)  # (1, T*A, H)
+
+        state_tokens = state_goal_emb + t_emb + a_emb       # (B, T*A, H)
+
+        # Apply existence mask (zero out padded tokens).
+        exist_flat = existence_mask.transpose(1, 2).reshape(B, TA, 1)  # (B, T*A, 1)
+        state_tokens = state_tokens * exist_flat.float()
+        stacked_embeddings = self.embed_ln(state_tokens)     # (B, T*A, H)
+
+        # Map encoding.
+        road_emb, road_valid = self._encode_map(road_points, road_types)
+
+        # Initial-state tokens (t=0 slice): (B, A, H)
+        initial_tokens = stacked_embeddings[:, :A, :]
+        initial_exist = exist_flat[:, :A, 0].bool()          # (B, A)
+
+        # Concatenate for TransformerEncoder: (B, R+A, H)
+        pre_enc = torch.cat([road_emb, initial_tokens], dim=1)
+        road_invalid = ~road_valid                            # (B, R)  True=mask
+        initial_invalid = ~initial_exist                      # (B, A)  True=mask
+        src_key_padding_mask = torch.cat(
+            [road_invalid, initial_invalid], dim=1
+        )                                                     # (B, R+A)
+
+        encoder_embeddings = self.transformer_encoder(
+            pre_enc, src_key_padding_mask=src_key_padding_mask
+        )                                                     # (B, R+A, H)
+
+        return {
+            "stacked_embeddings": stacked_embeddings,
+            "encoder_embeddings": encoder_embeddings,
+            "src_key_padding_mask": src_key_padding_mask,
+            "existence_mask_flat": exist_flat,
+        }
+
+
+class CtrlSimStudentPolicy(nn.Module):
+    """PPO-compatible student policy using CtRL-Sim state encoder architecture.
+
+    Observation: flat float32 vector produced by CtrlSimObsBuilder.
+    Action:      discrete index into (accel_bins × steer_bins).
+    Value:       scalar from ego agent's last-step decoded token.
+
+    act() / get_value() / evaluate_actions() match the interface expected by
+    adversarial_runner.py and the PPO / storage implementations.
+    """
+
+    # Required by ppo.py and agent.py — this policy is feed-forward, not recurrent.
+    is_recurrent = False
+
+    def __init__(
+        self,
+        obs_cfg,                 # CtrlSimObsConfig
+        action_dim: int,
+        hidden_dim: int = 256,
+        num_heads: int = 8,
+        dim_feedforward: int = 1024,
+        num_encoder_layers: int = 2,
+        num_decoder_layers: int = 4,
+        max_timestep: int = 100,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        from envs.nocturne_ctrlsim.student.ctrlsim_observation import unpack_obs
+        self._obs_cfg = obs_cfg
+        self._unpack_obs_fn = unpack_obs
+        self.hidden_dim = hidden_dim
+        self.num_agents = obs_cfg.num_agents
+        self.seq_len = obs_cfg.seq_len
+        self.action_dim = action_dim
+
+        self.encoder = CtrlSimStudentEncoder(
+            num_agents=obs_cfg.num_agents,
+            seq_len=obs_cfg.seq_len,
+            state_dim=obs_cfg.state_dim,
+            agent_type_dim=obs_cfg.agent_type_dim,
+            goal_dim=obs_cfg.goal_dim,
+            max_roads=obs_cfg.max_roads,
+            road_type_dim=obs_cfg.road_type_dim,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            dim_feedforward=dim_feedforward,
+            num_encoder_layers=num_encoder_layers,
+            max_timestep=max_timestep,
+            dropout=dropout,
+        )
+
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer, num_layers=num_decoder_layers
+        )
+
+        # Causal mask: each position attends only to positions at earlier or
+        # equal timesteps (across all agents at the same timestep).
+        # Shape: (seq_len*num_agents, seq_len*num_agents)
+        T, A = obs_cfg.seq_len, obs_cfg.num_agents
+        causal = self._build_causal_mask(T, A)
+        self.register_buffer("causal_mask", causal)
+
+        self.action_head = _MLPLayer(hidden_dim, hidden_dim, action_dim)
+        self.value_head = _MLPLayer(hidden_dim, hidden_dim, 1)
+
+    @staticmethod
+    def _build_causal_mask(T: int, A: int) -> torch.Tensor:
+        """Block-lower-triangular causal mask over (T*A) tokens.
+
+        Token order: [t0_a0, t0_a1, ..., t0_aN, t1_a0, ..., tT_aN].
+        Position (t*A+a) can attend to all positions (t'*A+a') where t' <= t.
+        """
+        TA = T * A
+        mask = torch.zeros(TA, TA)
+        for i in range(TA):
+            t_i = i // A
+            for j in range(TA):
+                t_j = j // A
+                if t_j > t_i:
+                    mask[i, j] = float("-inf")
+        return mask
+
+    # ------------------------------------------------------------------
+    # Core forward
+    # ------------------------------------------------------------------
+
+    def _forward(self, obs: torch.Tensor, training: bool = False):
+        """Run encoder + decoder and return (ego_logits, value).
+
+        Args:
+            obs: (batch, obs_dim) float tensor.
+            training: if True, encoder runs in train mode (dropout active).
+
+        Returns:
+            ego_logits: (batch, action_dim)
+            value:      (batch, 1)
+        """
+        data = self._unpack_obs_fn(obs, self._obs_cfg)
+        # Move tensors to same device as obs.
+        scene_enc = self.encoder(data, eval=not training)
+
+        stacked_emb = scene_enc["stacked_embeddings"]      # (B, T*A, H)
+        encoder_emb = scene_enc["encoder_embeddings"]      # (B, R+A, H)
+        src_mask = scene_enc["src_key_padding_mask"]       # (B, R+A)
+
+        decoded = self.transformer_decoder(
+            stacked_emb,
+            encoder_emb,
+            tgt_mask=self.causal_mask,
+            memory_key_padding_mask=src_mask,
+        )                                                   # (B, T*A, H)
+
+        # Ego agent (index 0) at last timestep.
+        # Token index: (T-1)*A + 0
+        ego_idx = (self.seq_len - 1) * self.num_agents     # = (T-1)*A
+        ego_token = decoded[:, ego_idx, :]                  # (B, H)
+
+        ego_logits = self.action_head(ego_token)            # (B, action_dim)
+        value = self.value_head(ego_token)                  # (B, 1)
+        return ego_logits, value
+
+    # ------------------------------------------------------------------
+    # PPO interface
+    # ------------------------------------------------------------------
+
+    def act(self, obs, rnn_hxs=None, masks=None, deterministic: bool = False):
+        """Sample an action.
+
+        Returns:
+            value         : (batch, 1)
+            action        : (batch, 1)
+            action_log_dist: (batch, action_dim)  full log-prob vector
+            rnn_hxs       : unchanged (this policy is not recurrent)
+        """
+        ego_logits, value = self._forward(obs, training=False)
+        log_dist = F.log_softmax(ego_logits, dim=-1)
+
+        if deterministic:
+            action = ego_logits.argmax(dim=-1, keepdim=True)
+        else:
+            action = torch.distributions.Categorical(logits=ego_logits).sample()
+            action = action.unsqueeze(-1)
+
+        return value, action, log_dist, rnn_hxs
+
+    def get_value(self, obs, rnn_hxs=None, masks=None):
+        """Return the state value.
+
+        Returns:
+            value: (batch, 1)
+        """
+        _, value = self._forward(obs, training=False)
+        return value
+
+    def evaluate_actions(self, obs, rnn_hxs, masks, action, return_policy_logits: bool = False):
+        """Evaluate log-prob, value, and entropy of given actions (PPO update).
+
+        Args:
+            return_policy_logits: when True return a 5th element — a
+                ``torch.distributions.Categorical`` whose ``.logits`` attribute
+                is the raw action logits. Required by PPO when KL loss is active.
+
+        Returns (4-tuple, or 5-tuple when return_policy_logits=True):
+            value           : (batch, 1)
+            action_log_probs: (batch, 1)
+            dist_entropy    : scalar
+            rnn_hxs         : unchanged
+            [dist]          : Categorical distribution (only if return_policy_logits)
+        """
+        ego_logits, value = self._forward(obs, training=True)
+        dist = torch.distributions.Categorical(logits=ego_logits)
+        log_dist = F.log_softmax(ego_logits, dim=-1)
+        action_log_probs = log_dist.gather(-1, action.long())
+        dist_entropy = dist.entropy().mean()
+        if return_policy_logits:
+            return value, action_log_probs, dist_entropy, rnn_hxs, dist
         return value, action_log_probs, dist_entropy, rnn_hxs

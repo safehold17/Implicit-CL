@@ -17,6 +17,7 @@ from ..student.observation_action import (
 )
 from ..student.student_reward import reset_student_component_applied_return
 from ..utils.tilt_helpers import init_level_params_vec
+from ..student.ctrlsim_observation import CtrlSimObsConfig, CtrlSimObsBuilder
 
 
 @dataclass(frozen=True)
@@ -254,7 +255,20 @@ def _init_observation_and_action_spaces(
         max_neighbors=int(env._max_observable_agents),
         top_k_road_points=int(env._top_k_road_points),
     )
-    env._obs_dim = get_student_obs_dim(env.student_observation_config)
+
+    env.student_model_type = config.student_model_type
+    if config.student_model_type == "ctrlsim":
+        ctrlsim_obs_cfg = CtrlSimObsConfig(
+            num_agents=config.ctrlsim_student_num_neighbors + 1,
+            seq_len=config.ctrlsim_student_seq_len,
+        )
+        env.ctrlsim_obs_cfg = ctrlsim_obs_cfg
+        env._ctrlsim_obs_builder = CtrlSimObsBuilder(ctrlsim_obs_cfg)
+        env._obs_dim = ctrlsim_obs_cfg.obs_dim
+    else:
+        env._ctrlsim_obs_builder = None
+        env._obs_dim = get_student_obs_dim(env.student_observation_config)
+
     if config.requested_obs_dim is not None and int(config.requested_obs_dim) != env._obs_dim:
         warnings.warn(
             f"obs_dim ({config.requested_obs_dim}) is ignored for Nocturne student observations; "

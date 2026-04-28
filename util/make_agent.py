@@ -145,6 +145,11 @@ def model_for_nocturne_agent(
     recurrent_arch=None,
     recurrent_hidden_size=256,
     random_teacher=False,
+    # CtRL-Sim student hyperparams (used when student_model_type='ctrlsim')
+    ctrlsim_hidden_dim=256,
+    ctrlsim_num_heads=8,
+    ctrlsim_encoder_layers=2,
+    ctrlsim_decoder_layers=4,
 ):
     """    
     Args:
@@ -167,12 +172,12 @@ def model_for_nocturne_agent(
         model: StudentPolicy or NocturneAdversaryPolicy instance
     """
     from dcd_models import NocturneAdversaryPolicy
-    
+
     # Teacher policy, level generation
     if 'adversary_env' in agent_type:
         obs_space = env.adversary_observation_space
         action_space = env.adversary_action_space
-        
+
         model = NocturneAdversaryPolicy(
             observation_space=obs_space,
             action_space=action_space,
@@ -182,11 +187,26 @@ def model_for_nocturne_agent(
             base_kwargs={'hidden_size': hidden_dim}
         )
         return model
-    
-    # Student policy, driving agent
-    obs_shape = env.observation_space.shape
+
     action_space = env.action_space
-    
+
+    # CtRL-Sim aligned student policy
+    if getattr(env, 'student_model_type', 'late_fusion') == 'ctrlsim':
+        from dcd_models.student_models import CtrlSimStudentPolicy
+        obs_cfg = env.ctrlsim_obs_cfg
+        action_dim = int(action_space.n)
+        model = CtrlSimStudentPolicy(
+            obs_cfg=obs_cfg,
+            action_dim=action_dim,
+            hidden_dim=ctrlsim_hidden_dim,
+            num_heads=ctrlsim_num_heads,
+            num_encoder_layers=ctrlsim_encoder_layers,
+            num_decoder_layers=ctrlsim_decoder_layers,
+        )
+        return model
+
+    # Legacy LateFusion student policy
+    obs_shape = env.observation_space.shape
     model = StudentPolicy(
         obs_shape=obs_shape,
         action_space=action_space,
@@ -202,7 +222,7 @@ def model_for_nocturne_agent(
         recurrent_arch=recurrent_arch if recurrent else None,
         recurrent_hidden_size=recurrent_hidden_size,
     )
-    
+
     return model
 
 def model_for_env_agent(
@@ -230,6 +250,11 @@ def model_for_env_agent(
     student_act_func="tanh",
     student_partner_pooling="attention",
     student_road_pooling="attention",
+    # Nocturne CtRL-Sim student hyperparams
+    ctrlsim_hidden_dim=256,
+    ctrlsim_num_heads=8,
+    ctrlsim_encoder_layers=2,
+    ctrlsim_decoder_layers=4,
     # Nocturne Teacher parameters
     random_teacher=False):
     assert agent_type in ['agent', 'adversary_agent', 'adversary_env']
@@ -276,6 +301,10 @@ def model_for_env_agent(
             recurrent_arch=recurrent_arch,
             recurrent_hidden_size=recurrent_hidden_size,
             random_teacher=random_teacher,
+            ctrlsim_hidden_dim=ctrlsim_hidden_dim,
+            ctrlsim_num_heads=ctrlsim_num_heads,
+            ctrlsim_encoder_layers=ctrlsim_encoder_layers,
+            ctrlsim_decoder_layers=ctrlsim_decoder_layers,
         )
     else:
         raise ValueError(f'Unsupported environment {env_name}.')
@@ -344,6 +373,11 @@ def make_agent(name, env, args, device='cpu'):
             args, 'student_partner_pooling', 'attention'
         ),
         student_road_pooling=_arg_get(args, 'student_road_pooling', 'attention'),
+        # Nocturne CtRL-Sim student hyperparams
+        ctrlsim_hidden_dim=_arg_get(args, 'ctrlsim_student_hidden_dim', 256),
+        ctrlsim_num_heads=_arg_get(args, 'ctrlsim_student_num_heads', 8),
+        ctrlsim_encoder_layers=_arg_get(args, 'ctrlsim_student_encoder_layers', 2),
+        ctrlsim_decoder_layers=_arg_get(args, 'ctrlsim_student_decoder_layers', 4),
         # Nocturne Teacher parameters
         random_teacher=_arg_get(args, 'random_teacher', False))
 

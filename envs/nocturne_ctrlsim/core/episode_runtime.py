@@ -346,6 +346,11 @@ class NocturneCtrlSimRuntime:
         )
         refresh_student_vehicle_cache(env)
 
+        # Reset the CtRL-Sim aligned student observation builder when active.
+        ctrlsim_builder = getattr(env, "_ctrlsim_obs_builder", None)
+        if ctrlsim_builder is not None:
+            ctrlsim_builder.reset(env)
+
         # Pre-allocate step-scoped ego state buffers; refreshed once per step
         # in the hot path by _update_step_ego_cache().
         env._step_ego_pos_arr = np.zeros(2, dtype=np.float32)
@@ -446,6 +451,9 @@ class NocturneCtrlSimRuntime:
         env.opponent._ego_reweight_tilt = tuple(env.current_ego_reweight_tilt)
 
         refresh_student_vehicle_cache(env)
+        ctrlsim_builder = getattr(env, "_ctrlsim_obs_builder", None)
+        if ctrlsim_builder is not None:
+            ctrlsim_builder.reset(env)
         if not hasattr(env, "_step_ego_pos_arr"):
             env._step_ego_pos_arr = np.zeros(2, dtype=np.float32)
         env._step_ego_heading = 0.0

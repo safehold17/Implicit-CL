@@ -341,11 +341,15 @@ def build_road_graph_obs_np(
 def get_student_observation(env) -> np.ndarray:
     """Build the flattened student observation.
 
-    The observation buffer is reused across steps via ``env._obs_buffer`` to
-    avoid repeated per-step allocations in the environment hot path. The buffer
-    is fully zeroed before each write so any unfilled partner or road slots
-    remain the correct padding value.
+    Dispatches to the CtRL-Sim aligned builder when one is attached to the env
+    (``env._ctrlsim_obs_builder`` is set), otherwise falls back to the legacy
+    LateFusion observation.
     """
+    ctrlsim_builder = getattr(env, "_ctrlsim_obs_builder", None)
+    if ctrlsim_builder is not None:
+        return ctrlsim_builder.step(env)
+
+    # ------------------------------------------------------------------ legacy
     config = env.student_observation_config
     obs_dim = get_student_obs_dim(config)
 
