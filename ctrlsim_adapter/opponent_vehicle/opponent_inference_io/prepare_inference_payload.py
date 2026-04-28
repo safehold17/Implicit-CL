@@ -388,6 +388,11 @@ def prepare_step_pack(
 
     ego_ctrlsim_prepared = None
     if ego_needs_prepare:
+        ego_ctrlsim_tilt_by_veh_id = (
+            {int(ego_id): ego_reweight_tilt}
+            if use_policy_reweighting
+            else {}
+        )
         ego_ctrlsim_prepared = _build_prepared_payload(
             adapter,
             t,
@@ -398,7 +403,7 @@ def prepare_step_pack(
             ego_reweight_tilt=ego_reweight_tilt,
             delayed_ego_action_scale=delayed_ego_action_scale,
             default_tilt=(0, 0, 0),
-            tilt_by_veh_id={},
+            tilt_by_veh_id=ego_ctrlsim_tilt_by_veh_id,
             shared_context=shared_context,
         )
 
