@@ -1,4 +1,4 @@
-"""Runtime helpers shared by solvability evaluation scripts."""
+"""Runtime helpers shared by CtrlSim evaluation scripts."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import numpy as np
 from batch_inference import build_external_teacher_kwargs
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
-from envs.nocturne_ctrlsim.core.episode_runtime import split_prepared_pack_batch
 from envs.wrappers import ParallelAdversarialVecEnv
 from evaluation.eval import Evaluator
 from util import is_discrete_actions
@@ -621,27 +620,7 @@ def _attach_ego_ctrlsim_rtg_to_infos(
 
 
 def _split_ctrlsim_eval_prepared_batch(per_env_prepared):
-    """Split current and legacy CtrlSim evaluator prepared payloads.
-
-    Current evaluator payloads are named dictionaries with separate ego,
-    opponent, and optional ego-RTG side-channel entries. Older wrappers return
-    the legacy packed batch, where the same prepared payload is used for both
-    ego and opponent teacher calls.
-    """
-    uses_named_payload = any(
-        item is not None
-        and (
-            ("ego" in item and "opponent" in item)
-            or "ego_ctrlsim" in item
-        )
-        for item in per_env_prepared
-    )
-    if not uses_named_payload:
-        legacy_prepared, ego_ctrlsim_prepared = split_prepared_pack_batch(
-            per_env_prepared
-        )
-        return legacy_prepared, ego_ctrlsim_prepared, legacy_prepared
-
+    """Split named CtrlSim evaluator payload streams."""
     ego_prepared = [
         item.get("ego") if item else None
         for item in per_env_prepared
@@ -748,7 +727,7 @@ def build_ctrlsim_evaluator(
 
 
 def build_ctrlsim_external_teacher(args: Any, *, base_seed: int):
-    """Construct the batched ExternalTeacher shared by solvability scripts."""
+    """Construct the batched ExternalTeacher shared by CtrlSim evaluation scripts."""
     from batch_inference import ExternalTeacher
 
     teacher_kwargs = build_external_teacher_kwargs(

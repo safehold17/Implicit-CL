@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import csv
 import os
 from typing import Any, Mapping, Sequence
 
-import numpy as np
-
-from evaluation.evaluation_common import extract_episode_metrics as extract_base_episode_metrics
+from evaluation.evaluation_common import (
+    build_metrics_mean_row,
+    compute_solved_flag,
+    extract_episode_metrics as extract_base_episode_metrics,
+    write_metrics_csv,
+)
 
 SOLVABILITY_TILTING_FIELDS = (
     "opp0_goal_tilt",
@@ -120,12 +122,11 @@ def extract_solvability_episode_metrics(
         "scenario_id": base_metrics["scenario_id"],
         "seed": info.get("seed", ""),
         "test_returns": float(base_metrics["total_episode_reward"]),
-        "solved": (
-            1.0
-            if progress > float(progress_threshold)
-            and collision == 0.0
-            and offroad == 0.0
-            else 0.0
+        "solved": compute_solved_flag(
+            progress=progress,
+            collision=collision,
+            offroad=offroad,
+            progress_threshold=progress_threshold,
         ),
         "collision": collision,
         "goal_reached": float(
@@ -145,11 +146,15 @@ def _build_mean_metric_row(
     episode_metrics: Sequence[Mapping[str, Any]],
 ) -> dict[str, float | str]:
     """Build the final mean row for solvability CSV output."""
-    mean_row: dict[str, float | str] = {"episode": "avg", "scenario_id": "", "seed": ""}
-    for field in SOLVABILITY_METRIC_FIELDS[3:]:
-        values = [float(row[field]) for row in episode_metrics]
-        mean_row[field] = f"{float(np.mean(values)):.2f}" if values else "0.00"
-    return mean_row
+    return build_metrics_mean_row(
+        episode_metrics,
+        SOLVABILITY_METRIC_FIELDS,
+        label_field="episode",
+        label_value="avg",
+        empty_fields=("scenario_id", "seed"),
+        mean_fields=SOLVABILITY_METRIC_FIELDS[3:],
+        value_formatter=lambda value: f"{value:.2f}",
+    )
 
 
 def write_solvability_metrics_csv(
@@ -162,14 +167,15 @@ def write_solvability_metrics_csv(
     os.makedirs(out_dir, exist_ok=True)
     csv_path = os.path.join(out_dir, "metrics.csv")
 
-    with open(csv_path, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=SOLVABILITY_METRIC_FIELDS)
-        writer.writeheader()
-        for index, metrics in enumerate(episode_metrics):
-            row = {"episode": index}
-            row.update(metrics)
-            writer.writerow(row)
-        if episode_metrics:
-            writer.writerow(_build_mean_metric_row(episode_metrics))
+    write_metrics_csv(
+        csv_path,
+        SOLVABILITY_METRIC_FIELDS,
+        episode_metrics,
+        index_field="episode",
+        start_index=0,
+        mean_row=(
+            _build_mean_metric_row(episode_metrics) if episode_metrics else None
+        ),
+    )
 
     return csv_path

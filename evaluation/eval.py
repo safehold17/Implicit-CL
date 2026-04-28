@@ -581,7 +581,6 @@ class Evaluator(object):
 		external_teacher=None):
 
 		# Evaluate agent for N episodes
-		venv = self.venv
 		env_returns = {}
 		env_solved_episodes = {}
 		env_episode_metrics = {}

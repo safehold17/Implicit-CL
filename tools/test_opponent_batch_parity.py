@@ -17,7 +17,7 @@ import torch
 from batch_inference import ExternalTeacher
 from batch_inference.batch_ipc import unpack_prepared
 from envs.nocturne_ctrlsim import ScenarioLevel
-from tools.test_ctrlsim_policy_solving_rate import CtrlSimEgoWrapper
+from evaluation.ctrlsim_evaluation_runner import CtrlSimEgoWrapper
 
 DEFAULT_CHECKPOINT_PATH = PROJECT_ROOT / "checkpoints" / "model.ckpt"
 DEFAULT_VEHICLE_MAP_PATH = PROJECT_ROOT / "data" / "vehicle_map_filtered_train.json"

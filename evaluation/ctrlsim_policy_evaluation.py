@@ -1,4 +1,4 @@
-"""Evaluate a CtrlSim teacher with replay or teacher-controlled opponents."""
+"""Evaluate a CtrlSim policy with replay or teacher-controlled opponents."""
 
 from __future__ import annotations
 
@@ -16,10 +16,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from evaluation.evaluation_common import (
+    build_metrics_mean_row,
+    compute_solved_flag,
     extract_episode_metrics,
     resolve_csv_output_path,
+    write_metrics_csv,
 )
-from solvability.ctrlsim_evaluation_runner import (
+from evaluation.ctrlsim_evaluation_runner import (
     CtrlSimEvaluator,
     build_ctrlsim_external_teacher,
     build_zero_action_batch,
@@ -51,7 +54,7 @@ TEACHER_EVAL_SUMMARY_FIELDS = (
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for CtrlSim-teacher replay evaluation."""
+    """Parse CLI arguments for CtrlSim policy evaluation."""
     parser = argparse.ArgumentParser(
         description="Evaluate CtrlSim teacher ego with replay or teacher opponents."
     )
@@ -61,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vehicle_map_path", type=str, required=True)
     parser.add_argument("--checkpoint_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
-    parser.add_argument("--xpid", type=str, default="ctrlsim-teacher-replay")
+    parser.add_argument("--xpid", type=str, default="ctrlsim-policy-eval")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--num_processes", type=int, default=1)
@@ -111,44 +114,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--record_video", action="store_true")
     parser.add_argument("--show_vehicle_ids", action="store_true")
     return parser.parse_args()
-
-def _add_solved_metric(
-    metrics: dict[str, float | str],
-    *,
-    progress_threshold: float,
-) -> dict[str, float | str]:
-    """Attach the strict safety-aware solved metric to one episode row."""
-    collision = float(metrics["collision"])
-    offroad = float(metrics["offroad"])
-    progress = float(metrics["progress"])
-    metrics["solved"] = (
-        1.0
-        if progress > float(progress_threshold)
-        and collision == 0.0
-        and offroad == 0.0
-        else 0.0
-    )
-    return metrics
-
-
-def _write_teacher_eval_metrics_csv(
-    output_path: str,
-    episode_metrics: list[dict[str, float | str]],
-) -> None:
-    """Write per-episode teacher evaluation metrics with a mean row."""
-    with open(output_path, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=TEACHER_EVAL_METRIC_FIELDS)
-        writer.writeheader()
-        for index, metrics in enumerate(episode_metrics, start=1):
-            row = {"number": index}
-            row.update(metrics)
-            writer.writerow(row)
-        if episode_metrics:
-            mean_row = {"number": "mean", "scenario_id": ""}
-            for field in TEACHER_EVAL_METRIC_FIELDS[2:]:
-                values = [float(row[field]) for row in episode_metrics]
-                mean_row[field] = float(np.mean(values))
-            writer.writerow(mean_row)
 
 def evaluate_teacher_mode(
     args: argparse.Namespace,
@@ -221,12 +186,13 @@ def evaluate_teacher_mode(
                 if "episode" not in info:
                     continue
                 metrics = extract_episode_metrics(info)
-                episode_metrics.append(
-                    _add_solved_metric(
-                        metrics,
-                        progress_threshold=args.progress_threshold,
-                    )
+                metrics["solved"] = compute_solved_flag(
+                    progress=float(metrics["progress"]),
+                    collision=float(metrics["collision"]),
+                    offroad=float(metrics["offroad"]),
+                    progress_threshold=args.progress_threshold,
                 )
+                episode_metrics.append(metrics)
                 if pbar is not None:
                     pbar.update(1)
                 if len(episode_metrics) >= args.num_episodes:
@@ -240,7 +206,7 @@ def evaluate_teacher_mode(
 
 
 def main() -> None:
-    """Run CtrlSim teacher replay evaluation and write metrics CSV."""
+    """Run CtrlSim policy evaluation and write metrics CSV."""
     args = parse_args()
     if args.record_video and args.num_processes != 1:
         raise ValueError("--record_video requires --num_processes=1")
@@ -254,7 +220,23 @@ def main() -> None:
     for opponent_mode in opponent_modes:
         episode_metrics = evaluate_teacher_mode(args, opponent_mode=opponent_mode)
         output_path = resolve_csv_output_path(args.output_dir, f"{args.xpid}-{opponent_mode}")
-        _write_teacher_eval_metrics_csv(output_path, episode_metrics)
+        mean_row = None
+        if episode_metrics:
+            mean_row = build_metrics_mean_row(
+                episode_metrics,
+                TEACHER_EVAL_METRIC_FIELDS,
+                label_field="number",
+                label_value="mean",
+                empty_fields=("scenario_id",),
+                mean_fields=TEACHER_EVAL_METRIC_FIELDS[2:],
+            )
+        write_metrics_csv(
+            output_path,
+            TEACHER_EVAL_METRIC_FIELDS,
+            episode_metrics,
+            index_field="number",
+            mean_row=mean_row,
+        )
         summary_rows.append(
             {
                 "mode": opponent_mode,

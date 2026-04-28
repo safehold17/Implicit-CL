@@ -23,12 +23,13 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from envs.nocturne_ctrlsim.core.level import ScenarioLevel
-from solvability.ctrlsim_evaluation_runner import (
+from evaluation.ctrlsim_evaluation_runner import (
     build_zero_action_batch,
     build_ctrlsim_evaluator,
     build_ctrlsim_external_teacher,
     run_batched_ctrlsim_step,
 )
+from evaluation.evaluation_common import compute_solved_flag
 
 
 @dataclass(frozen=True)
@@ -583,9 +584,12 @@ def _finalize_task_metrics(
     offroad = float(final_info.get("offroad_occurred", final_info.get("offroad", 0.0)))
     max_progress = float(final_info.get("max_progress", final_info.get("progress", 0.0)))
     passed = bool(
-        max_progress > float(progress_threshold)
-        and collision == 0.0
-        and offroad == 0.0
+        compute_solved_flag(
+            progress=max_progress,
+            collision=collision,
+            offroad=offroad,
+            progress_threshold=progress_threshold,
+        )
     )
     episode_length = int(final_info.get("episode_steps", final_info.get("step", 0)))
     episode_return = float(final_info.get("episode", {}).get("r", final_info.get("episode_reward", 0.0)))

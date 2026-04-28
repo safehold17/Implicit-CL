@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
-from typing import Any, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -35,15 +35,75 @@ def extract_episode_metrics(info: dict[str, Any]) -> dict[str, float | str]:
     }
 
 
-def build_episode_metrics_mean_row(
-    episode_metrics: Sequence[dict[str, float | str]],
+def compute_solved_flag(
+    *,
+    progress: float,
+    collision: float,
+    offroad: float,
+    progress_threshold: float,
+) -> float:
+    """Return the safety-aware solved flag used by Nocturne evaluations."""
+    return (
+        1.0
+        if float(progress) > float(progress_threshold)
+        and float(collision) == 0.0
+        and float(offroad) == 0.0
+        else 0.0
+    )
+
+
+def build_metrics_mean_row(
+    episode_metrics: Sequence[Mapping[str, Any]],
+    fields: Sequence[str],
+    *,
+    label_field: str,
+    label_value: str,
+    empty_fields: Sequence[str] = (),
+    mean_fields: Sequence[str] | None = None,
+    value_formatter: Callable[[float], float | str] | None = None,
 ) -> dict[str, float | str]:
-    """Build the final mean row for per-episode metrics CSVs."""
-    mean_row: dict[str, float | str] = {"number": "mean", "scenario_id": ""}
-    for field in EPISODE_METRIC_FIELDS[2:]:
+    """Build a final mean row for a metrics CSV."""
+    empty_set = set(empty_fields)
+    if mean_fields is None:
+        mean_fields = [
+            field
+            for field in fields
+            if field != label_field and field not in empty_set
+        ]
+
+    mean_row: dict[str, float | str] = {field: "" for field in fields}
+    mean_row[label_field] = label_value
+    for field in empty_fields:
+        mean_row[field] = ""
+
+    for field in mean_fields:
         values = [float(row[field]) for row in episode_metrics]
-        mean_row[field] = float(np.mean(values)) if values else 0.0
+        mean_value = float(np.mean(values)) if values else 0.0
+        mean_row[field] = (
+            value_formatter(mean_value) if value_formatter is not None else mean_value
+        )
     return mean_row
+
+
+def write_metrics_csv(
+    output_path: str,
+    fields: Sequence[str],
+    episode_metrics: Sequence[Mapping[str, Any]],
+    *,
+    index_field: str,
+    start_index: int = 1,
+    mean_row: Mapping[str, Any] | None = None,
+) -> None:
+    """Write per-episode metrics rows and an optional final mean row."""
+    with open(output_path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for index, metrics in enumerate(episode_metrics, start=start_index):
+            row = {index_field: index}
+            row.update(metrics)
+            writer.writerow({field: row.get(field, "") for field in fields})
+        if mean_row is not None:
+            writer.writerow({field: mean_row.get(field, "") for field in fields})
 
 
 def write_episode_metrics_csv(
@@ -51,15 +111,20 @@ def write_episode_metrics_csv(
     episode_metrics: Sequence[dict[str, float | str]],
 ) -> None:
     """Write per-episode metrics and the final mean row to CSV."""
-    with open(output_path, "w", newline="") as csvout:
-        csvwriter = csv.writer(csvout)
-        csvwriter.writerow(list(EPISODE_METRIC_FIELDS))
-        for idx, row in enumerate(episode_metrics, start=1):
-            csvwriter.writerow(
-                [idx, *[row[field] for field in EPISODE_METRIC_FIELDS[1:]]]
-            )
-        mean_row = build_episode_metrics_mean_row(episode_metrics)
-        csvwriter.writerow([mean_row[field] for field in EPISODE_METRIC_FIELDS])
+    write_metrics_csv(
+        output_path,
+        EPISODE_METRIC_FIELDS,
+        episode_metrics,
+        index_field="number",
+        mean_row=build_metrics_mean_row(
+            episode_metrics,
+            EPISODE_METRIC_FIELDS,
+            label_field="number",
+            label_value="mean",
+            empty_fields=("scenario_id",),
+            mean_fields=EPISODE_METRIC_FIELDS[2:],
+        ),
+    )
 
 
 def resolve_csv_output_path(output_dir: str, file_stem: str) -> str:

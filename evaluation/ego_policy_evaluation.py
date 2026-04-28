@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,14 +18,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 from envs.wrappers import ParallelAdversarialVecEnv
 from evaluation.evaluation_common import (
+    build_metrics_mean_row,
     build_replay_nocturne_env,
     collect_replay_nocturne_args,
+    compute_solved_flag,
     extract_episode_metrics,
     resolve_csv_output_path,
     start_headless_display,
     stop_headless_display,
     validate_nocturne_env_names,
     write_episode_metrics_csv,
+    write_metrics_csv,
 )
 from evaluation.eval import Evaluator, load_actor_critic_checkpoint
 from util import DotDict, ignore_warning, is_discrete_actions, make_agent, str2bool
@@ -47,6 +51,19 @@ VEHICLE_MAP_PATH = (
     "/media/chen/Dataset/ctrlsim_dataset/preparation_file/"
     "vehicle_map_filtered_valid.json"
 )
+MODEL_TAR_PATTERN = re.compile(r"^model_(\d+)\.tar$")
+MULTI_CHECKPOINT_METRIC_FIELDS = (
+    "number",
+    "scenario_id",
+    "collision",
+    "offroad",
+    "position_reached",
+    "progress",
+    "solved",
+    "total_episode_reward",
+)
+SOLVED_PROGRESS_THRESHOLD = 0.85
+
 
 def parse_args():
     """Parse CLI arguments for specialized ego policy evaluation."""
@@ -85,6 +102,14 @@ def parse_args():
         help="Name of .tar to evaluate.",
     )
     parser.add_argument(
+        "--all_checkpoints",
+        type=str2bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="Evaluate every numbered model_<step>.tar under base_path.",
+    )
+    parser.add_argument(
         "--deterministic",
         type=str2bool,
         nargs="?",
@@ -109,6 +134,19 @@ def parse_args():
         help="Record video of first environment evaluation process.",
     )
     return parser.parse_args()
+
+
+def find_model_checkpoints(base_path: str) -> list[str]:
+    """Return sorted checkpoint stems matching model_<step>.tar."""
+    matched = []
+    for filename in os.listdir(base_path):
+        match = MODEL_TAR_PATTERN.match(filename)
+        if match is None:
+            continue
+        matched.append((int(match.group(1)), filename[:-4]))
+    matched.sort(key=lambda item: item[0])
+    return [stem for _, stem in matched]
+
 
 def load_agent_from_checkpoint(
     *,
@@ -340,10 +378,74 @@ class EgoReplayEvaluator(Evaluator):
         return episode_metrics
 
 
+def run_all_checkpoint_evaluations(
+    *,
+    base_path: str,
+    result_path: str,
+    env_names: list[str],
+    device: str,
+    cli_args: DotDict,
+) -> None:
+    """Evaluate every numbered checkpoint and write one CSV per checkpoint."""
+    model_tars = find_model_checkpoints(base_path)
+    if not model_tars:
+        raise FileNotFoundError(
+            f"No numbered checkpoints found under {base_path}: expected model_<step>.tar"
+        )
+
+    cli_args.record_video = False
+    pbar = tqdm(total=len(model_tars), position=0) if cli_args.verbose else None
+    try:
+        for model_tar in model_tars:
+            if pbar is not None:
+                pbar.set_description_str(f"Evaluating {model_tar}")
+            episode_metrics = run_single_checkpoint_evaluation(
+                base_path=base_path,
+                model_tar=model_tar,
+                env_names=env_names,
+                device=device,
+                cli_args=cli_args,
+                video_dir=result_path,
+                progress_position=1,
+            )
+            solved_metrics = []
+            for metrics in episode_metrics:
+                row = dict(metrics)
+                row["solved"] = compute_solved_flag(
+                    progress=float(row["progress"]),
+                    collision=float(row["collision"]),
+                    offroad=float(row["offroad"]),
+                    progress_threshold=SOLVED_PROGRESS_THRESHOLD,
+                )
+                solved_metrics.append(row)
+            mean_row = build_metrics_mean_row(
+                solved_metrics,
+                MULTI_CHECKPOINT_METRIC_FIELDS,
+                label_field="number",
+                label_value="mean",
+                empty_fields=("scenario_id",),
+                mean_fields=MULTI_CHECKPOINT_METRIC_FIELDS[2:],
+            )
+            write_metrics_csv(
+                os.path.join(result_path, f"eval-{model_tar}.csv"),
+                MULTI_CHECKPOINT_METRIC_FIELDS,
+                solved_metrics,
+                index_field="number",
+                mean_row=mean_row,
+            )
+            if pbar is not None:
+                pbar.update(1)
+    finally:
+        if pbar is not None:
+            pbar.close()
+
+
 def main():
     """Run specialized ego policy evaluation with GT-replay opponents."""
     os.environ["OMP_NUM_THREADS"] = "1"
     args = DotDict(vars(parse_args()))
+    args.setdefault("all_checkpoints", False)
+    args.setdefault("record_video", False)
     args.num_processes = min(args.num_processes, args.num_episodes)
 
     display = start_headless_display()
@@ -357,10 +459,20 @@ def main():
         if args.record_video:
             os.makedirs(video_dir, exist_ok=True)
 
-        result_fname = f"ego-policy-eval-{args.model_tar}"
         env_names = args.env_names.split(",")
         validate_nocturne_env_names(env_names)
 
+        if getattr(args, "all_checkpoints", False):
+            run_all_checkpoint_evaluations(
+                base_path=base_path,
+                result_path=result_path,
+                env_names=env_names,
+                device=device,
+                cli_args=args,
+            )
+            return
+
+        result_fname = f"ego-policy-eval-{args.model_tar}"
         if args.record_video:
             if len(env_names) != 1:
                 raise ValueError("--record_video requires exactly one env_name")

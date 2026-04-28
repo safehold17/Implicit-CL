@@ -16,7 +16,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from envs.nocturne_ctrlsim.core.level import ScenarioLevel
-from solvability.ctrlsim_evaluation_runner import (
+from evaluation.ctrlsim_evaluation_runner import (
     build_zero_action_batch,
     build_ctrlsim_evaluator,
     build_ctrlsim_external_teacher,
