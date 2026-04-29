@@ -838,6 +838,17 @@ class AdversarialRunner(object):
                 or args.env_name.startswith('nocturne')
             )
         )
+        nocturne_heading_error_keys = (
+            "ego_heading_error_to_gt",
+            "ego_turn_heading_error_to_gt",
+            "ego_non_turn_heading_error_to_gt",
+        )
+        nocturne_heading_error_sums = {
+            key: 0.0 for key in nocturne_heading_error_keys
+        }
+        nocturne_heading_error_counts = {
+            key: 0 for key in nocturne_heading_error_keys
+        }
         done_infos = [] if is_nocturne_rollout else None
         done_infos_by_process = defaultdict(list) if is_nocturne_rollout else None
         has_ego_ctrlsim_kl_storage = (
@@ -979,6 +990,17 @@ class AdversarialRunner(object):
                 done = np.ones_like(done, dtype=np.float64)
 
             for i, info in enumerate(infos):
+                if is_nocturne_rollout:
+                    for key in nocturne_heading_error_keys:
+                        metric_value = info.get(key)
+                        if metric_value is None:
+                            continue
+                        metric_value = float(metric_value)
+                        if not np.isfinite(metric_value):
+                            continue
+                        nocturne_heading_error_sums[key] += metric_value
+                        nocturne_heading_error_counts[key] += 1
+
                 if track_nocturne_enhanced_regret:
                     step_seed = resolve_rollout_seed(
                         self.current_level_seeds,
@@ -1166,6 +1188,12 @@ class AdversarialRunner(object):
             )
             rollout_info["rollout_safe_done_count"] = int(rollout_safe_done_count)
         if is_nocturne_rollout:
+            for key in nocturne_heading_error_keys:
+                count = nocturne_heading_error_counts[key]
+                if count > 0:
+                    rollout_info[key] = (
+                        nocturne_heading_error_sums[key] / float(count)
+                    )
             rollout_info['nocturne_done_infos'] = list(done_infos)
             rollout_info['nocturne_done_infos_by_process'] = {
                 int(process_idx): list(process_done_infos)
@@ -1852,6 +1880,15 @@ class AdversarialRunner(object):
             'adversary_pg_loss': adversary_agent_info['action_loss'],
             'adversary_dist_entropy': adversary_agent_info['dist_entropy'],
             'ego_ctrlsim_kl_loss': agent_info.get('ego_ctrlsim_kl_loss', None),
+            'ego_heading_error_to_gt': agent_info.get(
+                'ego_heading_error_to_gt', None
+            ),
+            'ego_turn_heading_error_to_gt': agent_info.get(
+                'ego_turn_heading_error_to_gt', None
+            ),
+            'ego_non_turn_heading_error_to_gt': agent_info.get(
+                'ego_non_turn_heading_error_to_gt', None
+            ),
         })
         enhanced_regret_metric_keys = (
             'base_regret',
