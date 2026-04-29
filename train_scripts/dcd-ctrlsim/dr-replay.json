@@ -101,7 +101,7 @@
     "ego_ctrlsim_kl_min_coef": [0.0],
 
     "__note11__": ["dataset parameters"],
-    "scenario_index_path": ["preparation_file/scenario_index_10k_train.json"],
+    "scenario_index_path": ["preparation_file/scenario_index_10k_train_no_offroad.json"],
     "vehicle_map_path": ["preparation_file/vehicle_map_10k_train.json"],
     "scenario_data_dir": ["scenario_data/formatted_json_v2_no_tl_train"],
     "preprocess_dir": ["compressed_preprocessed_data/train"],
