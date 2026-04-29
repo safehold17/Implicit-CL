@@ -10,6 +10,9 @@ from ..student.student_reward import get_student_component_applied_return
 from ..utils.common import clamp01, merge_episode_progress
 
 
+EGO_TURN_HEADING_DELTA_THRESHOLD = 0.03
+
+
 def compute_current_progress(env) -> float:
     """Calculate current normalized progress from ego position to goal."""
     if env.ego_vehicle is None or env._ego_goal_dict is None:
@@ -113,6 +116,75 @@ def _build_policy_reweighting_info(env) -> Dict[str, float]:
     }
 
 
+def _angle_diff(a: float, b: float) -> float:
+    """Return the wrapped difference between two headings in radians."""
+    return float((a - b + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def _get_ego_gt_traj(env) -> Optional[np.ndarray]:
+    """Return the ego GT trajectory array when it is available."""
+    ego_vehicle = getattr(env, "ego_vehicle", None)
+    if ego_vehicle is None:
+        return None
+
+    gt_traj_cache = getattr(env, "_gt_traj_cache", None)
+    gt_data_dict = getattr(env, "_gt_data_dict", {})
+    if gt_traj_cache is None and not gt_data_dict:
+        return None
+    if not hasattr(ego_vehicle, "getID"):
+        return None
+
+    ego_id = int(ego_vehicle.getID())
+    if gt_traj_cache is not None and ego_id in gt_traj_cache:
+        return np.asarray(gt_traj_cache[ego_id])
+
+    data = gt_data_dict.get(ego_id)
+    if not isinstance(data, dict) or "traj" not in data:
+        return None
+
+    gt_traj = np.asarray(data["traj"])
+    if gt_traj_cache is not None:
+        gt_traj_cache[ego_id] = gt_traj
+    return gt_traj
+
+
+def _build_ego_heading_error_info(env) -> Dict[str, float]:
+    """Build ego heading-error diagnostics against the GT trajectory."""
+    gt_traj = _get_ego_gt_traj(env)
+    if gt_traj is None:
+        return {}
+
+    current_step = int(getattr(env, "current_step", -1))
+    if current_step < 0 or current_step >= len(gt_traj):
+        return {}
+
+    ego_heading = getattr(env, "_step_ego_heading", None)
+    if ego_heading is None:
+        ego_vehicle = getattr(env, "ego_vehicle", None)
+        if ego_vehicle is None:
+            return {}
+        ego_heading = float(ego_vehicle.getHeading())
+
+    gt_heading = float(gt_traj[current_step][2])
+    if not np.isfinite(ego_heading) or not np.isfinite(gt_heading):
+        return {}
+
+    heading_error = abs(_angle_diff(float(ego_heading), gt_heading))
+    info = {"ego_heading_error_to_gt": heading_error}
+
+    next_step = current_step + 1
+    if next_step < len(gt_traj):
+        next_gt_heading = float(gt_traj[next_step][2])
+        if np.isfinite(next_gt_heading):
+            gt_turn_delta = abs(_angle_diff(next_gt_heading, gt_heading))
+            if gt_turn_delta > EGO_TURN_HEADING_DELTA_THRESHOLD:
+                info["ego_turn_heading_error_to_gt"] = heading_error
+            else:
+                info["ego_non_turn_heading_error_to_gt"] = heading_error
+
+    return info
+
+
 def get_info(
     env,
     done: Optional[bool] = None,
@@ -149,6 +221,7 @@ def get_info(
         'offroad': env._offroad_occurred,
         'progress': progress,
     }
+    info.update(_build_ego_heading_error_info(env))
 
     # Always add complexity info (real-time data)
     info.update(get_complexity_info(env))
