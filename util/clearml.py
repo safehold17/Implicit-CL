@@ -15,7 +15,7 @@ def download_clearml_dataset(dataset_project: str, dataset_name: str) -> str:
         local_copy = ClearMLDataset.get(
             dataset_name=dataset_name,
             dataset_project=dataset_project,
-        ).get_local_copy(force=True)
+        ).get_local_copy()
     except Exception as e:
         raise RuntimeError(
             f"Failed to download ClearML dataset "
