@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -62,6 +63,7 @@ def generate_train_cmds(
 
     if xpid_generator:
         params['xpid'] = xpid_generator(params, xpid_prefix)
+    xpid_timestamp = time.strftime('%m%d%H%M') if xpid_generator else None
 
     start_seed = params['seed']
 
@@ -77,6 +79,8 @@ def generate_train_cmds(
         for k,v in params.items():
             if k == 'xpid':
                 v = f'{v}_{trial_idx}'
+                if xpid_timestamp is not None:
+                    v = f'{v}-{xpid_timestamp}'
 
                 if count_set is not None:
                     count_set.add(v)
