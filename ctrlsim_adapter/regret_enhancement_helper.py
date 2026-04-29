@@ -82,25 +82,20 @@ def compute_learnability(
     return float(solvable_rate * (1.0 - solvable_rate))
 
 
-def normalize_learnability(learnability: float | None) -> float | None:
-    """Map p * (1 - p) into [0, 1] for top-level score aggregation."""
-    if learnability is None:
-        return None
-    return float(4.0 * float(learnability))
-
-
-def normalize_by_running_mean(
+def normalize_by_running_standard_score(
     raw_value: float | None,
-    running_mean: float | None,
+    running_mean: float,
+    running_std: float,
     *,
     eps: float = 1e-6,
 ) -> float | None:
-    """Scale a raw metric by its running mean, using raw on cold start."""
+    """Scale a raw metric by shifted non-negative running z-score."""
     if raw_value is None:
         return None
-    if running_mean is None or float(running_mean) <= float(eps):
-        return float(raw_value)
-    return float(raw_value) / float(running_mean)
+    z_score = (float(raw_value) - float(running_mean)) / (
+        float(running_std) + float(eps)
+    )
+    return float(max(0.0, 1.0 + z_score))
 
 
 def combine_enhanced_regret_score(

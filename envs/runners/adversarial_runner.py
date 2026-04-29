@@ -23,9 +23,11 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 from ctrlsim_adapter.regret_enhancement_implementation import (
+    ENHANCED_REGRET_RAW_TERM_KEYS,
     append_nocturne_rtg_segment,
     build_nocturne_rtg_record,
-    compute_nocturne_enhanced_regret_scores,
+    compute_nocturne_enhanced_regret_raw_metrics,
+    normalize_nocturne_enhanced_regret_scores,
     resolve_rollout_seed,
 )
 from ctrlsim_adapter.ego_ctrlsim_rollout_implementation import (
@@ -118,10 +120,7 @@ class AdversarialRunner(object):
         self.warmup_level_samplers = {}
         self.current_level_seeds = None
         self._default_level_sampler = None
-        self._enhanced_regret_base_sum = 0.0
-        self._enhanced_regret_base_count = 0
-        self._enhanced_regret_delta_sum = 0.0
-        self._enhanced_regret_delta_count = 0
+        self._init_enhanced_regret_running_stats()
         self._default_warmup_level_sampler = None
         self.weighted_num_edits = 0
         self.latest_env_stats = defaultdict(float)
@@ -135,44 +134,84 @@ class AdversarialRunner(object):
         # Runtime gate for PLR (enabled by default across stages).
         self.plr_active = True
 
-    def _get_enhanced_regret_running_means(
-        self,
-    ) -> tuple[float | None, float | None]:
-        """Return current running means for top-level enhanced regret normalization."""
-        base_count = int(getattr(self, "_enhanced_regret_base_count", 0))
-        delta_count = int(getattr(self, "_enhanced_regret_delta_count", 0))
-        base_mean = None
-        delta_mean = None
-        if base_count > 0:
-            base_mean = float(
-                getattr(self, "_enhanced_regret_base_sum", 0.0)
-            ) / float(base_count)
-        if delta_count > 0:
-            delta_mean = float(
-                getattr(self, "_enhanced_regret_delta_sum", 0.0)
-            ) / float(delta_count)
-        return base_mean, delta_mean
+    def _init_enhanced_regret_running_stats(self) -> None:
+        """Initialize running mean/std trackers for enhanced regret terms."""
+        self._enhanced_regret_running_stats = {
+            term: RunningMeanStd(epsilon=0.0, shape=())
+            for term in ENHANCED_REGRET_RAW_TERM_KEYS
+        }
 
-    def _update_enhanced_regret_running_means(
+    def _get_enhanced_regret_running_standard_stats(
         self,
-        *,
-        base_regret_by_seed: dict[int, float],
-        delta_rtg_by_seed: dict[int, float],
+    ) -> dict[str, dict[str, float]]:
+        """Return current enhanced regret running mean/std by term."""
+        if not hasattr(self, "_enhanced_regret_running_stats"):
+            self._init_enhanced_regret_running_stats()
+
+        stats_by_term = {}
+        for term, running_stats in self._enhanced_regret_running_stats.items():
+            mean = float(np.asarray(running_stats.mean).item())
+            var = max(float(np.asarray(running_stats.var).item()), 0.0)
+            stats_by_term[term] = {
+                "mean": mean,
+                "std": float(np.sqrt(var)),
+                "count": float(running_stats.count),
+            }
+        return stats_by_term
+
+    def _update_enhanced_regret_running_stats(
+        self,
+        raw_metrics: dict[str, object],
+    ) -> dict[str, dict[str, float]]:
+        """Update enhanced regret stats from one batch of raw per-seed metrics."""
+        if not hasattr(self, "_enhanced_regret_running_stats"):
+            self._init_enhanced_regret_running_stats()
+
+        for term, raw_key in ENHANCED_REGRET_RAW_TERM_KEYS.items():
+            raw_by_seed = raw_metrics.get(raw_key, {})
+            values = list(raw_by_seed.values())
+            if values:
+                self._enhanced_regret_running_stats[term].update(
+                    np.asarray(values, dtype=np.float64)
+                )
+        return self._get_enhanced_regret_running_standard_stats()
+
+    def _enhanced_regret_running_stats_state(self) -> dict[str, dict[str, float]]:
+        """Serialize enhanced regret running stats for checkpoints."""
+        if not hasattr(self, "_enhanced_regret_running_stats"):
+            self._init_enhanced_regret_running_stats()
+
+        state = {}
+        for term, running_stats in self._enhanced_regret_running_stats.items():
+            state[term] = {
+                "mean": float(np.asarray(running_stats.mean).item()),
+                "var": float(np.asarray(running_stats.var).item()),
+                "count": float(running_stats.count),
+            }
+        return state
+
+    def _load_enhanced_regret_running_stats_state(
+        self,
+        state: dict[str, dict[str, float]] | None,
     ) -> None:
-        """Update running means from per-seed raw enhanced regret terms."""
-        if not hasattr(self, "_enhanced_regret_base_sum"):
-            self._enhanced_regret_base_sum = 0.0
-            self._enhanced_regret_base_count = 0
-        if not hasattr(self, "_enhanced_regret_delta_sum"):
-            self._enhanced_regret_delta_sum = 0.0
-            self._enhanced_regret_delta_count = 0
+        """Restore enhanced regret running stats from checkpoint state."""
+        self._init_enhanced_regret_running_stats()
+        if not state:
+            return
 
-        for value in base_regret_by_seed.values():
-            self._enhanced_regret_base_sum += float(value)
-            self._enhanced_regret_base_count += 1
-        for value in delta_rtg_by_seed.values():
-            self._enhanced_regret_delta_sum += float(value)
-            self._enhanced_regret_delta_count += 1
+        for term, term_state in state.items():
+            if term not in self._enhanced_regret_running_stats:
+                continue
+            running_stats = self._enhanced_regret_running_stats[term]
+            running_stats.mean = np.asarray(
+                float(term_state["mean"]),
+                dtype=np.float64,
+            )
+            running_stats.var = np.asarray(
+                float(term_state["var"]),
+                dtype=np.float64,
+            )
+            running_stats.count = float(term_state["count"])
 
     def _build_level_samplers(self, plr_args):
         level_samplers = {}
@@ -359,6 +398,9 @@ class AdversarialRunner(object):
             'student_grad_updates': self.student_grad_updates,
             'latest_env_stats': self.latest_env_stats,
             'latest_env_process_stats': self.latest_env_process_stats,
+            'enhanced_regret_running_stats': (
+                self._enhanced_regret_running_stats_state()
+            ),
             'level_store': self.level_store,
             'level_samplers': self.level_samplers,
             'warmup_level_samplers': self.warmup_level_samplers,
@@ -385,6 +427,9 @@ class AdversarialRunner(object):
         self.student_grad_updates = state_dict.get('student_grad_updates')
         self.latest_env_stats = state_dict.get('latest_env_stats')
         self.latest_env_process_stats = state_dict.get('latest_env_process_stats', [])
+        self._load_enhanced_regret_running_stats_state(
+            state_dict.get('enhanced_regret_running_stats')
+        )
 
         self.level_store = state_dict.get('level_store')
         self.level_samplers = state_dict.get('level_samplers')
@@ -1163,17 +1208,26 @@ class AdversarialRunner(object):
                 )
                 if should_compute_enhanced_regret_scores:
                     (
-                        running_mean_base_regret,
-                        running_mean_delta_rtg,
-                    ) = self._get_enhanced_regret_running_means()
+                        enhanced_regret_raw_metrics,
+                        enhanced_regret_actor_seed_by_index,
+                        enhanced_regret_num_actors,
+                    ) = compute_nocturne_enhanced_regret_raw_metrics(
+                        agent.storage,
+                        rollout_info,
+                    )
+                    enhanced_regret_running_stats = (
+                        self._update_enhanced_regret_running_stats(
+                            enhanced_regret_raw_metrics
+                        )
+                    )
                     (
                         enhanced_regret_external_scores,
                         enhanced_regret_external_score_metrics,
-                    ) = compute_nocturne_enhanced_regret_scores(
-                        agent.storage,
-                        rollout_info,
-                        running_mean_base_regret=running_mean_base_regret,
-                        running_mean_delta_rtg=running_mean_delta_rtg,
+                    ) = normalize_nocturne_enhanced_regret_scores(
+                        enhanced_regret_raw_metrics,
+                        enhanced_regret_actor_seed_by_index,
+                        enhanced_regret_num_actors,
+                        running_stats_by_term=enhanced_regret_running_stats,
                         use_solvable_rate=bool(
                             getattr(args, "regret_enhancement_use_solvable_rate", True)
                         ),
@@ -1182,16 +1236,6 @@ class AdversarialRunner(object):
                         ),
                     )
                     rollout_info.update(enhanced_regret_external_score_metrics)
-                    self._update_enhanced_regret_running_means(
-                        base_regret_by_seed=enhanced_regret_external_score_metrics.get(
-                            "base_regret_by_seed",
-                            {},
-                        ),
-                        delta_rtg_by_seed=enhanced_regret_external_score_metrics.get(
-                            "delta_rtg_by_seed",
-                            {},
-                        ),
-                    )
 
                 if sample_only:
                     rollout_info.update(
