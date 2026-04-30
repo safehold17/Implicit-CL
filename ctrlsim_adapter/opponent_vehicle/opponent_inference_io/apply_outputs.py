@@ -176,8 +176,14 @@ def apply_predictions(
         if veh_id in dead_ids:
             actions[veh_id] = (0.0, 0.0)
             continue
+        controlled_ids = get_step_controlled_ids(adapter)
         raise ValueError(
-            f"Missing action for non-dead controlled vehicle veh_id={veh_id} at step_t={step_t}."
+            "Missing action for non-dead controlled vehicle "
+            f"veh_id={veh_id} at step_t={step_t}. "
+            f"controlled_ids={controlled_ids}, "
+            f"action_veh_ids={action_veh_ids.tolist()}, "
+            f"dead_ids={sorted(dead_ids)}, "
+            f"ego_id={getattr(adapter, '_ego_id', None)}."
         )
 
     return actions

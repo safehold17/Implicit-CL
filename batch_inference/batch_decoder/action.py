@@ -92,7 +92,9 @@ def decode_action_jobs_batched_impl(
         row_batch_idx = torch.as_tensor(decode_meta["job_idx"], dtype=torch.long, device=device)
         row_idx_in_model = torch.as_tensor(decode_meta["idx_in_model"], dtype=torch.long, device=device)
         row_token_index = torch.as_tensor(decode_meta["token_index"], dtype=torch.long, device=device)
-    flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index].to(dtype=torch.float32)
+    flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index].to(
+        dtype=torch.float32
+    )
     if getattr(teacher, "policy_reweighting_target", "rtg") == "action":
         effective_scale = decode_meta.get("effective_scale_t")
         if effective_scale is None:
@@ -152,13 +154,13 @@ def decode_action_jobs_batched_impl(
     }
 
 
-def export_selected_action_logits_by_job_impl(
+def export_selected_action_logits_by_job_and_vehicle_impl(
     action_logits: torch.Tensor,
     decode_meta: Dict[str, np.ndarray],
-    selected_job_indices: Sequence[int],
-) -> Dict[int, torch.Tensor]:
-    """按选中的 job 导出 raw action logits。 / Export raw action logits for selected jobs only."""
-    if not selected_job_indices:
+    selected_job_vehicle_pairs: Sequence[Tuple[int, int]],
+) -> Dict[Tuple[int, int], torch.Tensor]:
+    """Export raw action logits for selected `(job_idx, veh_id)` rows."""
+    if not selected_job_vehicle_pairs:
         return {}
 
     job_count = int(decode_meta["job_count"][0])
@@ -184,24 +186,29 @@ def export_selected_action_logits_by_job_impl(
         )
 
     flat_logits = action_logits[row_batch_idx, row_idx_in_model, row_token_index].to(dtype=torch.float32)
-    job_offsets = decode_meta["job_offsets"]
+    job_offsets = np.asarray(decode_meta["job_offsets"], dtype=np.int64)
+    veh_ids = np.asarray(decode_meta["veh_id"], dtype=np.int64)
 
-    logits_by_job: Dict[int, torch.Tensor] = {}
-    for job_idx in selected_job_indices:
+    logits_by_job_vehicle: Dict[Tuple[int, int], torch.Tensor] = {}
+    for job_idx, veh_id in selected_job_vehicle_pairs:
         job_idx_int = int(job_idx)
+        veh_id_int = int(veh_id)
         if job_idx_int < 0 or job_idx_int >= job_count:
             raise ValueError("Selected action-logit job index out of range.")
         start = int(job_offsets[job_idx_int])
         end = int(job_offsets[job_idx_int + 1])
-        if end - start != 1:
+        row_indices = np.nonzero(veh_ids[start:end] == veh_id_int)[0]
+        if row_indices.size == 0:
             raise ValueError(
-                "ego_ctrlsim action-logit export expects exactly one action row per selected job."
+                "Selected action-logit vehicle "
+                f"{veh_id_int} not found in job {job_idx_int}."
             )
-        logits_by_job[job_idx_int] = flat_logits[start].detach().clone()
+        row_idx = start + int(row_indices[-1])
+        logits_by_job_vehicle[(job_idx_int, veh_id_int)] = (
+            flat_logits[row_idx].detach().clone()
+        )
 
-    if len(logits_by_job) != len(selected_job_indices):
-        raise ValueError("Selected action-logit export job/result count mismatch.")
-    return logits_by_job
+    return logits_by_job_vehicle
 
 
 def decode_action_stage_batched_impl(
@@ -209,7 +216,7 @@ def decode_action_stage_batched_impl(
     batched_data: Any,
     batch_meta: Dict[str, Any],
     return_logits: bool = False,
-    logits_job_indices: Sequence[int] = (),
+    logits_job_vehicle_pairs: Sequence[Tuple[int, int]] = (),
     cached_scene_enc: Any = None,
 ):
     """执行 action 阶段前向与 batched 解码。
@@ -240,15 +247,13 @@ def decode_action_stage_batched_impl(
         if not return_logits:
             return flat_action_results
 
-        selected_logits_by_job = export_selected_action_logits_by_job_impl(
-            action_logits=action_logits,
-            decode_meta=batch_meta["decode_meta"]["action"],
-            selected_job_indices=logits_job_indices,
+        action_decode_meta = batch_meta["decode_meta"]["action"]
+        selected_logits_by_job_vehicle = (
+            export_selected_action_logits_by_job_and_vehicle_impl(
+                action_logits=action_logits,
+                decode_meta=action_decode_meta,
+                selected_job_vehicle_pairs=logits_job_vehicle_pairs,
+            )
         )
-        action_logits_by_job = [None] * job_count
-        for job_idx, logits in selected_logits_by_job.items():
-            action_logits_by_job[job_idx] = logits
 
-        if len(action_logits_by_job) != job_count:
-            raise ValueError("Action-logit export job/result count mismatch.")
-        return flat_action_results, action_logits_by_job
+        return flat_action_results, selected_logits_by_job_vehicle

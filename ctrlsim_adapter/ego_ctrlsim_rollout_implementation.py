@@ -30,6 +30,13 @@ def run_nocturne_batched_step(
 ) -> tuple[Any, Any, Any, Sequence[dict[str, Any]]]:
     """Run one Nocturne batched step with optional ego ctrl-sim outputs."""
     prepared_batch = venv.step_prepare(action)
+    joint_side_channel_flags = [
+        bool(
+            isinstance(item, Mapping)
+            and item.get("joint_ego_ctrlsim_side_channel", False)
+        )
+        for item in prepared_batch
+    ]
     opponent_prepared, ego_ctrlsim_prepared = split_prepared_pack_batch(
         prepared_batch
     )
@@ -40,6 +47,9 @@ def run_nocturne_batched_step(
     if needs_ego_ctrlsim_dual_forward(args):
         if external_teacher is None:
             raise RuntimeError("Nocturne training requires an ExternalTeacher.")
+        forward_kwargs = {}
+        if any(joint_side_channel_flags):
+            forward_kwargs["joint_side_channel_flags"] = joint_side_channel_flags
         (
             model_outputs,
             ego_ctrlsim_logits,
@@ -48,6 +58,7 @@ def run_nocturne_batched_step(
         ) = external_teacher.run_batched_forward_with_ego_logits(
             opponent_prepared,
             ego_ctrlsim_prepared,
+            **forward_kwargs,
         )
     elif all(item is None for item in opponent_prepared):
         model_outputs = [None] * len(opponent_prepared)

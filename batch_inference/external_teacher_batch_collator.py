@@ -241,6 +241,26 @@ def fill_collate_buffers(jobs: List[Dict[str, Any]], buffers: CollateBufferSet) 
         )
 
 
+def _build_action_effective_scale_metadata(
+    *,
+    data_veh_ids: np.ndarray,
+    delayed_scale: float,
+    ego_id: int | None,
+    is_opponent_job: bool,
+) -> np.ndarray:
+    """Return row-level action effective scale for one job."""
+    data_veh_ids_array = np.asarray(data_veh_ids, dtype=np.int64)
+    if not is_opponent_job:
+        return np.ones(data_veh_ids_array.shape, dtype=np.float32)
+    if ego_id is None:
+        return np.full(data_veh_ids_array.shape, float(delayed_scale), dtype=np.float32)
+    return np.where(
+        data_veh_ids_array == int(ego_id),
+        1.0,
+        float(delayed_scale),
+    ).astype(np.float32, copy=False)
+
+
 def build_decode_metadata(
     jobs: List[Dict[str, Any]],
     token_index_per_job: np.ndarray,
@@ -282,6 +302,8 @@ def build_decode_metadata(
         sampling_seed = int(prepared["sampling_seed"])
         sampling = prepared["sampling"]
         delayed_scale = float(prepared.get("delayed_ego_action_scale", 1.0))
+        ego_id = prepared.get("ego_id")
+        ego_id = int(ego_id) if ego_id is not None else None
         is_opponent_job = str(job.get("job_type", "opponent")) == "opponent"
 
         data_veh_ids = get_prepared_focal_data_veh_ids(prepared, focal_idx)
@@ -333,10 +355,11 @@ def build_decode_metadata(
                 )
             )
             action_effective_scale_parts.append(
-                np.full(
-                    (valid_action_count,),
-                    delayed_scale if is_opponent_job else 1.0,
-                    dtype=np.float32,
+                _build_action_effective_scale_metadata(
+                    data_veh_ids=data_veh_ids[valid_action_mask],
+                    delayed_scale=delayed_scale,
+                    ego_id=ego_id,
+                    is_opponent_job=is_opponent_job,
                 )
             )
 
@@ -364,6 +387,7 @@ def build_decode_metadata(
             tilt_by_veh_id=prepared["tilt_by_veh_id"],
             delayed_scale=delayed_scale,
             is_opponent_job=is_opponent_job,
+            ego_id=ego_id,
         )
 
         rtg_job_idx_parts.append(np.full((valid_rtg_count,), batch_idx, dtype=np.int64))

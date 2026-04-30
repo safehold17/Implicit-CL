@@ -8,7 +8,7 @@ batched inference main flow and the collate/metadata assembly path.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -63,7 +63,7 @@ def _collect_focal_jobs(
     results: List[Optional[Dict[str, Any]]],
     build_empty_env_result,
     job_type: str = "opponent",
-    return_action_logits: bool = False,
+    return_action_logits: bool | Sequence[bool] = False,
 ) -> List[Dict[str, Any]]:
     """按 env prepared 收集 flat focal jobs。
 
@@ -76,9 +76,22 @@ def _collect_focal_jobs(
     only needs to reason about jobs that actually require a forward pass.
     """
     focal_jobs: List[Dict[str, Any]] = []
+    per_env_return_action_logits = None
+    if not isinstance(return_action_logits, bool):
+        if len(return_action_logits) != len(per_env_prepared):
+            raise ValueError(
+                "return_action_logits length must match per_env_prepared length."
+            )
+        per_env_return_action_logits = return_action_logits
+
     for env_idx, prepared in enumerate(per_env_prepared):
         if prepared is None:
             continue
+        env_return_action_logits = (
+            bool(return_action_logits)
+            if per_env_return_action_logits is None
+            else bool(per_env_return_action_logits[env_idx])
+        )
 
         _assert_required_keys(
             prepared,
@@ -104,7 +117,7 @@ def _collect_focal_jobs(
                     "focal_idx": focal_idx,
                     "predict_rtgs": get_prepared_focal_predict_rtgs(prepared, focal_idx),
                     "job_type": job_type,
-                    "return_action_logits": return_action_logits,
+                    "return_action_logits": env_return_action_logits,
                 }
             )
 
@@ -223,7 +236,7 @@ def _build_flat_batch_views(batch_output: Dict[str, Any]) -> Dict[str, Any]:
         "job_types": batch_output["job_types"],
         "prepared_by_job": batch_output["prepared_by_job"],
         "ego_action_scales_by_job": batch_output["ego_action_scales_by_job"],
-        "action_logits_by_job": batch_output["action_logits_by_job"],
+        "action_logits_by_job_vehicle": batch_output["action_logits_by_job_vehicle"],
         "action_veh_ids": np.asarray(flat_action_results["veh_id"], dtype=np.int64),
         "action_values": np.asarray(flat_action_results["values"], dtype=np.float32).reshape((-1, 2)),
         "action_job_offsets": flat_action_results["job_offsets"],
@@ -241,6 +254,8 @@ def _append_flat_job_views_to_env_parts(
     job_idx: int,
     views: Dict[str, Any],
     ego_action_scale: float,
+    excluded_action_veh_ids: Optional[set[int]] = None,
+    excluded_rtg_veh_ids: Optional[set[int]] = None,
 ) -> None:
     """把一个 job 在 flat batch 中对应的视图片段追加到 env parts。
 
@@ -251,23 +266,57 @@ def _append_flat_job_views_to_env_parts(
     Append one job's span views from the flat batch arrays into an env-level
     aggregation container. Callers only decide routing by env/job type, while
     this helper owns the repeated offset parsing, slicing, and part-list
-    appends for action, RTG, and processed-RTG arrays.
+    appends for action, RTG, and processed-RTG arrays. Action and RTG filters are
+    kept separate because joint ego side-channel outputs must suppress executable
+    ego actions while preserving the owner ego RTG history row.
     """
+    excluded_action_ids = excluded_action_veh_ids or set()
+    excluded_action_ids_array = (
+        np.asarray(list(excluded_action_ids), dtype=np.int64)
+        if excluded_action_ids
+        else None
+    )
+    excluded_rtg_ids = excluded_rtg_veh_ids or set()
+    excluded_rtg_ids_array = (
+        np.asarray(list(excluded_rtg_ids), dtype=np.int64)
+        if excluded_rtg_ids
+        else None
+    )
     action_start, action_end = _job_span(views["action_job_offsets"], job_idx)
     if action_end > action_start:
-        env_parts["action_veh_ids_parts"].append(views["action_veh_ids"][action_start:action_end])
-        env_parts["action_values_parts"].append(views["action_values"][action_start:action_end])
+        action_veh_ids = views["action_veh_ids"][action_start:action_end]
+        action_values = views["action_values"][action_start:action_end]
+        if excluded_action_ids_array is not None:
+            keep_mask = ~np.isin(action_veh_ids, excluded_action_ids_array)
+            action_veh_ids = action_veh_ids[keep_mask]
+            action_values = action_values[keep_mask]
+        if action_veh_ids.shape[0] > 0:
+            env_parts["action_veh_ids_parts"].append(action_veh_ids)
+            env_parts["action_values_parts"].append(action_values)
 
     rtg_start, rtg_end = _job_span(views["rtg_job_offsets"], job_idx)
     if rtg_end > rtg_start:
-        env_parts["rtg_veh_ids_parts"].append(views["rtg_veh_ids"][rtg_start:rtg_end])
-        env_parts["rtg_values_parts"].append(views["rtg_values"][rtg_start:rtg_end])
+        rtg_veh_ids = views["rtg_veh_ids"][rtg_start:rtg_end]
+        rtg_values = views["rtg_values"][rtg_start:rtg_end]
+        if excluded_rtg_ids_array is not None:
+            keep_mask = ~np.isin(rtg_veh_ids, excluded_rtg_ids_array)
+            rtg_veh_ids = rtg_veh_ids[keep_mask]
+            rtg_values = rtg_values[keep_mask]
+        if rtg_veh_ids.shape[0] > 0:
+            env_parts["rtg_veh_ids_parts"].append(rtg_veh_ids)
+            env_parts["rtg_values_parts"].append(rtg_values)
 
     processed_start, processed_end = _job_span(views["processed_job_offsets"], job_idx)
     if processed_end > processed_start:
-        env_parts["processed_rtg_veh_ids_parts"].append(
-            views["processed_rtg_veh_ids"][processed_start:processed_end]
-        )
+        processed_veh_ids = views["processed_rtg_veh_ids"][
+            processed_start:processed_end
+        ]
+        if excluded_rtg_ids_array is not None:
+            processed_veh_ids = processed_veh_ids[
+                ~np.isin(processed_veh_ids, excluded_rtg_ids_array)
+            ]
+        if processed_veh_ids.shape[0] > 0:
+            env_parts["processed_rtg_veh_ids_parts"].append(processed_veh_ids)
 
     if float(ego_action_scale) != 1.0:
         env_parts["ego_action_scale"] = float(ego_action_scale)
@@ -371,6 +420,7 @@ def _build_rtg_row_metadata(
     tilt_by_veh_id: Dict[int, Tuple[int, int, int]],
     delayed_scale: float,
     is_opponent_job: bool,
+    ego_id: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """为单个 job 的 RTG rows 构造 tilt 与 effective-scale 元数据。
 
@@ -411,7 +461,7 @@ def _build_rtg_row_metadata(
         goal_tilt[row_indices] = int(goal_val)
         veh_tilt[row_indices] = int(veh_val)
         road_tilt[row_indices] = int(road_val)
-        if is_opponent_job:
+        if is_opponent_job and (ego_id is None or int(veh_id) != int(ego_id)):
             effective_scale[row_indices] = float(delayed_scale)
 
     return goal_tilt, veh_tilt, road_tilt, effective_scale

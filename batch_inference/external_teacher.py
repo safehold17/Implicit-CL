@@ -8,7 +8,7 @@ Handles job collection, single-batch model forward passes, result aggregation, a
 from __future__ import annotations
 
 from contextlib import nullcontext
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -341,6 +341,7 @@ class ExternalTeacher:
             "rtg_veh_ids_parts": [],
             "rtg_values_parts": [],
             "processed_rtg_veh_ids_parts": [],
+            "excluded_dead_ids": set(),
             "ego_action_scale": 1.0,
         }
 
@@ -376,6 +377,15 @@ class ExternalTeacher:
         env_output["processed_rtg_veh_ids"] = _concat_or_empty_ids(
             env_parts["processed_rtg_veh_ids_parts"]
         )
+        excluded_dead_ids = env_parts.get("excluded_dead_ids", set())
+        if excluded_dead_ids:
+            dead_ids = np.asarray(env_output["dead_ids"], dtype=np.int64)
+            env_output["dead_ids"] = dead_ids[
+                ~np.isin(
+                    dead_ids,
+                    np.asarray(list(excluded_dead_ids), dtype=np.int64),
+                )
+            ]
         env_output["ego_action_scale"] = float(env_parts["ego_action_scale"])
         return env_output
 
@@ -659,6 +669,7 @@ class ExternalTeacher:
         self,
         opponent_prepared_batch: List[Optional[Dict[str, Any]]],
         ego_prepared_batch: List[Optional[Dict[str, Any]]],
+        joint_side_channel_flags: Optional[Sequence[bool]] = None,
     ) -> Tuple[
         List[Optional[Dict[str, Any]]],
         List[Optional[np.ndarray]],
@@ -668,24 +679,37 @@ class ExternalTeacher:
         with torch.inference_mode():
             decoded_opponent = self._decode_prepared_batch(opponent_prepared_batch)
             decoded_ego = self._decode_prepared_batch(ego_prepared_batch)
+            if joint_side_channel_flags is None:
+                joint_side_channel_flags_list = [False] * len(decoded_opponent)
+            else:
+                if len(joint_side_channel_flags) != len(decoded_opponent):
+                    raise ValueError(
+                        "joint_side_channel_flags length must match "
+                        "opponent_prepared_batch length."
+                    )
+                joint_side_channel_flags_list = [
+                    bool(flag) for flag in joint_side_channel_flags
+                ]
             try:
                 opponent_results: List[Optional[Dict[str, Any]]] = [None] * len(
                     decoded_opponent
                 )
                 ego_logits_by_env: List[Optional[np.ndarray]] = [None] * len(
-                    decoded_ego
+                    decoded_opponent
                 )
-                ego_rtgs_by_env: List[Optional[np.ndarray]] = [None] * len(decoded_ego)
+                ego_rtgs_by_env: List[Optional[np.ndarray]] = [None] * len(
+                    decoded_opponent
+                )
                 ego_rtg_metadata_by_env: List[Optional[Dict[str, int]]] = [
                     None
-                ] * len(decoded_ego)
+                ] * len(decoded_opponent)
 
                 opponent_jobs = _collect_focal_jobs(
                     decoded_opponent,
                     opponent_results,
                     self._build_empty_env_result,
                     "opponent",
-                    False,
+                    joint_side_channel_flags_list,
                 )
                 ego_jobs = _collect_focal_jobs(
                     decoded_ego,
@@ -716,29 +740,53 @@ class ExternalTeacher:
                         for job_idx, _job in enumerate(views["jobs"]):
                             env_idx = int(views["env_idx_by_job"][job_idx])
                             job_type = str(views["job_types"][job_idx])
+                            job = views["jobs"][job_idx]
+                            prepared = views["prepared_by_job"][job_idx]
                             scale = float(views["ego_action_scales_by_job"][job_idx])
-                            if job_type == "ego_ctrlsim":
-                                action_logits = views["action_logits_by_job"][job_idx]
-                                ego_logits_by_env[env_idx] = (
-                                    action_logits.cpu().numpy()
-                                    if action_logits is not None
-                                    else None
-                                )
-                                ego_id = views["prepared_by_job"][job_idx].get("ego_id")
+                            is_joint_side_channel_job = (
+                                job_type == "opponent"
+                                and bool(joint_side_channel_flags_list[env_idx])
+                            )
+                            ego_id = None
+                            if job_type == "ego_ctrlsim" or is_joint_side_channel_job:
+                                ego_id = prepared.get("ego_id")
+                                has_prepared_ego_id = ego_id is not None
                                 if ego_id is None:
                                     focal_ids = np.asarray(
-                                        views["prepared_by_job"][job_idx]["focal_ids"],
+                                        prepared["focal_ids"],
                                         dtype=np.int64,
                                     )
                                     ego_id = int(focal_ids[0])
-                                if ego_id is not None:
+                                owner_focal_id = prepared.get(
+                                    "ego_context_owner_focal_id"
+                                )
+                                is_ego_owner_job = not has_prepared_ego_id
+                                if has_prepared_ego_id and owner_focal_id is not None:
+                                    focal_idx = int(job.get("focal_idx", 0))
+                                    is_ego_owner_job = (
+                                        int(get_prepared_focal_id(prepared, focal_idx))
+                                        == int(owner_focal_id)
+                                    )
+                                action_logits = (
+                                    views["action_logits_by_job_vehicle"].get(
+                                        (job_idx, int(ego_id))
+                                    )
+                                    if is_ego_owner_job
+                                    else None
+                                )
+                                is_ego_side_channel_output_job = action_logits is not None
+                                if action_logits is not None:
+                                    ego_logits_by_env[env_idx] = action_logits.cpu().numpy()
+                                if (
+                                    is_ego_side_channel_output_job
+                                    and ego_id is not None
+                                ):
                                     rtg_value = _find_flat_rtg_value(
                                         batch_output["flat_rtg_results"],
                                         job_idx=job_idx,
                                         veh_id=int(ego_id),
                                     )
                                     if rtg_value is not None:
-                                        prepared = views["prepared_by_job"][job_idx]
                                         ego_rtgs_by_env[env_idx] = np.asarray(
                                             rtg_value,
                                             dtype=np.float32,
@@ -757,9 +805,12 @@ class ExternalTeacher:
                                             env_idx=env_idx,
                                         ),
                                     )
+                                    if is_joint_side_channel_job:
+                                        env_parts["excluded_dead_ids"].add(int(ego_id))
                                     if scale != 1.0:
                                         env_parts["ego_action_scale"] = scale
-                                continue
+                                if job_type == "ego_ctrlsim":
+                                    continue
 
                             env_parts = opponent_env_parts.setdefault(
                                 env_idx,
@@ -773,6 +824,19 @@ class ExternalTeacher:
                                 job_idx=job_idx,
                                 views=views,
                                 ego_action_scale=scale,
+                                excluded_action_veh_ids=(
+                                    {int(ego_id)}
+                                    if is_joint_side_channel_job
+                                    else None
+                                ),
+                                excluded_rtg_veh_ids=(
+                                    {int(ego_id)}
+                                    if (
+                                        is_joint_side_channel_job
+                                        and not is_ego_side_channel_output_job
+                                    )
+                                    else None
+                                ),
                             )
 
                 for env_idx, env_parts in opponent_env_parts.items():

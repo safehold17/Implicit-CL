@@ -337,11 +337,16 @@ def prepare_step_pack(
         )
     )
     use_policy_reweighting = bool(getattr(adapter, "use_policy_reweighting", False))
-    ego_needs_prepare = (
+    ego_prepare_requested = (
         ego_needs_kl_prepare
         or ego_needs_rtg_prepare
         or (ego_policy_ready and opponent_needs_prepare and use_policy_reweighting)
     )
+    ego_needs_prepare = ego_prepare_requested
+    if ego_prepare_requested:
+        ego_id_int = int(ego_id)
+        ego_agent_idx = int(adapter._policy.veh_id_to_idx[ego_id_int])
+        ego_needs_prepare = bool(adapter._policy.states[ego_agent_idx, t, -1])
 
     shared_context = None
     if opponent_needs_prepare or ego_needs_prepare:
@@ -362,12 +367,61 @@ def prepare_step_pack(
         int(v) for v in getattr(adapter, "_ego_reweight_tilt", (0, 0, 0))
     )
 
+    opponent_ids = get_control_vehicle_queue(adapter)
+    opponent_id_set = {int(veh_id) for veh_id in opponent_ids}
+    joint_side_channel = (
+        opponent_needs_prepare
+        and ego_needs_prepare
+        and ego_policy_ready
+        and ego_id is not None
+        and int(ego_id) not in opponent_id_set
+        and len(opponent_ids) > 0
+    )
+
     opponent_prepared = None
+    if joint_side_channel:
+        ego_id_int = int(ego_id)
+        joint_focal_ids = [ego_id_int] + [
+            int(veh_id)
+            for veh_id in opponent_ids
+            if int(veh_id) != ego_id_int
+        ]
+        joint_tilt_by_veh_id = (
+            dict(adapter.per_vehicle_tilting)
+            if adapter.per_vehicle_tilting
+            else {}
+        )
+        joint_tilt_by_veh_id[int(ego_id)] = (
+            ego_reweight_tilt if use_policy_reweighting else (0, 0, 0)
+        )
+        opponent_prepared = _build_prepared_payload(
+            adapter,
+            t,
+            focal_vehicle_ids=joint_focal_ids,
+            predict_rtgs=True,
+            ego_id=ego_id,
+            owner_focal_id=owner_focal_id,
+            ego_reweight_tilt=ego_reweight_tilt,
+            delayed_ego_action_scale=delayed_ego_action_scale,
+            default_tilt=(
+                adapter.current_tilt.goal_tilt,
+                adapter.current_tilt.veh_veh_tilt,
+                adapter.current_tilt.veh_edge_tilt,
+            ),
+            tilt_by_veh_id=joint_tilt_by_veh_id,
+            shared_context=shared_context,
+        )
+        return {
+            "opponent_prepared": opponent_prepared,
+            "ego_ctrlsim_prepared": None,
+            "joint_ego_ctrlsim_side_channel": opponent_prepared is not None,
+        }
+
     if opponent_needs_prepare:
         opponent_prepared = _build_prepared_payload(
             adapter,
             t,
-            focal_vehicle_ids=get_control_vehicle_queue(adapter),
+            focal_vehicle_ids=opponent_ids,
             predict_rtgs=bool(adapter._policy.predict_rtgs),
             ego_id=ego_id,
             owner_focal_id=owner_focal_id,

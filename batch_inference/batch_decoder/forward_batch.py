@@ -7,12 +7,16 @@ It connects collation, model forward, and flat decode-result aggregation as the 
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
 
 from .action import decode_action_stage_batched_impl
+from ..batch_ipc.prepared import (
+    get_prepared_focal_data_veh_ids,
+    get_prepared_focal_id,
+)
 
 
 def _build_empty_flat_rtg_results(job_count: int) -> Dict[str, Any]:
@@ -44,7 +48,7 @@ def _build_forward_batch_output(
     flat_action_results: Dict[str, Any],
     flat_rtg_results: Dict[str, Any],
     ego_action_scales_by_job: List[float],
-    action_logits_by_job: List[torch.Tensor | None],
+    action_logits_by_job_vehicle: Dict[Tuple[int, int], torch.Tensor],
 ) -> Dict[str, Any]:
     """将单批次前向产物整理成统一 flat batch 返回结构。
 
@@ -67,10 +71,33 @@ def _build_forward_batch_output(
         "job_types": [str(job.get("job_type", "opponent")) for job in jobs],
         "prepared_by_job": [job["prepared"] for job in jobs],
         "ego_action_scales_by_job": [float(value) for value in ego_action_scales_by_job],
-        "action_logits_by_job": action_logits_by_job,
+        "action_logits_by_job_vehicle": action_logits_by_job_vehicle,
         "flat_action_results": flat_action_results,
         "flat_rtg_results": flat_rtg_results,
     }
+
+
+def _resolve_action_logit_vehicle_pair(
+    job_idx: int,
+    job: Dict[str, Any],
+) -> Tuple[int, int] | None:
+    """Return the selected `(job_idx, veh_id)` pair when that row exists."""
+    prepared = job["prepared"]
+    focal_idx = int(job.get("focal_idx", 0))
+    focal_id = int(get_prepared_focal_id(prepared, focal_idx))
+    ego_id = prepared.get("ego_id")
+    if ego_id is not None:
+        owner_focal_id = prepared.get("ego_context_owner_focal_id")
+        if owner_focal_id is None or focal_id != int(owner_focal_id):
+            return None
+        vehicle_id = int(ego_id)
+    else:
+        vehicle_id = focal_id
+
+    data_veh_ids = get_prepared_focal_data_veh_ids(prepared, focal_idx)
+    if not np.any(data_veh_ids == vehicle_id):
+        return None
+    return int(job_idx), int(vehicle_id)
 
 
 def batch_predict_rtgs_mode(jobs: List[Dict[str, Any]]) -> bool:
@@ -112,16 +139,18 @@ def forward_job_batch_impl(
             },
             flat_rtg_results=_build_empty_flat_rtg_results(job_count=0),
             ego_action_scales_by_job=[],
-            action_logits_by_job=[],
+            action_logits_by_job_vehicle={},
         )
 
     batched_data, batch_meta = teacher._collate_jobs_with_padding(jobs)
-    logits_job_indices = [
-        idx
+    logits_job_vehicle_pairs = [
+        pair
         for idx, job in enumerate(jobs)
         if bool(job.get("return_action_logits", False))
+        for pair in [_resolve_action_logit_vehicle_pair(idx, job)]
+        if pair is not None
     ]
-    need_action_logits = bool(logits_job_indices)
+    need_action_logits = bool(logits_job_vehicle_pairs)
 
     if not batch_predict_rtgs_mode_fn(jobs):
         action_decode_outputs = decode_action_stage_batched_impl(
@@ -129,19 +158,22 @@ def forward_job_batch_impl(
             batched_data=batched_data,
             batch_meta=batch_meta,
             return_logits=need_action_logits,
-            logits_job_indices=logits_job_indices,
+            logits_job_vehicle_pairs=logits_job_vehicle_pairs,
         )
         if need_action_logits:
-            flat_action_results, action_logits_by_job = action_decode_outputs
+            (
+                flat_action_results,
+                action_logits_by_job_vehicle,
+            ) = action_decode_outputs
         else:
             flat_action_results = action_decode_outputs
-            action_logits_by_job = [None] * len(jobs)
+            action_logits_by_job_vehicle = {}
         return _build_forward_batch_output(
             jobs,
             flat_action_results=flat_action_results,
             flat_rtg_results=_build_empty_flat_rtg_results(job_count=len(jobs)),
             ego_action_scales_by_job=[1.0] * len(jobs),
-            action_logits_by_job=action_logits_by_job,
+            action_logits_by_job_vehicle=action_logits_by_job_vehicle,
         )
 
     try:
@@ -182,19 +214,22 @@ def forward_job_batch_impl(
         batched_data=batched_data,
         batch_meta=batch_meta,
         return_logits=need_action_logits,
-        logits_job_indices=logits_job_indices,
+        logits_job_vehicle_pairs=logits_job_vehicle_pairs,
         cached_scene_enc=scene_enc,
     )
     if need_action_logits:
-        flat_action_results, action_logits_by_job = action_decode_outputs
+        (
+            flat_action_results,
+            action_logits_by_job_vehicle,
+        ) = action_decode_outputs
     else:
         flat_action_results = action_decode_outputs
-        action_logits_by_job = [None] * len(batch_jobs)
+        action_logits_by_job_vehicle = {}
 
     return _build_forward_batch_output(
         batch_jobs,
         flat_action_results=flat_action_results,
         flat_rtg_results=flat_rtg_results,
         ego_action_scales_by_job=ego_action_scales_by_job,
-        action_logits_by_job=action_logits_by_job,
+        action_logits_by_job_vehicle=action_logits_by_job_vehicle,
     )
