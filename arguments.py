@@ -565,6 +565,14 @@ parser.add_argument(
     help="Begin training from checkpoint. Needed for preemptible training on clusters.",
 )
 parser.add_argument(
+    "--warmup_checkpoint",
+    default=None,
+    help=(
+        "Project-root-relative checkpoint path used to warm-start by restoring "
+        "the full runner state, e.g. checkpoints/model_5000.tar."
+    ),
+)
+parser.add_argument(
     "--disable_checkpoint",
     type=str2bool,
     nargs="?",

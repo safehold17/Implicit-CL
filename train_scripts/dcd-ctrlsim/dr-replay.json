@@ -51,6 +51,7 @@
     "warmup_level_replay_seed_buffer_size": [8000],
     "warmup_opponent_disable_ratio": [0.0],
     "warmup_opponent_replay_ratio": [1.0],
+    "warmup_checkpoint": [],
 
     "__note6__": ["logging parameters"],
     "verbose": [false],

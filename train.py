@@ -39,6 +39,73 @@ def _remap_clearml_dataset_paths(args, dataset_dir):
             continue
         setattr(args, key, os.path.join(dataset_dir, path))
 
+
+def _validate_checkpoint_restore_args(args):
+    """Validate warmup checkpoint exclusivity without changing legacy modes."""
+    if not getattr(args, 'warmup_checkpoint', None):
+        return
+
+    conflicting_modes = []
+    if getattr(args, 'checkpoint', False):
+        conflicting_modes.append('--checkpoint')
+    if getattr(args, 'xpid_finetune', None):
+        conflicting_modes.append('--xpid_finetune')
+    if conflicting_modes:
+        raise ValueError(
+            "--warmup_checkpoint is mutually exclusive with: "
+            + ", ".join(conflicting_modes)
+        )
+
+
+def _resolve_warmup_checkpoint_path(warmup_checkpoint, project_root=None):
+    """Resolve a project-root-relative warmup checkpoint path."""
+    if os.path.isabs(warmup_checkpoint):
+        raise ValueError("--warmup_checkpoint must be project-root-relative")
+
+    if project_root is None:
+        project_root = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(str(project_root))
+    checkpoint_path = os.path.abspath(
+        os.path.normpath(os.path.join(project_root, warmup_checkpoint))
+    )
+    if os.path.commonpath([project_root, checkpoint_path]) != project_root:
+        raise ValueError("--warmup_checkpoint must stay inside the project root")
+    if not os.path.isfile(checkpoint_path):
+        raise FileNotFoundError(
+            f"--warmup_checkpoint not found: {warmup_checkpoint} "
+            f"(resolved to {checkpoint_path})"
+        )
+    return checkpoint_path
+
+
+def _prepare_warmup_checkpoint_path(args, project_root=None):
+    """Validate restore args and resolve any warmup checkpoint path early."""
+    _validate_checkpoint_restore_args(args)
+    warmup_checkpoint = getattr(args, 'warmup_checkpoint', None)
+    if not warmup_checkpoint:
+        return None
+    return _resolve_warmup_checkpoint_path(warmup_checkpoint, project_root)
+
+
+def _load_runner_state_checkpoint(train_runner, checkpoint_path):
+    """Restore full runner state from a training checkpoint file."""
+    checkpoint_states = torch.load(
+        checkpoint_path,
+        map_location=lambda storage, loc: storage,
+    )
+    train_runner.load_state_dict(checkpoint_states['runner_state_dict'])
+    return train_runner.num_updates
+
+
+def _reset_missing_warmup_plr_state(train_runner):
+    """Rebuild current PLR buffers when a warmup checkpoint has no PLR store."""
+    if not getattr(train_runner.args, 'use_plr', False):
+        return False
+    if train_runner.level_store is not None:
+        return False
+    return bool(train_runner.reset_plr_buffers())
+
+
 def init_clearml(args):
     """Initialize ClearML experiment tracking and resolve dataset paths.
 
@@ -120,6 +187,8 @@ def _build_external_teacher(args, device):
     return teacher
 
 def main(args, clearml_task=None):
+    warmup_checkpoint_path = _prepare_warmup_checkpoint_path(args)
+
     display = None
     filewriter = None
     training_succeeded = False
@@ -354,18 +423,27 @@ def main(args, clearml_task=None):
 
         # === Load checkpoint ===
         if args.checkpoint and latest_checkpoint_path is not None:
-            checkpoint_states = torch.load(
-                latest_checkpoint_path,
-                map_location=lambda storage, loc: storage,
-            )
             last_logged_update_at_restart = filewriter.latest_tick() # ticks are 0-indexed updates
-            train_runner.load_state_dict(checkpoint_states['runner_state_dict'])
-            initial_update_count = train_runner.num_updates
+            initial_update_count = _load_runner_state_checkpoint(
+                train_runner,
+                latest_checkpoint_path,
+            )
             logging.info(
                 "Resuming preempted job from %s after %d updates\n",
                 latest_checkpoint_path,
                 initial_update_count,
             ) # 0-indexed next update
+        elif args.warmup_checkpoint:
+            initial_update_count = _load_runner_state_checkpoint(
+                train_runner,
+                warmup_checkpoint_path,
+            )
+            _reset_missing_warmup_plr_state(train_runner)
+            logging.info(
+                "Warm-starting job from %s after %d updates\n",
+                warmup_checkpoint_path,
+                initial_update_count,
+            )
         elif args.xpid_finetune and latest_checkpoint_path is None:
             checkpoint_states = torch.load(base_checkpoint_path)
             state_dict = checkpoint_states['runner_state_dict']
@@ -585,5 +663,6 @@ if __name__ == '__main__':
     os.environ["OMP_NUM_THREADS"] = "1"
 
     args = resolve_runtime_args()
+    _validate_checkpoint_restore_args(args)
     clearml_task = init_clearml(args)
     main(args, clearml_task)
