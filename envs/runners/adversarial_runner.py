@@ -4,7 +4,6 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os
 from collections import deque, defaultdict
 
 import numpy as np
@@ -13,14 +12,10 @@ from stable_baselines3.common.running_mean_std import RunningMeanStd
 
 from level_replay import LevelSampler, LevelStore
 from util import \
-    array_to_csv, \
     is_discrete_actions, \
     get_obs_at_index
 
 from teachDeepRL.teachers.teacher_controller import TeacherController
-
-import matplotlib as mpl
-import matplotlib.pyplot as plt
 
 from ctrlsim_adapter.regret_enhancement_implementation import (
     ENHANCED_REGRET_RAW_TERM_KEYS,
@@ -1227,12 +1222,6 @@ class AdversarialRunner(object):
                 enhanced_regret_external_score_metrics = {}
                 should_compute_enhanced_regret_scores = (
                     track_nocturne_enhanced_regret
-                )
-                use_enhanced_regret_sampler_scores = (
-                    should_compute_enhanced_regret_scores
-                    and plr_runtime_enabled
-                    and level_sampler
-                    and update_level_sampler
                 )
                 if should_compute_enhanced_regret_scores:
                     (

@@ -1,4 +1,4 @@
-"""Rollout-local helpers for PLR/ACCEL regret enhancement."""
+"""Rollout-local implementations for PLR/ACCEL regret enhancement."""
 
 from __future__ import annotations
 
