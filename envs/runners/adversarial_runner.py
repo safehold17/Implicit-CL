@@ -358,6 +358,7 @@ class AdversarialRunner(object):
         self.total_episodes_collected = 0
         self.total_seeds_collected = 0
         self.student_grad_updates = 0
+        self.ego_ctrlsim_kl_schedule_start_update = 0
         self.sampled_level_info = None
         self._pending_replay_obs = None
 
@@ -391,6 +392,9 @@ class AdversarialRunner(object):
             'total_seeds_collected': self.total_seeds_collected,
             'total_num_edits': self.total_num_edits,
             'student_grad_updates': self.student_grad_updates,
+            'ego_ctrlsim_kl_schedule_start_update': (
+                getattr(self, 'ego_ctrlsim_kl_schedule_start_update', 0)
+            ),
             'latest_env_stats': self.latest_env_stats,
             'latest_env_process_stats': self.latest_env_process_stats,
             'enhanced_regret_running_stats': (
@@ -420,6 +424,10 @@ class AdversarialRunner(object):
         self.total_seeds_collected = state_dict.get('total_seeds_collected')
         self.total_num_edits = state_dict.get('total_num_edits')
         self.student_grad_updates = state_dict.get('student_grad_updates')
+        self.ego_ctrlsim_kl_schedule_start_update = state_dict.get(
+            'ego_ctrlsim_kl_schedule_start_update',
+            0,
+        )
         self.latest_env_stats = state_dict.get('latest_env_stats')
         self.latest_env_process_stats = state_dict.get('latest_env_process_stats', [])
         self._load_enhanced_regret_running_stats_state(
@@ -1276,11 +1284,16 @@ class AdversarialRunner(object):
                             ),
                         )
 
+                    kl_schedule_start_update = getattr(
+                        self,
+                        'ego_ctrlsim_kl_schedule_start_update',
+                        0,
+                    )
                     value_loss, action_loss, dist_entropy, info = agent.update(
                         discard_grad=discard_grad,
                         kl_dict=kl_dict,
-                        current_update=self.num_updates,
-                        total_updates=self.total_updates,
+                        current_update=self.num_updates - kl_schedule_start_update,
+                        total_updates=self.total_updates - kl_schedule_start_update,
                     )
 
                     if plr_runtime_enabled and level_sampler and update_level_sampler:
@@ -1298,6 +1311,11 @@ class AdversarialRunner(object):
                     if 'ego_ctrlsim_kl_loss' in info.keys():
                         ego_ctrlsim_kl_loss = info.pop('ego_ctrlsim_kl_loss')
                         rollout_info.update({'ego_ctrlsim_kl_loss': ego_ctrlsim_kl_loss})
+                    if 'ego_ctrlsim_kl_loss_weight' in info.keys():
+                        ego_ctrlsim_kl_loss_weight = info.pop('ego_ctrlsim_kl_loss_weight')
+                        rollout_info.update({
+                            'ego_ctrlsim_kl_loss_weight': ego_ctrlsim_kl_loss_weight
+                        })
 
                     rollout_info.update({
                         'value_loss': value_loss,
@@ -1379,11 +1397,16 @@ class AdversarialRunner(object):
                 external_scores_apply_to_partial=external_scores_apply_to_partial,
             )
 
+        kl_schedule_start_update = getattr(
+            self,
+            'ego_ctrlsim_kl_schedule_start_update',
+            0,
+        )
         value_loss, action_loss, dist_entropy, info = agent.update(
             discard_grad=discard_grad,
             kl_dict=kl_dict,
-            current_update=self.num_updates,
-            total_updates=self.total_updates,
+            current_update=self.num_updates - kl_schedule_start_update,
+            total_updates=self.total_updates - kl_schedule_start_update,
         )
 
         if plr_runtime_enabled and level_sampler and update_level_sampler:
@@ -1402,6 +1425,11 @@ class AdversarialRunner(object):
         if 'ego_ctrlsim_kl_loss' in info.keys():
             ego_ctrlsim_kl_loss = info.pop('ego_ctrlsim_kl_loss')
             rollout_info.update({'ego_ctrlsim_kl_loss': ego_ctrlsim_kl_loss})
+        if 'ego_ctrlsim_kl_loss_weight' in info.keys():
+            ego_ctrlsim_kl_loss_weight = info.pop('ego_ctrlsim_kl_loss_weight')
+            rollout_info.update({
+                'ego_ctrlsim_kl_loss_weight': ego_ctrlsim_kl_loss_weight
+            })
 
         # Compute LZ complexity of action trajectories
         if self.args.log_action_complexity:
@@ -1869,6 +1897,9 @@ class AdversarialRunner(object):
             'adversary_pg_loss': adversary_agent_info['action_loss'],
             'adversary_dist_entropy': adversary_agent_info['dist_entropy'],
             'ego_ctrlsim_kl_loss': agent_info.get('ego_ctrlsim_kl_loss', None),
+            'ego_ctrlsim_kl_loss_weight': agent_info.get(
+                'ego_ctrlsim_kl_loss_weight', None
+            ),
             'ego_heading_error_to_gt': agent_info.get(
                 'ego_heading_error_to_gt', None
             ),

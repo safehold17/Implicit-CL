@@ -438,6 +438,7 @@ def main(args, clearml_task=None):
                 train_runner,
                 warmup_checkpoint_path,
             )
+            train_runner.ego_ctrlsim_kl_schedule_start_update = initial_update_count
             _reset_missing_warmup_plr_state(train_runner)
             logging.info(
                 "Warm-starting job from %s after %d updates\n",
@@ -504,7 +505,13 @@ def main(args, clearml_task=None):
             disable=not sys.stderr.isatty(),
         ) as pbar:
             for j in pbar:
-                completed_env_steps_before_update = j * env_steps_per_update
+                completed_env_steps_before_update = (
+                    j - getattr(
+                        train_runner,
+                        'ego_ctrlsim_kl_schedule_start_update',
+                        0,
+                    )
+                ) * env_steps_per_update
 
                 target_mode = resolve_opponent_runtime_mode_by_steps(completed_env_steps_before_update)
                 if target_mode != current_opponent_runtime_mode:

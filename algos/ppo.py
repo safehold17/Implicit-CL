@@ -310,6 +310,8 @@ class PPO():
         info["ppo_total_loss"] = ppo_total_loss_epoch
         if use_model_kl_loss:
             info['kl_loss'] = kl_loss_epoch
+        if self.use_ego_ctrlsim_kl_loss and discard_grad is False:
+            info['ego_ctrlsim_kl_loss_weight'] = ego_ctrlsim_kl_coef
         # 单独记录 ego_ctrlsim KL，避免和旧的在线 KL 指标混淆。
         # Log ego_ctrlsim KL separately so it does not get mixed with the legacy online KL metric.
         if ego_ctrlsim_kl_loss_updates > 0:

@@ -270,6 +270,7 @@ class FileWriter:
             "train_agent_dist_entropy": "agent_dist_entropy",
             "train_safe_episode_rate": "safe_episode_rate",
             "train_kl_loss_ego_ctrlsim": "ego_ctrlsim_kl_loss",
+            "train_kl_loss_weight": "ego_ctrlsim_kl_loss_weight",
             "ego_heading_error_to_gt": "ego_heading_error_to_gt",
             "ego_turn_heading_error_to_gt": "ego_turn_heading_error_to_gt",
             "ego_non_turn_heading_error_to_gt": "ego_non_turn_heading_error_to_gt",
