@@ -456,8 +456,10 @@ class AdversarialRunner(object):
                     iter(self.warmup_level_samplers.values())
                 )
 
-            if self.use_editor:
+            if self.use_editor and self.level_store is not None:
                 self.weighted_num_edits = self._get_weighted_num_edits()
+            elif self.use_editor:
+                self.weighted_num_edits = 0
 
     def _get_batched_value_loss(self, agent, clipped=True, batched=True):
         batched_value_loss = agent.storage.get_batched_value_loss(
