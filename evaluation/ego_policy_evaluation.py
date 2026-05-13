@@ -1,4 +1,4 @@
-"""Specialized Nocturne evaluation for ego policy with GT-replay opponents."""
+"""Specialized Nocturne evaluation for ego policy with replay or policy opponents."""
 
 import argparse
 import json
@@ -15,7 +15,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from batch_inference import ExternalTeacher, build_external_teacher_kwargs
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
+from envs.nocturne_ctrlsim.core.episode_runtime import split_prepared_pack_batch
 from envs.wrappers import ParallelAdversarialVecEnv
 from evaluation.evaluation_common import (
     build_metrics_mean_row,
@@ -51,7 +53,7 @@ VEHICLE_MAP_PATH = (
     "/media/chen/Dataset/ctrlsim_dataset/preparation_file/"
     "vehicle_map_filtered_valid.json"
 )
-MODEL_TAR_PATTERN = re.compile(r"^model_(\d+)\.tar$")
+CHECKPOINT_TAR_PATTERN = re.compile(r"^(.+)\.tar$")
 MULTI_CHECKPOINT_METRIC_FIELDS = (
     "number",
     "scenario_id",
@@ -68,7 +70,7 @@ SOLVED_PROGRESS_THRESHOLD = 0.85
 def parse_args():
     """Parse CLI arguments for specialized ego policy evaluation."""
     parser = argparse.ArgumentParser(
-        description="Evaluate ego policy in Nocturne-CtrlSim with GT-replay opponents."
+        description="Evaluate ego policy in Nocturne-CtrlSim with replay or policy opponents."
     )
     parser.add_argument(
         "--base_path",
@@ -107,7 +109,39 @@ def parse_args():
         nargs="?",
         const=True,
         default=False,
-        help="Evaluate every numbered model_<step>.tar under base_path.",
+        help="Evaluate every .tar checkpoint under base_path.",
+    )
+    parser.add_argument(
+        "--opponent_eval_mode",
+        type=str,
+        choices=["replay", "policy"],
+        default="replay",
+        help="Use GT replay or CtrlSim policy control for opponent vehicles.",
+    )
+    parser.add_argument(
+        "--opponent_checkpoint",
+        type=str,
+        default=None,
+        help="Optional CtrlSim checkpoint path for policy-controlled opponents.",
+    )
+    parser.add_argument(
+        "--tilting_mode",
+        type=str,
+        choices=["none", "global", "per_vehicle"],
+        default="none",
+        help="Tilt mode for CtrlSim policy-controlled opponents.",
+    )
+    parser.add_argument(
+        "--tilt_range_min",
+        type=float,
+        default=None,
+        help="Minimum sampled tilt value for policy-controlled opponents.",
+    )
+    parser.add_argument(
+        "--tilt_range_max",
+        type=float,
+        default=None,
+        help="Maximum sampled tilt value for policy-controlled opponents.",
     )
     parser.add_argument(
         "--deterministic",
@@ -137,15 +171,15 @@ def parse_args():
 
 
 def find_model_checkpoints(base_path: str) -> list[str]:
-    """Return sorted checkpoint stems matching model_<step>.tar."""
+    """Return sorted stems for every .tar checkpoint under base_path."""
     matched = []
     for filename in os.listdir(base_path):
-        match = MODEL_TAR_PATTERN.match(filename)
+        match = CHECKPOINT_TAR_PATTERN.match(filename)
         if match is None:
             continue
-        matched.append((int(match.group(1)), filename[:-4]))
-    matched.sort(key=lambda item: item[0])
-    return [stem for _, stem in matched]
+        matched.append(match.group(1))
+    matched.sort()
+    return matched
 
 
 def load_agent_from_checkpoint(
@@ -201,6 +235,23 @@ def load_agent_from_checkpoint(
     return agent, xpid_flags, nocturne_required, dummy_venv
 
 
+def build_policy_opponent_teacher(
+    *,
+    checkpoint_path: str,
+    device: str,
+    cli_args: DotDict,
+) -> ExternalTeacher:
+    """Build the CtrlSim teacher used to control opponent vehicles."""
+    teacher_kwargs = build_external_teacher_kwargs(
+        checkpoint_path=checkpoint_path,
+        device=device,
+        inference_precision=str(cli_args.get("inference_precision", "fp32")),
+        config_source=cli_args,
+    )
+    teacher_kwargs["base_seed"] = int(cli_args.get("seed", 1))
+    return ExternalTeacher(**teacher_kwargs)
+
+
 def run_single_checkpoint_evaluation(
     *,
     base_path: str,
@@ -221,6 +272,14 @@ def run_single_checkpoint_evaluation(
     )
     xpid_flags.update(cli_args)
     xpid_flags.update({"use_skip": False})
+    opponent_eval_mode = str(cli_args.get("opponent_eval_mode", "replay"))
+    external_teacher = None
+    if opponent_eval_mode == "policy":
+        external_teacher = build_policy_opponent_teacher(
+            checkpoint_path=str(nocturne_required["opponent_checkpoint"]),
+            device=device,
+            cli_args=xpid_flags,
+        )
 
     evaluator = None
     try:
@@ -233,6 +292,7 @@ def run_single_checkpoint_evaluation(
             use_global_critic=xpid_flags.use_global_critic,
             video_dir=video_dir,
             seed=cli_args.seed,
+            opponent_eval_mode=opponent_eval_mode,
             **nocturne_required,
             record_video=cli_args.record_video,
         )
@@ -242,6 +302,7 @@ def run_single_checkpoint_evaluation(
             show_progress=cli_args.verbose,
             progress_position=progress_position,
             accumulator=None,
+            external_teacher=external_teacher,
         )
     finally:
         if evaluator is not None:
@@ -250,7 +311,7 @@ def run_single_checkpoint_evaluation(
 
 
 class EgoReplayEvaluator(Evaluator):
-    """Evaluator specialized for ego policy rollouts with GT-replay opponents."""
+    """Evaluator specialized for ego policy rollouts with replay or policy opponents."""
 
     def _init_parallel_envs(
         self,
@@ -260,22 +321,31 @@ class EgoReplayEvaluator(Evaluator):
         record_video=False,
         **kwargs,
     ):
-        """Initialize vectorized Nocturne envs fixed to replay mode."""
+        """Initialize vectorized Nocturne envs for ego-policy evaluation."""
         validate_nocturne_env_names(env_names)
         self.env_names = env_names
         self.num_processes = num_processes
         self.device = device
         self.venv = {env_name: None for env_name in env_names}
         eval_seed = kwargs.get("seed")
+        self.opponent_eval_mode = str(kwargs.pop("opponent_eval_mode", "replay"))
+        opponent_runtime_mode = (
+            "normal" if self.opponent_eval_mode == "policy" else "replay"
+        )
 
         for env_name in env_names:
-            env_kwargs = {k: v for k, v in kwargs.items() if k != "video_dir"}
+            env_kwargs = {
+                k: v
+                for k, v in kwargs.items()
+                if k not in ("video_dir", "opponent_runtime_mode")
+            }
             make_fn = [
                 (
                     lambda idx: lambda: build_replay_nocturne_env(
                         NocturneCtrlSimAdversarial,
                         record_video=record_video,
                         process_idx=idx,
+                        opponent_runtime_mode=opponent_runtime_mode,
                         video_dir=kwargs.get("video_dir", "videos/"),
                         **env_kwargs,
                     )
@@ -304,9 +374,9 @@ class EgoReplayEvaluator(Evaluator):
         return_episode_returns=False,
         external_teacher=None,
     ):
-        """Evaluate ego policy while all opponent vehicles follow GT replay."""
-        del external_teacher
+        """Evaluate ego policy while opponents use replay or CtrlSim policy."""
         episode_metrics = []
+        use_policy_opponents = self.opponent_eval_mode == "policy"
 
         for env_name, venv in self.venv.items():
             returns = []
@@ -344,8 +414,14 @@ class EgoReplayEvaluator(Evaluator):
 
                 action = action.cpu().numpy()
                 action = agent.process_action(action)
-                venv.step_prepare(action)
-                model_outputs = [None] * self.num_processes
+                prepared_batch = venv.step_prepare(action)
+                if use_policy_opponents:
+                    if external_teacher is None:
+                        raise RuntimeError("Policy opponent evaluation requires ExternalTeacher.")
+                    opponent_prepared, _ = split_prepared_pack_batch(prepared_batch)
+                    model_outputs = external_teacher.run_batched_forward(opponent_prepared)
+                else:
+                    model_outputs = [None] * self.num_processes
                 obs, reward, done, infos = venv.step_complete(
                     model_outputs,
                     reset_random=True,
@@ -386,11 +462,11 @@ def run_all_checkpoint_evaluations(
     device: str,
     cli_args: DotDict,
 ) -> None:
-    """Evaluate every numbered checkpoint and write one CSV per checkpoint."""
+    """Evaluate every .tar checkpoint and write one CSV per checkpoint."""
     model_tars = find_model_checkpoints(base_path)
     if not model_tars:
         raise FileNotFoundError(
-            f"No numbered checkpoints found under {base_path}: expected model_<step>.tar"
+            f"No .tar checkpoints found under {base_path}"
         )
 
     cli_args.record_video = False
@@ -441,11 +517,12 @@ def run_all_checkpoint_evaluations(
 
 
 def main():
-    """Run specialized ego policy evaluation with GT-replay opponents."""
+    """Run specialized ego policy evaluation with replay or policy opponents."""
     os.environ["OMP_NUM_THREADS"] = "1"
     args = DotDict(vars(parse_args()))
     args.setdefault("all_checkpoints", False)
     args.setdefault("record_video", False)
+    args.setdefault("opponent_eval_mode", "replay")
     args.num_processes = min(args.num_processes, args.num_episodes)
 
     display = start_headless_display()

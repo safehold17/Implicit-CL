@@ -161,13 +161,25 @@ def collect_replay_nocturne_args(
         "student_top_k_road",
         "done_on_position_reached_only",
         "goal_pos_tolerance",
+        "tilting_mode",
         "use_speed_heading_target",
     ]
     for key in keys:
-        if key in flags:
-            required[key] = flags[key]
-        elif key in cli_args:
+        if key in cli_args and cli_args[key] is not None:
             required[key] = cli_args[key]
+        elif key in flags:
+            required[key] = flags[key]
+    cli_tilt_min = cli_args.get("tilt_range_min")
+    cli_tilt_max = cli_args.get("tilt_range_max")
+    if cli_tilt_min is not None and cli_tilt_max is not None:
+        required["tilt_range"] = (cli_tilt_min, cli_tilt_max)
+    elif "tilt_range" in flags:
+        required["tilt_range"] = flags["tilt_range"]
+    else:
+        tilt_range_min = flags.get("tilt_range_min")
+        tilt_range_max = flags.get("tilt_range_max")
+        if tilt_range_min is not None and tilt_range_max is not None:
+            required["tilt_range"] = (tilt_range_min, tilt_range_max)
     return required
 
 
@@ -176,10 +188,11 @@ def build_replay_nocturne_env(
     *,
     record_video: bool = False,
     process_idx: int | None = None,
+    opponent_runtime_mode: str = "replay",
     video_dir: str = "videos/",
     **kwargs: Any,
 ) -> Any:
-    """Build one Nocturne env fixed to replay-mode opponents."""
+    """Build one Nocturne env with the requested opponent runtime mode."""
     allowed_nocturne_keys = {
         "scenario_index_path",
         "opponent_checkpoint",
@@ -195,12 +208,13 @@ def build_replay_nocturne_env(
         "goal_pos_tolerance",
         "device",
         "tilting_mode",
+        "tilt_range",
         "use_speed_heading_target",
         "opponent_runtime_mode",
     }
     nocturne_kwargs = {k: v for k, v in kwargs.items() if k in allowed_nocturne_keys}
     nocturne_kwargs.setdefault("tilting_mode", "per_vehicle")
-    nocturne_kwargs["opponent_runtime_mode"] = "replay"
+    nocturne_kwargs["opponent_runtime_mode"] = opponent_runtime_mode
     env = env_ctor(**nocturne_kwargs)
     if not record_video:
         return env
