@@ -46,6 +46,56 @@ def render(env, mode: str = "human"):
     if not vehicle_data:
         return None
 
+    highlight_ids = set()
+    if env.ego_vehicle is not None:
+        highlight_ids.add(env.ego_vehicle.getID())
+    opponent_ids = set(env.opponent_vehicle_ids) if env.opponent_vehicle_ids else set()
+    show_gt_trajectory = getattr(env, "show_gt_trajectory", False)
+    gt_trajectory_style = getattr(env, "gt_trajectory_style", "ghost")
+    controlled_ids = highlight_ids | opponent_ids
+    controlled_goal_points_by_id = {}
+    goal_points_by_id = getattr(env, "_goal_points_by_id", None)
+    if goal_points_by_id:
+        for veh_id in controlled_ids:
+            goal_pos = goal_points_by_id.get(veh_id)
+            if goal_pos is None or len(goal_pos) < 2:
+                continue
+            x = float(goal_pos[0])
+            y = float(goal_pos[1])
+            if not np.isfinite(x) or not np.isfinite(y):
+                continue
+            controlled_goal_points_by_id[veh_id] = (x, y)
+            positions.append([x, y])
+
+    gt_trajectory_by_vehicle_id = {}
+    if show_gt_trajectory:
+        gt_data_dict = getattr(env, "_gt_data_dict", {})
+        gt_traj_cache = getattr(env, "_gt_traj_cache", {})
+        for veh_id in controlled_ids:
+            gt_source = None
+            if isinstance(gt_traj_cache, dict) and veh_id in gt_traj_cache:
+                gt_source = gt_traj_cache[veh_id]
+            elif isinstance(gt_data_dict, dict):
+                gt_data = gt_data_dict.get(veh_id)
+                if isinstance(gt_data, dict):
+                    gt_source = gt_data.get("traj")
+            if gt_source is None:
+                continue
+
+            gt_traj = np.asarray(gt_source, dtype=np.float32)
+            if gt_traj.ndim != 2 or gt_traj.shape[1] < 5:
+                continue
+
+            valid_mask = gt_traj[:, 4].astype(bool)
+            trajectory_points = gt_traj[valid_mask, :3]
+            finite_mask = np.isfinite(trajectory_points[:, :2]).all(axis=1)
+            trajectory_points = trajectory_points[finite_mask]
+            if len(trajectory_points) < 2:
+                continue
+
+            gt_trajectory_by_vehicle_id[veh_id] = trajectory_points
+            positions.extend(trajectory_points[:, :2].tolist())
+
     fig = Figure(figsize=(10, 10), dpi=200)
     canvas = FigureCanvas(fig)
     ax = fig.add_subplot(111)
@@ -75,7 +125,7 @@ def render(env, mode: str = "human"):
             ec="none",
             fc=color,
             alpha=alpha,
-            zorder=5,
+            zorder=9,
         )
         outer = mpatches.Circle(
             (x, y),
@@ -85,10 +135,94 @@ def render(env, mode: str = "human"):
             linewidth=0.35,
             linestyle=(0, (2, 2)),
             alpha=alpha,
-            zorder=5,
+            zorder=9,
         )
         ax.add_patch(inner)
         ax.add_patch(outer)
+
+    def _draw_future_vehicle_trajectory(trajectory_points, vehicle_spec, color):
+        """Draw future GT poses as fading vehicle boxes."""
+        length = vehicle_spec["length"] * 0.8
+        width = vehicle_spec["width"] * 0.8
+        future_points = _sample_future_vehicle_poses(trajectory_points[1:], spacing=length * 1.25)
+        alpha_progress = np.linspace(0.0, 1.0, len(future_points), dtype=np.float32)
+        alphas = 0.12 + (0.7 - 0.12) * 0.5 * (1.0 + np.cos(np.pi * alpha_progress))
+        ghost_length = length * 0.9
+        ghost_width = width * 0.9
+        for point, alpha in zip(future_points, alphas):
+            x, y, heading = point
+            bbox_x_min = x - ghost_width / 2
+            bbox_y_min = y - ghost_length / 2
+            rectangle = mpatches.FancyBboxPatch(
+                (bbox_x_min, bbox_y_min),
+                ghost_width,
+                ghost_length,
+                ec=color,
+                fc=color,
+                linewidth=lw * 0.7,
+                alpha=float(alpha),
+                boxstyle=mpatches.BoxStyle("Round", pad=0.3),
+                zorder=3,
+            )
+            tr = transforms.Affine2D().rotate_deg_around(
+                x,
+                y,
+                math.degrees(heading) - 90,
+            ) + ax.transData
+            rectangle.set_transform(tr)
+            ax.add_patch(rectangle)
+
+    def _draw_line_trajectory(trajectory_points, color):
+        """Draw a GT trajectory as a single line."""
+        ax.plot(
+            trajectory_points[:, 0],
+            trajectory_points[:, 1],
+            color=color,
+            linewidth=gt_trajectory_lw,
+            alpha=0.65,
+            zorder=3,
+        )
+
+    def _sample_future_vehicle_poses(future_points, spacing):
+        """Sample future poses by arc length while preserving the final pose."""
+        if len(future_points) <= 1:
+            return future_points
+
+        segment_vectors = np.diff(future_points[:, :2], axis=0)
+        segment_lengths = np.linalg.norm(segment_vectors, axis=1)
+        cumulative_lengths = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+        total_length = cumulative_lengths[-1]
+        if total_length <= 0.0:
+            return future_points[-1:]
+
+        sample_distances = [0.0]
+        distance = spacing
+        while distance < total_length:
+            sample_distances.append(distance)
+            distance += spacing
+        if total_length - sample_distances[-1] < spacing * 0.5:
+            sample_distances[-1] = total_length
+        else:
+            sample_distances.append(total_length)
+
+        sampled_points = []
+        for sample_distance in sample_distances:
+            segment_idx = np.searchsorted(cumulative_lengths, sample_distance, side="right") - 1
+            segment_idx = min(max(segment_idx, 0), len(segment_lengths) - 1)
+            segment_length = segment_lengths[segment_idx]
+            if segment_length == 0.0:
+                ratio = 0.0
+            else:
+                ratio = (
+                    sample_distance - cumulative_lengths[segment_idx]
+                ) / segment_length
+            point = (
+                future_points[segment_idx] * (1.0 - ratio)
+                + future_points[segment_idx + 1] * ratio
+            )
+            sampled_points.append(point)
+
+        return np.asarray(sampled_points, dtype=np.float32)
 
     roads_data = env._road_graph_cache
     if roads_data is None and env.scenario is not None:
@@ -107,11 +241,8 @@ def render(env, mode: str = "human"):
     line_scale = (x_max - x_min) / 140 if x_max > x_min else 1.0
     lw = 0.35 / line_scale
     heading_lw = 0.25 / line_scale
+    gt_trajectory_lw = 0.45 / line_scale
 
-    highlight_ids = set()
-    if env.ego_vehicle is not None:
-        highlight_ids.add(env.ego_vehicle.getID())
-    opponent_ids = set(env.opponent_vehicle_ids) if env.opponent_vehicle_ids else set()
     show_tilting_params = getattr(env, "show_tilting_params", True)
     show_vehicle_ids = getattr(env, "show_vehicle_ids", True)
     show_ego_vehicle_selection = getattr(env, "show_ego_vehicle_selection", True)
@@ -135,6 +266,17 @@ def render(env, mode: str = "human"):
                         if base + 2 < len(per):
                             tilt_by_vehicle_id[veh_id] = (per[base], per[base + 1], per[base + 2])
 
+    vehicle_data_by_id = {veh["id"]: veh for veh in vehicle_data}
+    for veh_id, trajectory_points in gt_trajectory_by_vehicle_id.items():
+        vehicle_spec = vehicle_data_by_id.get(veh_id)
+        if vehicle_spec is None:
+            continue
+        color = "#ff6b6b" if veh_id in highlight_ids else "#4aa3ff"
+        if gt_trajectory_style == "line":
+            _draw_line_trajectory(trajectory_points, color)
+        else:
+            _draw_future_vehicle_trajectory(trajectory_points, vehicle_spec, color)
+
     vehicle_patches = {}
     tilt_text_specs = []
     for veh in vehicle_data:
@@ -142,10 +284,10 @@ def render(env, mode: str = "human"):
         is_opponent = (not is_highlight) and veh["id"] in opponent_ids
         if is_highlight:
             color = "#ff6b6b"
-            alpha = 0.8
+            alpha = 1.0
         elif is_opponent:
             color = "#4aa3ff"
-            alpha = 0.8
+            alpha = 1.0
         else:
             color = "#ffde8b"
             alpha = 0.5
@@ -228,15 +370,8 @@ def render(env, mode: str = "human"):
                 }
             )
 
-    goal_points_by_id = getattr(env, "_goal_points_by_id", None)
-    if goal_points_by_id:
-        for veh_id, goal_pos in goal_points_by_id.items():
-            if goal_pos is None or len(goal_pos) < 2:
-                continue
-            x = float(goal_pos[0])
-            y = float(goal_pos[1])
-            if not np.isfinite(x) or not np.isfinite(y):
-                continue
+    if controlled_goal_points_by_id:
+        for veh_id, (x, y) in controlled_goal_points_by_id.items():
             is_highlight = veh_id in highlight_ids
             is_opponent = (not is_highlight) and veh_id in opponent_ids
             _draw_goal_point(x, y, is_highlight, is_opponent)
