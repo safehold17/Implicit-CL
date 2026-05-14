@@ -8,6 +8,10 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
+from ctrlsim_evaluation_metrics import (
+    CTRLSIM_EGO_METRIC_FIELDS,
+)
+
 EPISODE_METRIC_FIELDS = (
     "number",
     "scenario_id",
@@ -33,6 +37,14 @@ def extract_episode_metrics(info: dict[str, Any]) -> dict[str, float | str]:
         "progress": float(info.get("max_progress", info.get("progress", 0.0))),
         "total_episode_reward": float(total_episode_reward),
     }
+
+
+def extract_ctrlsim_episode_metrics(info: dict[str, Any]) -> dict[str, float | str]:
+    """Extract Nocturne metrics plus CtrlSim-style ego trajectory metrics."""
+    metrics = extract_episode_metrics(info)
+    for field in CTRLSIM_EGO_METRIC_FIELDS:
+        metrics[field] = float(info[field])
+    return metrics
 
 
 def compute_solved_flag(

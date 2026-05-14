@@ -6,6 +6,9 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+from ctrlsim_evaluation_metrics import (
+    compute_ctrlsim_ego_metrics_from_adapter,
+)
 from ..student.student_reward import get_student_component_applied_return
 from ..utils.common import clamp01, merge_episode_progress
 
@@ -245,6 +248,14 @@ def get_info(
             'r': env.episode_reward,
             'l': env.current_step,
         }
+        ego_vehicle = getattr(env, "ego_vehicle", None)
+        ego_id = ego_vehicle.getID() if ego_vehicle is not None else None
+        info.update(
+            compute_ctrlsim_ego_metrics_from_adapter(
+                getattr(env, "opponent", None),
+                ego_id,
+            )
+        )
 
     return info
 

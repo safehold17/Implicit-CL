@@ -15,10 +15,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from ctrlsim_evaluation_metrics import (
+    CTRLSIM_EGO_METRIC_FIELDS,
+)
 from evaluation.evaluation_common import (
     build_metrics_mean_row,
     compute_solved_flag,
-    extract_episode_metrics,
+    extract_ctrlsim_episode_metrics,
     resolve_csv_output_path,
     write_metrics_csv,
 )
@@ -39,6 +42,7 @@ TEACHER_EVAL_METRIC_FIELDS = (
     "progress",
     "solved",
     "total_episode_reward",
+    *CTRLSIM_EGO_METRIC_FIELDS,
 )
 
 TEACHER_EVAL_SUMMARY_FIELDS = (
@@ -50,6 +54,13 @@ TEACHER_EVAL_SUMMARY_FIELDS = (
     "position_reached_rate",
     "avg_progress",
     "avg_return",
+    "avg_fde",
+    "avg_ade",
+    "avg_lin_speed_jsd",
+    "avg_ang_speed_jsd",
+    "avg_accel_jsd",
+    "avg_nearest_dist_jsd",
+    "avg_meta_jsd",
 )
 
 
@@ -185,7 +196,7 @@ def evaluate_teacher_mode(
             for info in infos:
                 if "episode" not in info:
                     continue
-                metrics = extract_episode_metrics(info)
+                metrics = extract_ctrlsim_episode_metrics(info)
                 metrics["solved"] = compute_solved_flag(
                     progress=float(metrics["progress"]),
                     collision=float(metrics["collision"]),
@@ -258,6 +269,23 @@ def main() -> None:
                 ),
                 "avg_return": float(
                     np.mean([float(row["total_episode_reward"]) for row in episode_metrics])
+                ),
+                "avg_fde": float(np.mean([float(row["fde"]) for row in episode_metrics])),
+                "avg_ade": float(np.mean([float(row["ade"]) for row in episode_metrics])),
+                "avg_lin_speed_jsd": float(
+                    np.mean([float(row["lin_speed_jsd"]) for row in episode_metrics])
+                ),
+                "avg_ang_speed_jsd": float(
+                    np.mean([float(row["ang_speed_jsd"]) for row in episode_metrics])
+                ),
+                "avg_accel_jsd": float(
+                    np.mean([float(row["accel_jsd"]) for row in episode_metrics])
+                ),
+                "avg_nearest_dist_jsd": float(
+                    np.mean([float(row["nearest_dist_jsd"]) for row in episode_metrics])
+                ),
+                "avg_meta_jsd": float(
+                    np.mean([float(row["meta_jsd"]) for row in episode_metrics])
                 ),
             }
         )

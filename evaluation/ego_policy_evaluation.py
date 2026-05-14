@@ -16,6 +16,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from batch_inference import ExternalTeacher, build_external_teacher_kwargs
+from ctrlsim_evaluation_metrics import (
+    CTRLSIM_EGO_METRIC_FIELDS,
+)
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 from envs.nocturne_ctrlsim.core.episode_runtime import split_prepared_pack_batch
 from envs.wrappers import ParallelAdversarialVecEnv
@@ -24,12 +27,11 @@ from evaluation.evaluation_common import (
     build_replay_nocturne_env,
     collect_replay_nocturne_args,
     compute_solved_flag,
-    extract_episode_metrics,
+    extract_ctrlsim_episode_metrics,
     resolve_csv_output_path,
     start_headless_display,
     stop_headless_display,
     validate_nocturne_env_names,
-    write_episode_metrics_csv,
     write_metrics_csv,
 )
 from evaluation.eval import Evaluator, load_actor_critic_checkpoint
@@ -63,6 +65,7 @@ MULTI_CHECKPOINT_METRIC_FIELDS = (
     "progress",
     "solved",
     "total_episode_reward",
+    *CTRLSIM_EGO_METRIC_FIELDS,
 )
 SOLVED_PROGRESS_THRESHOLD = 0.85
 
@@ -437,7 +440,7 @@ class EgoReplayEvaluator(Evaluator):
                     if "episode" not in info:
                         continue
                     returns.append(info["episode"]["r"])
-                    episode_metrics.append(extract_episode_metrics(info))
+                    episode_metrics.append(extract_ctrlsim_episode_metrics(info))
                     if pbar:
                         pbar.update(1)
                     if agent.is_recurrent:
@@ -563,8 +566,32 @@ def main():
             cli_args=args,
             video_dir=video_dir,
         )
+        solved_metrics = []
+        for metrics in episode_metrics:
+            row = dict(metrics)
+            row["solved"] = compute_solved_flag(
+                progress=float(row["progress"]),
+                collision=float(row["collision"]),
+                offroad=float(row["offroad"]),
+                progress_threshold=SOLVED_PROGRESS_THRESHOLD,
+            )
+            solved_metrics.append(row)
+        mean_row = build_metrics_mean_row(
+            solved_metrics,
+            MULTI_CHECKPOINT_METRIC_FIELDS,
+            label_field="number",
+            label_value="mean",
+            empty_fields=("scenario_id",),
+            mean_fields=MULTI_CHECKPOINT_METRIC_FIELDS[2:],
+        )
         result_fpath = resolve_csv_output_path(result_path, result_fname)
-        write_episode_metrics_csv(result_fpath, episode_metrics)
+        write_metrics_csv(
+            result_fpath,
+            MULTI_CHECKPOINT_METRIC_FIELDS,
+            solved_metrics,
+            index_field="number",
+            mean_row=mean_row,
+        )
     finally:
         stop_headless_display(display)
 

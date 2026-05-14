@@ -8,6 +8,9 @@ from typing import Any
 import numpy as np
 
 from batch_inference import build_external_teacher_kwargs
+from ctrlsim_evaluation_metrics import (
+    compute_ctrlsim_ego_metrics_from_adapter,
+)
 from ctrlsim_adapter.opponent_vehicle import CtrlSimOpponentAdapter
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 from envs.wrappers import ParallelAdversarialVecEnv
@@ -389,6 +392,18 @@ class CtrlSimEgoWrapper:
         info["position_reached"] = float(position_reached)
         info["position_reached_occurred"] = float(position_reached_occurred)
         if done:
+            teacher_control_mode = getattr(self, "teacher_control_mode", "split")
+            metric_adapter = (
+                self.env.opponent
+                if teacher_control_mode == "joint"
+                else self.ego_adapter
+            )
+            info.update(
+                compute_ctrlsim_ego_metrics_from_adapter(
+                    metric_adapter,
+                    self.ego_id,
+                )
+            )
             self._stop_recording()
         return obs, reward, done, info
 
