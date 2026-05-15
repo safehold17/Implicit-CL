@@ -114,7 +114,10 @@ def extract_solvability_episode_metrics(
     tilting_mode: str,
 ) -> dict[str, float | str]:
     """Build one solvability metrics row from completed episode info."""
-    base_metrics = extract_base_episode_metrics(dict(info))
+    base_metrics = extract_base_episode_metrics(
+        dict(info),
+        offroad_progress_threshold=progress_threshold,
+    )
     collision = float(base_metrics["collision"])
     offroad = float(base_metrics["offroad"])
     progress = float(base_metrics["progress"])

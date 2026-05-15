@@ -440,7 +440,12 @@ class EgoReplayEvaluator(Evaluator):
                     if "episode" not in info:
                         continue
                     returns.append(info["episode"]["r"])
-                    episode_metrics.append(extract_ctrlsim_episode_metrics(info))
+                    episode_metrics.append(
+                        extract_ctrlsim_episode_metrics(
+                            info,
+                            offroad_progress_threshold=SOLVED_PROGRESS_THRESHOLD,
+                        )
+                    )
                     if pbar:
                         pbar.update(1)
                     if agent.is_recurrent:

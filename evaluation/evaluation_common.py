@@ -23,25 +23,54 @@ EPISODE_METRIC_FIELDS = (
 )
 
 
-def extract_episode_metrics(info: dict[str, Any]) -> dict[str, float | str]:
+def compute_offroad_metric(
+    *,
+    offroad: float,
+    progress: float,
+    progress_threshold: float,
+) -> float:
+    """Return offroad after masking episodes past the progress threshold."""
+    if float(progress) > float(progress_threshold):
+        return 0.0
+    return float(offroad)
+
+
+def extract_episode_metrics(
+    info: dict[str, Any],
+    *,
+    offroad_progress_threshold: float = 0.85,
+) -> dict[str, float | str]:
     """Extract one completed Nocturne episode's metrics from env info."""
     episode_info = info.get("episode", {})
     total_episode_reward = episode_info.get("r", info.get("episode_reward", 0.0))
+    offroad = float(info.get("offroad_occurred", info.get("offroad", 0.0)))
+    progress = float(info.get("max_progress", info.get("progress", 0.0)))
     return {
         "scenario_id": info.get("scenario_id", ""),
         "collision": float(info.get("collision_occurred", info.get("collision", 0.0))),
-        "offroad": float(info.get("offroad_occurred", info.get("offroad", 0.0))),
+        "offroad": compute_offroad_metric(
+            offroad=offroad,
+            progress=progress,
+            progress_threshold=offroad_progress_threshold,
+        ),
         "position_reached": float(
             info.get("position_reached_occurred", info.get("position_reached", 0.0))
         ),
-        "progress": float(info.get("max_progress", info.get("progress", 0.0))),
+        "progress": progress,
         "total_episode_reward": float(total_episode_reward),
     }
 
 
-def extract_ctrlsim_episode_metrics(info: dict[str, Any]) -> dict[str, float | str]:
+def extract_ctrlsim_episode_metrics(
+    info: dict[str, Any],
+    *,
+    offroad_progress_threshold: float = 0.85,
+) -> dict[str, float | str]:
     """Extract Nocturne metrics plus CtrlSim-style ego trajectory metrics."""
-    metrics = extract_episode_metrics(info)
+    metrics = extract_episode_metrics(
+        info,
+        offroad_progress_threshold=offroad_progress_threshold,
+    )
     for field in CTRLSIM_EGO_METRIC_FIELDS:
         metrics[field] = float(info[field])
     return metrics

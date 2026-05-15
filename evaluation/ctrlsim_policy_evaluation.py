@@ -196,7 +196,10 @@ def evaluate_teacher_mode(
             for info in infos:
                 if "episode" not in info:
                     continue
-                metrics = extract_ctrlsim_episode_metrics(info)
+                metrics = extract_ctrlsim_episode_metrics(
+                    info,
+                    offroad_progress_threshold=args.progress_threshold,
+                )
                 metrics["solved"] = compute_solved_flag(
                     progress=float(metrics["progress"]),
                     collision=float(metrics["collision"]),
