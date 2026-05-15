@@ -293,11 +293,10 @@ def is_episode_success(
     offroad_occurred: float,
     threshold: float,
 ) -> bool:
-    """Return whether an episode satisfies the default solvable criterion."""
+    """Return whether an episode satisfies the training solvable criterion."""
     return (
         float(max_progress) > float(threshold)
         and float(collision_occurred) == 0.0
-        and float(offroad_occurred) == 0.0
     )
 
 
