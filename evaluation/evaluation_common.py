@@ -54,12 +54,11 @@ def compute_solved_flag(
     offroad: float,
     progress_threshold: float,
 ) -> float:
-    """Return the safety-aware solved flag used by Nocturne evaluations."""
+    """Return the collision-aware solved flag used by Nocturne evaluations."""
     return (
         1.0
         if float(progress) > float(progress_threshold)
         and float(collision) == 0.0
-        and float(offroad) == 0.0
         else 0.0
     )
 

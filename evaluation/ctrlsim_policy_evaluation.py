@@ -92,7 +92,7 @@ def parse_args() -> argparse.Namespace:
         "--progress_threshold",
         type=float,
         default=0.85,
-        help="Solved if progress exceeds this threshold with no collision/offroad.",
+        help="Solved if progress exceeds this threshold with no collision.",
     )
     parser.add_argument("--student_accel_discretization", type=int, default=20)
     parser.add_argument("--student_steer_discretization", type=int, default=50)
