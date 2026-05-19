@@ -282,6 +282,6 @@ def update_vehicle_data_dict(
         vehicle_data_dict=vehicle_data_dict,
     )
 
-    if adapter._policy.real_time_rewards:
+    if adapter._policy is not None and adapter._policy.real_time_rewards:
         return adapter._compute_dense_reward(t, vehicle_data_dict)
     return adapter._compute_nearest_dist_all(t, vehicle_data_dict)

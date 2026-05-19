@@ -41,6 +41,8 @@ def get_state_update_vehicle_ids(
     if not controlled_ids:
         if bool(getattr(adapter, "_require_policy", False)) and adapter._policy is not None:
             return all_existing_ids
+        if adapter._policy is None:
+            return all_existing_ids
         return []
 
     policy = adapter._policy

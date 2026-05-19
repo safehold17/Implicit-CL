@@ -156,7 +156,7 @@ def _prepare_step_state(
     vehicles: List[Any],
 ) -> bool:
     """同步当前步的 adapter 状态。 / Refresh adapter state for the current step."""
-    if adapter._policy is None or len(vehicles) == 0:
+    if len(vehicles) == 0:
         clear_pending_sparse_actions(adapter)
         return False
 
@@ -168,6 +168,10 @@ def _prepare_step_state(
         vehicles,
         adapter._vehicle_data_dict,
     )
+    if adapter._policy is None:
+        clear_pending_sparse_actions(adapter)
+        return False
+
     adapter.update_policy_state(t)
     return True
 
