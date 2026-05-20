@@ -61,12 +61,28 @@ def append_nocturne_rtg_segment(
         delta_rtg_segments_by_seed[int(seed)].append(delta_rtg_segment)
 
 
+def build_rollout_seed_index(rollouts) -> tuple[dict[int, int], int]:
+    """Build the actor-to-seed index for one rollout batch."""
+    level_seeds = rollouts.level_seeds.cpu()
+    num_actors = int(rollouts.action_log_dist.shape[1])
+    total_steps = int(level_seeds.shape[0])
+    actor_seed_by_index = {}
+
+    for actor_index in range(num_actors):
+        actor_seed_by_index[actor_index] = int(
+            level_seeds[total_steps - 1, actor_index].item()
+        )
+
+    return actor_seed_by_index, num_actors
+
+
 def compute_nocturne_base_regret_by_seed(
     rollouts,
 ) -> tuple[dict[int, float], dict[int, int], int]:
     """Compute positive value-loss regret by rollout seed."""
     level_seeds = rollouts.level_seeds.cpu()
-    total_steps, num_actors = rollouts.action_log_dist.shape[:2]
+    actor_seed_by_index, num_actors = build_rollout_seed_index(rollouts)
+    total_steps = int(rollouts.action_log_dist.shape[0])
     done = (~(rollouts.masks > 0)).cpu()
     cliffhanger = (~(rollouts.cliffhanger_masks > 0)).cpu()
     returns = rollouts.returns.cpu()
@@ -77,7 +93,6 @@ def compute_nocturne_base_regret_by_seed(
 
     regret_sum_by_seed = defaultdict(float)
     regret_count_by_seed = defaultdict(int)
-    actor_seed_by_index = {}
 
     for actor_index in range(num_actors):
         start_t = 0
@@ -91,7 +106,6 @@ def compute_nocturne_base_regret_by_seed(
                 continue
 
             seed_t = int(level_seeds[start_t, actor_index].item())
-            actor_seed_by_index[actor_index] = seed_t
             if not cliffhanger[t, actor_index]:
                 positive_advantages = (
                     returns[start_t:t, actor_index]
@@ -104,7 +118,6 @@ def compute_nocturne_base_regret_by_seed(
 
         if start_t < total_steps:
             seed_t = int(level_seeds[start_t, actor_index].item())
-            actor_seed_by_index[actor_index] = seed_t
             positive_advantages = (
                 returns[start_t:, actor_index]
                 - value_preds[start_t:, actor_index]
@@ -123,54 +136,65 @@ def compute_nocturne_base_regret_by_seed(
 def compute_nocturne_enhanced_regret_raw_metrics(
     rollouts,
     rollout_info: Mapping[str, object],
+    *,
+    use_base_regret: bool = True,
+    use_solvable_rate: bool = True,
+    use_ctrlsim_rtg_gap: bool = True,
 ) -> tuple[dict[str, object], dict[int, int], int]:
     """Build raw per-seed enhanced regret metrics before normalization."""
-    base_regret_by_seed, actor_seed_by_index, num_actors = (
-        compute_nocturne_base_regret_by_seed(rollouts)
-    )
+    actor_seed_by_index, num_actors = build_rollout_seed_index(rollouts)
+    base_regret_by_seed = {}
+    if use_base_regret:
+        base_regret_by_seed, _, _ = compute_nocturne_base_regret_by_seed(rollouts)
     attempt_count_by_seed = rollout_info.get("attempt_count_by_seed", {})
     success_count_by_seed = rollout_info.get("success_count_by_seed", {})
     delta_rtg_segments_by_seed = rollout_info.get("delta_rtg_segments_by_seed", {})
 
-    all_seeds = (
-        set(base_regret_by_seed.keys())
-        | set(attempt_count_by_seed.keys())
-        | set(delta_rtg_segments_by_seed.keys())
-    )
+    all_seeds = set()
+    if use_base_regret:
+        all_seeds.update(base_regret_by_seed.keys())
+    if use_solvable_rate:
+        all_seeds.update(attempt_count_by_seed.keys())
+        all_seeds.update(success_count_by_seed.keys())
+    if use_ctrlsim_rtg_gap:
+        all_seeds.update(delta_rtg_segments_by_seed.keys())
 
     solvable_rate_by_seed = {}
     learnability_by_seed = {}
     delta_rtg_by_seed = {}
     for seed in all_seeds:
         seed_int = int(seed)
-        attempt_count = int(attempt_count_by_seed.get(seed, 0))
-        success_count = int(success_count_by_seed.get(seed, 0))
-        solvable_rate = None
-        if attempt_count > 0:
-            solvable_rate = success_count / float(attempt_count)
-        learnability = compute_learnability(
-            success_count=success_count,
-            attempt_count=attempt_count,
-        )
-        if solvable_rate is not None:
-            solvable_rate_by_seed[seed_int] = solvable_rate
-        if learnability is not None:
-            learnability_by_seed[seed_int] = learnability
+        if use_solvable_rate:
+            attempt_count = int(attempt_count_by_seed.get(seed, 0))
+            success_count = int(success_count_by_seed.get(seed, 0))
+            solvable_rate = None
+            if attempt_count > 0:
+                solvable_rate = success_count / float(attempt_count)
+            learnability = compute_learnability(
+                success_count=success_count,
+                attempt_count=attempt_count,
+            )
+            if solvable_rate is not None:
+                solvable_rate_by_seed[seed_int] = solvable_rate
+            if learnability is not None:
+                learnability_by_seed[seed_int] = learnability
 
-        delta_rtg = compute_mean_delta_rtg(delta_rtg_segments_by_seed.get(seed, ()))
-        if delta_rtg is not None:
-            delta_rtg_by_seed[seed_int] = delta_rtg
+        if use_ctrlsim_rtg_gap:
+            delta_rtg = compute_mean_delta_rtg(delta_rtg_segments_by_seed.get(seed, ()))
+            if delta_rtg is not None:
+                delta_rtg_by_seed[seed_int] = delta_rtg
 
-    metrics = {
-        "base_regret_by_seed": {
+    metrics = {"use_enhanced_regret": True}
+    if use_base_regret:
+        metrics["base_regret_by_seed"] = {
             int(seed): float(score)
             for seed, score in base_regret_by_seed.items()
-        },
-        "solvable_rate_by_seed": solvable_rate_by_seed,
-        "learnability_by_seed": learnability_by_seed,
-        "delta_rtg_by_seed": delta_rtg_by_seed,
-        "use_enhanced_regret": True,
-    }
+        }
+    if use_solvable_rate:
+        metrics["solvable_rate_by_seed"] = solvable_rate_by_seed
+        metrics["learnability_by_seed"] = learnability_by_seed
+    if use_ctrlsim_rtg_gap:
+        metrics["delta_rtg_by_seed"] = delta_rtg_by_seed
     return metrics, actor_seed_by_index, num_actors
 
 
@@ -180,36 +204,57 @@ def normalize_nocturne_enhanced_regret_scores(
     num_actors: int,
     *,
     running_stats_by_term: Mapping[str, Mapping[str, float]],
+    use_base_regret: bool = True,
     use_solvable_rate: bool = True,
     use_ctrlsim_rtg_gap: bool = True,
 ) -> tuple[torch.Tensor, dict[str, object]]:
     """Build per-actor sampler scores from raw metrics and running stats."""
-    base_regret_by_seed = raw_metrics.get("base_regret_by_seed", {})
-    solvable_rate_by_seed = raw_metrics.get("solvable_rate_by_seed", {})
-    learnability_by_seed = raw_metrics.get("learnability_by_seed", {})
-    delta_rtg_by_seed = raw_metrics.get("delta_rtg_by_seed", {})
-
-    all_seeds = (
-        set(base_regret_by_seed.keys())
-        | set(solvable_rate_by_seed.keys())
-        | set(learnability_by_seed.keys())
-        | set(delta_rtg_by_seed.keys())
+    base_regret_by_seed = (
+        raw_metrics.get("base_regret_by_seed", {}) if use_base_regret else {}
     )
+    solvable_rate_by_seed = (
+        raw_metrics.get("solvable_rate_by_seed", {}) if use_solvable_rate else {}
+    )
+    learnability_by_seed = (
+        raw_metrics.get("learnability_by_seed", {}) if use_solvable_rate else {}
+    )
+    delta_rtg_by_seed = (
+        raw_metrics.get("delta_rtg_by_seed", {}) if use_ctrlsim_rtg_gap else {}
+    )
+
+    all_seeds = set()
+    if use_base_regret:
+        all_seeds.update(base_regret_by_seed.keys())
+    if use_solvable_rate:
+        all_seeds.update(solvable_rate_by_seed.keys())
+        all_seeds.update(learnability_by_seed.keys())
+    if use_ctrlsim_rtg_gap:
+        all_seeds.update(delta_rtg_by_seed.keys())
+    if not all_seeds and not (
+        use_base_regret or use_solvable_rate or use_ctrlsim_rtg_gap
+    ):
+        all_seeds.update(int(seed) for seed in actor_seed_by_index.values())
 
     base_regret_norm_by_seed = {}
     learnability_norm_by_seed = {}
     delta_rtg_norm_by_seed = {}
     enhanced_regret_score_by_seed = {}
-    base_regret_stats = running_stats_by_term["base_regret"]
-    learnability_stats = running_stats_by_term["learnability"]
-    delta_rtg_stats = running_stats_by_term["delta_rtg"]
+    base_regret_stats = (
+        running_stats_by_term["base_regret"] if use_base_regret else None
+    )
+    learnability_stats = (
+        running_stats_by_term["learnability"] if use_solvable_rate else None
+    )
+    delta_rtg_stats = (
+        running_stats_by_term["delta_rtg"] if use_ctrlsim_rtg_gap else None
+    )
 
     for seed in all_seeds:
         seed_int = int(seed)
 
         base_regret = base_regret_by_seed.get(seed)
         base_regret_norm = None
-        if base_regret is not None:
+        if use_base_regret and base_regret is not None:
             base_regret_norm = normalize_by_running_standard_score(
                 base_regret,
                 float(base_regret_stats["mean"]),
@@ -220,7 +265,7 @@ def normalize_nocturne_enhanced_regret_scores(
 
         learnability = learnability_by_seed.get(seed)
         learnability_norm = None
-        if learnability is not None:
+        if use_solvable_rate and learnability is not None:
             learnability_norm = normalize_by_running_standard_score(
                 learnability,
                 float(learnability_stats["mean"]),
@@ -231,7 +276,7 @@ def normalize_nocturne_enhanced_regret_scores(
 
         delta_rtg = delta_rtg_by_seed.get(seed)
         delta_rtg_norm = None
-        if delta_rtg is not None:
+        if use_ctrlsim_rtg_gap and delta_rtg is not None:
             delta_rtg_norm = normalize_by_running_standard_score(
                 delta_rtg,
                 float(delta_rtg_stats["mean"]),
@@ -241,9 +286,10 @@ def normalize_nocturne_enhanced_regret_scores(
             delta_rtg_norm_by_seed[seed_int] = delta_rtg_norm
 
         enhanced_regret_score_by_seed[seed_int] = combine_enhanced_regret_score(
-            base_regret=base_regret_norm if base_regret_norm is not None else 0.0,
+            base_regret=base_regret_norm,
             learnability=learnability_norm,
             delta_rtg=delta_rtg_norm,
+            use_base_regret=use_base_regret,
             use_solvable_rate=use_solvable_rate,
             use_ctrlsim_rtg_gap=use_ctrlsim_rtg_gap,
         )
@@ -255,20 +301,31 @@ def normalize_nocturne_enhanced_regret_scores(
         )
 
     metrics = {
-        **dict(raw_metrics),
-        "base_regret_norm_by_seed": base_regret_norm_by_seed,
-        "learnability_norm_by_seed": learnability_norm_by_seed,
-        "delta_rtg_norm_by_seed": delta_rtg_norm_by_seed,
         "enhanced_regret_score_by_seed": enhanced_regret_score_by_seed,
-        "use_enhanced_regret": True,
+        "use_enhanced_regret": bool(raw_metrics.get("use_enhanced_regret", True)),
     }
-    scalar_sources = {
-        "base_regret": "base_regret_norm_by_seed",
-        "solvable_rate": "solvable_rate_by_seed",
-        "learnability": "learnability_norm_by_seed",
-        "delta_rtg": "delta_rtg_norm_by_seed",
-        "enhanced_regret_score": "enhanced_regret_score_by_seed",
-    }
+    if use_base_regret:
+        metrics["base_regret_by_seed"] = dict(base_regret_by_seed)
+    if use_solvable_rate:
+        metrics["solvable_rate_by_seed"] = dict(solvable_rate_by_seed)
+        metrics["learnability_by_seed"] = dict(learnability_by_seed)
+    if use_ctrlsim_rtg_gap:
+        metrics["delta_rtg_by_seed"] = dict(delta_rtg_by_seed)
+    if use_base_regret:
+        metrics["base_regret_norm_by_seed"] = base_regret_norm_by_seed
+    if use_solvable_rate:
+        metrics["learnability_norm_by_seed"] = learnability_norm_by_seed
+    if use_ctrlsim_rtg_gap:
+        metrics["delta_rtg_norm_by_seed"] = delta_rtg_norm_by_seed
+
+    scalar_sources = {"enhanced_regret_score": "enhanced_regret_score_by_seed"}
+    if use_base_regret:
+        scalar_sources["base_regret"] = "base_regret_norm_by_seed"
+    if use_solvable_rate:
+        scalar_sources["solvable_rate"] = "solvable_rate_by_seed"
+        scalar_sources["learnability"] = "learnability_norm_by_seed"
+    if use_ctrlsim_rtg_gap:
+        scalar_sources["delta_rtg"] = "delta_rtg_norm_by_seed"
     for scalar_name, by_seed_name in scalar_sources.items():
         values = list(metrics[by_seed_name].values())
         if values:

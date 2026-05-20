@@ -22,7 +22,7 @@
     "max_grad_norm": [0.5],
     
     "__note2__": ["PLR parameters"],
-    "use_plr": [true],
+    "use_plr": [false],
     "level_replay_prob": [0.5],
     "level_replay_rho": [0.5],
     "level_replay_seed_buffer_size": [8000],
@@ -30,7 +30,7 @@
     "level_replay_score_transform": ["rank"],
     "level_replay_temperature": [0.3],
     "staleness_coef": [0.3],
-    "no_exploratory_grad_updates": [true],
+    "no_exploratory_grad_updates": [false],
 
     "__note3__": ["ACCEL parameters"],
     "use_editor": [false],
@@ -51,7 +51,7 @@
     "warmup_level_replay_seed_buffer_size": [8000],
     "warmup_opponent_disable_ratio": [0.0],
     "warmup_opponent_replay_ratio": [0.0],
-    "warmup_checkpoint": ["checkpoints/checkpoint_6000.tar"],
+    "warmup_checkpoint": ["checkpoints/checkpoint_1000.tar"],
 
     "__note6__": ["logging parameters"],
     "verbose": [false],
@@ -96,7 +96,7 @@
     "use_ego_ctrlsim_kl_loss": [true],
     "ego_ctrlsim_kl_safe_update": [false],
     "ego_ctrlsim_kl_schedule": ["cosine"],
-    "kl_loss_coef": [0.2],
+    "kl_loss_coef": [1.0],
     "kl_loss_computation_frequency": [2],
     "ego_ctrlsim_kl_init_coef" : [0.5],
     "ego_ctrlsim_kl_min_coef": [0.0],
@@ -108,6 +108,7 @@
 
     "__note12__": ["enhanced regret example"],
     "use_enhanced_regret": [false],
+    "regret_enhancement_use_base_regret": [true],
     "regret_enhancement_use_solvable_rate": [true],
     "regret_enhancement_use_ctrlsim_rtg_gap": [true],
     "regret_enhancement_w_goal": [1.0],

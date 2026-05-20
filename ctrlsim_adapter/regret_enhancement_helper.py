@@ -100,14 +100,17 @@ def normalize_by_running_standard_score(
 
 def combine_enhanced_regret_score(
     *,
-    base_regret: float,
+    base_regret: float | None = None,
     learnability: float | None = None,
     delta_rtg: float | None = None,
+    use_base_regret: bool = True,
     use_solvable_rate: bool = True,
     use_ctrlsim_rtg_gap: bool = True,
 ) -> float:
-    """Combine normalized base regret, learnability, and RTG gap terms."""
-    score = float(base_regret)
+    """Combine the enabled normalized enhanced-regret terms."""
+    score = 0.0
+    if use_base_regret and base_regret is not None:
+        score += float(base_regret)
     if use_solvable_rate and learnability is not None:
         score += float(learnability)
     if use_ctrlsim_rtg_gap and delta_rtg is not None:

@@ -1294,6 +1294,14 @@ parser.add_argument(
     help="Whether to enable runner-side enhanced regret scoring for PLR/ACCEL.",
 )
 parser.add_argument(
+    "--regret_enhancement_use_base_regret",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=True,
+    help="Whether enhanced regret includes the base regret term.",
+)
+parser.add_argument(
     "--regret_enhancement_use_solvable_rate",
     type=str2bool,
     nargs="?",

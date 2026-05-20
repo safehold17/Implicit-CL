@@ -1234,6 +1234,15 @@ class AdversarialRunner(object):
                     track_nocturne_enhanced_regret
                 )
                 if should_compute_enhanced_regret_scores:
+                    use_base_regret = bool(
+                        getattr(args, "regret_enhancement_use_base_regret", True)
+                    )
+                    use_solvable_rate = bool(
+                        getattr(args, "regret_enhancement_use_solvable_rate", True)
+                    )
+                    use_ctrlsim_rtg_gap = bool(
+                        getattr(args, "regret_enhancement_use_ctrlsim_rtg_gap", True)
+                    )
                     (
                         enhanced_regret_raw_metrics,
                         enhanced_regret_actor_seed_by_index,
@@ -1241,6 +1250,9 @@ class AdversarialRunner(object):
                     ) = compute_nocturne_enhanced_regret_raw_metrics(
                         agent.storage,
                         rollout_info,
+                        use_base_regret=use_base_regret,
+                        use_solvable_rate=use_solvable_rate,
+                        use_ctrlsim_rtg_gap=use_ctrlsim_rtg_gap,
                     )
                     enhanced_regret_running_stats = (
                         self._update_enhanced_regret_running_stats(
@@ -1255,12 +1267,9 @@ class AdversarialRunner(object):
                         enhanced_regret_actor_seed_by_index,
                         enhanced_regret_num_actors,
                         running_stats_by_term=enhanced_regret_running_stats,
-                        use_solvable_rate=bool(
-                            getattr(args, "regret_enhancement_use_solvable_rate", True)
-                        ),
-                        use_ctrlsim_rtg_gap=bool(
-                            getattr(args, "regret_enhancement_use_ctrlsim_rtg_gap", True)
-                        ),
+                        use_base_regret=use_base_regret,
+                        use_solvable_rate=use_solvable_rate,
+                        use_ctrlsim_rtg_gap=use_ctrlsim_rtg_gap,
                     )
                     rollout_info.update(enhanced_regret_external_score_metrics)
 
