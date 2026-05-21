@@ -477,10 +477,21 @@ def run_all_checkpoint_evaluations(
             f"No .tar checkpoints found under {base_path}"
         )
 
+    pending_model_tars = [
+        model_tar
+        for model_tar in model_tars
+        if not os.path.exists(os.path.join(result_path, f"eval-{model_tar}.csv"))
+    ]
+
     cli_args.record_video = False
-    pbar = tqdm(total=len(model_tars), position=0) if cli_args.verbose else None
+    pbar = (
+        tqdm(total=len(pending_model_tars), position=0)
+        if cli_args.verbose
+        else None
+    )
     try:
-        for model_tar in model_tars:
+        for model_tar in pending_model_tars:
+            result_file = os.path.join(result_path, f"eval-{model_tar}.csv")
             if pbar is not None:
                 pbar.set_description_str(f"Evaluating {model_tar}")
             episode_metrics = run_single_checkpoint_evaluation(
@@ -511,7 +522,7 @@ def run_all_checkpoint_evaluations(
                 mean_fields=MULTI_CHECKPOINT_METRIC_FIELDS[2:],
             )
             write_metrics_csv(
-                os.path.join(result_path, f"eval-{model_tar}.csv"),
+                result_file,
                 MULTI_CHECKPOINT_METRIC_FIELDS,
                 solved_metrics,
                 index_field="number",
