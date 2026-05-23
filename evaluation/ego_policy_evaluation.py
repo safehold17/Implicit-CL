@@ -3,10 +3,12 @@
 import argparse
 import json
 import os
+import random
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import torch
 from tqdm import tqdm
@@ -21,6 +23,7 @@ from ctrlsim_evaluation_metrics import (
 )
 from envs.nocturne_ctrlsim import NocturneCtrlSimAdversarial
 from envs.nocturne_ctrlsim.core.episode_runtime import split_prepared_pack_batch
+from envs.nocturne_ctrlsim.core.level import ScenarioLevel
 from envs.wrappers import ParallelAdversarialVecEnv
 from evaluation.evaluation_common import (
     build_metrics_mean_row,
@@ -68,6 +71,14 @@ MULTI_CHECKPOINT_METRIC_FIELDS = (
     *CTRLSIM_EGO_METRIC_FIELDS,
 )
 SOLVED_PROGRESS_THRESHOLD = 0.85
+
+
+@dataclass(frozen=True)
+class EpisodeTemplate:
+    """Fixed scenario and seed reused by policy-opponent evaluations."""
+
+    scenario_id: str
+    level_seed: int
 
 
 def parse_args():
@@ -185,6 +196,58 @@ def find_model_checkpoints(base_path: str) -> list[str]:
     return matched
 
 
+def read_scenario_ids(scenario_index_path: str) -> list[str]:
+    """Read scenario IDs from a Nocturne scenario-index JSON file."""
+    with open(scenario_index_path) as handle:
+        payload = json.load(handle)
+    if isinstance(payload, dict):
+        scenario_ids = payload.get("scenario_ids", [])
+    else:
+        scenario_ids = payload
+    return [str(scenario_id) for scenario_id in scenario_ids]
+
+
+def build_episode_templates(
+    *,
+    scenario_ids: Sequence[str],
+    num_episodes: int,
+    seed: int,
+) -> list[EpisodeTemplate]:
+    """Sample fixed episode templates from the evaluation seed."""
+    if not scenario_ids:
+        raise ValueError("scenario_ids must not be empty")
+    rng = random.Random(seed)
+    scenario_ids = list(scenario_ids)
+    return [
+        EpisodeTemplate(
+            scenario_id=rng.choice(scenario_ids),
+            level_seed=rng.randrange(0, 2**31),
+        )
+        for _ in range(num_episodes)
+    ]
+
+
+def build_scenario_level(template: EpisodeTemplate) -> ScenarioLevel:
+    """Create a zero-tilt level for fixed policy-opponent evaluation."""
+    return ScenarioLevel(
+        scenario_id=template.scenario_id,
+        seed=template.level_seed,
+        goal_tilt=0,
+        veh_veh_tilt=0,
+        veh_edge_tilt=0,
+    )
+
+
+def _replace_obs_indices(obs: Any, replacement: Any, indices: Sequence[int]) -> Any:
+    """Replace vectorized observations for selected worker indices."""
+    if isinstance(obs, dict):
+        for key, value in replacement.items():
+            obs[key][list(indices)] = value
+        return obs
+    obs[list(indices)] = replacement
+    return obs
+
+
 def load_agent_from_checkpoint(
     *,
     base_path: str,
@@ -277,11 +340,17 @@ def run_single_checkpoint_evaluation(
     xpid_flags.update({"use_skip": False})
     opponent_eval_mode = str(cli_args.get("opponent_eval_mode", "replay"))
     external_teacher = None
+    episode_templates = None
     if opponent_eval_mode == "policy":
         external_teacher = build_policy_opponent_teacher(
             checkpoint_path=str(nocturne_required["opponent_checkpoint"]),
             device=device,
             cli_args=xpid_flags,
+        )
+        episode_templates = build_episode_templates(
+            scenario_ids=read_scenario_ids(str(nocturne_required["scenario_index_path"])),
+            num_episodes=cli_args.num_episodes,
+            seed=cli_args.seed,
         )
 
     evaluator = None
@@ -306,6 +375,7 @@ def run_single_checkpoint_evaluation(
             progress_position=progress_position,
             accumulator=None,
             external_teacher=external_teacher,
+            episode_templates=episode_templates,
         )
     finally:
         if evaluator is not None:
@@ -376,10 +446,21 @@ class EgoReplayEvaluator(Evaluator):
         accumulator="mean",
         return_episode_returns=False,
         external_teacher=None,
+        episode_templates=None,
     ):
         """Evaluate ego policy while opponents use replay or CtrlSim policy."""
         episode_metrics = []
         use_policy_opponents = self.opponent_eval_mode == "policy"
+        if use_policy_opponents and episode_templates is not None:
+            return self._evaluate_fixed_episode_templates(
+                agent,
+                episode_templates=episode_templates,
+                deterministic=deterministic,
+                show_progress=show_progress,
+                progress_position=progress_position,
+                return_episode_returns=return_episode_returns,
+                external_teacher=external_teacher,
+            )
 
         for env_name, venv in self.venv.items():
             returns = []
@@ -459,6 +540,133 @@ class EgoReplayEvaluator(Evaluator):
 
         if return_episode_returns:
             return episode_metrics, returns
+        return episode_metrics
+
+    def _evaluate_fixed_episode_templates(
+        self,
+        agent,
+        *,
+        episode_templates: Sequence[EpisodeTemplate],
+        deterministic: bool,
+        show_progress: bool,
+        progress_position: int,
+        return_episode_returns: bool,
+        external_teacher,
+    ):
+        """Evaluate policy opponents on an explicit scenario/seed template list."""
+        if external_teacher is None:
+            raise RuntimeError("Policy opponent evaluation requires ExternalTeacher.")
+        episode_metrics = []
+        episode_returns = []
+        fallback_level = build_scenario_level(episode_templates[0])
+
+        for _env_name, venv in self.venv.items():
+            completed = 0
+            next_template_idx = 0
+            active_templates: list[EpisodeTemplate | None] = []
+            initial_levels = []
+            for _ in range(self.num_processes):
+                if next_template_idx < len(episode_templates):
+                    template = episode_templates[next_template_idx]
+                    active_templates.append(template)
+                    initial_levels.append(build_scenario_level(template))
+                    next_template_idx += 1
+                else:
+                    active_templates.append(None)
+                    initial_levels.append(fallback_level)
+
+            obs = venv.reset_to_level_batch(initial_levels)
+            recurrent_hidden_states = torch.zeros(
+                self.num_processes,
+                agent.algo.actor_critic.recurrent_hidden_state_size,
+                device=self.device,
+            )
+            if (
+                agent.algo.actor_critic.is_recurrent
+                and agent.algo.actor_critic.rnn.arch == "lstm"
+            ):
+                recurrent_hidden_states = (
+                    recurrent_hidden_states,
+                    torch.zeros_like(recurrent_hidden_states),
+                )
+            masks = torch.ones(self.num_processes, 1, device=self.device)
+
+            pbar = (
+                tqdm(total=len(episode_templates), position=progress_position)
+                if show_progress
+                else None
+            )
+            try:
+                while completed < len(episode_templates):
+                    with torch.no_grad():
+                        _, action, _, recurrent_hidden_states = agent.act(
+                            obs,
+                            recurrent_hidden_states,
+                            masks,
+                            deterministic=deterministic,
+                        )
+
+                    action = agent.process_action(action.cpu().numpy())
+                    prepared_batch = venv.step_prepare(action)
+                    opponent_prepared, _ = split_prepared_pack_batch(prepared_batch)
+                    model_outputs = external_teacher.run_batched_forward(opponent_prepared)
+                    obs, _reward, done, infos = venv.step_complete(
+                        model_outputs,
+                        reset_random=False,
+                        auto_reset_on_done=False,
+                    )
+
+                    reset_levels = []
+                    reset_indices = []
+                    for idx, info in enumerate(infos):
+                        if not done[idx]:
+                            continue
+                        template = active_templates[idx]
+                        if template is not None and "episode" in info:
+                            episode_returns.append(info["episode"]["r"])
+                            episode_metrics.append(
+                                extract_ctrlsim_episode_metrics(
+                                    info,
+                                    offroad_progress_threshold=SOLVED_PROGRESS_THRESHOLD,
+                                )
+                            )
+                            completed += 1
+                            if pbar:
+                                pbar.update(1)
+
+                        if next_template_idx < len(episode_templates):
+                            next_template = episode_templates[next_template_idx]
+                            active_templates[idx] = next_template
+                            reset_levels.append(build_scenario_level(next_template))
+                            next_template_idx += 1
+                        else:
+                            active_templates[idx] = None
+                            reset_levels.append(fallback_level)
+                        reset_indices.append(idx)
+
+                    if reset_indices:
+                        reset_obs = venv.reset_to_level_indices(
+                            reset_levels,
+                            reset_indices,
+                        )
+                        obs = _replace_obs_indices(obs, reset_obs, reset_indices)
+
+                    masks = torch.tensor(
+                        [[0.0] if done_ else [1.0] for done_ in done],
+                        dtype=torch.float32,
+                        device=self.device,
+                    )
+                    if agent.is_recurrent:
+                        for idx, done_ in enumerate(done):
+                            if done_:
+                                recurrent_hidden_states[0][idx].zero_()
+                                recurrent_hidden_states[1][idx].zero_()
+            finally:
+                if pbar:
+                    pbar.close()
+
+        if return_episode_returns:
+            return episode_metrics, episode_returns
         return episode_metrics
 
 
