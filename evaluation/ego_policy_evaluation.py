@@ -81,6 +81,14 @@ class EpisodeTemplate:
     level_seed: int
 
 
+@dataclass(frozen=True)
+class CheckpointTarget:
+    """One checkpoint name resolved within a concrete run directory."""
+
+    checkpoint_dir: str
+    model_tar: str
+
+
 def parse_args():
     """Parse CLI arguments for specialized ego policy evaluation."""
     parser = argparse.ArgumentParser(
@@ -194,6 +202,36 @@ def find_model_checkpoints(base_path: str) -> list[str]:
         matched.append(match.group(1))
     matched.sort()
     return matched
+
+
+
+def find_checkpoint_targets(base_path: str) -> list[CheckpointTarget]:
+    """Return checkpoints under base_path and nested runs with local metadata."""
+    root = Path(base_path)
+    targets = [
+        CheckpointTarget(checkpoint_dir=str(root), model_tar=model_tar)
+        for model_tar in find_model_checkpoints(base_path)
+    ]
+
+    for meta_json_path in sorted(root.rglob("meta.json")):
+        checkpoint_dir = meta_json_path.parent
+        if checkpoint_dir == root:
+            continue
+        for model_tar in find_model_checkpoints(str(checkpoint_dir)):
+            targets.append(
+                CheckpointTarget(
+                    checkpoint_dir=str(checkpoint_dir),
+                    model_tar=model_tar,
+                )
+            )
+
+    targets.sort(
+        key=lambda target: (
+            os.path.relpath(target.checkpoint_dir, base_path),
+            target.model_tar,
+        )
+    )
+    return targets
 
 
 def read_scenario_ids(scenario_index_path: str) -> list[str]:
@@ -678,37 +716,41 @@ def run_all_checkpoint_evaluations(
     device: str,
     cli_args: DotDict,
 ) -> None:
-    """Evaluate every .tar checkpoint and write one CSV per checkpoint."""
-    model_tars = find_model_checkpoints(base_path)
-    if not model_tars:
+    """Evaluate every checkpoint under base_path and nested run directories."""
+    checkpoint_targets = find_checkpoint_targets(base_path)
+    if not checkpoint_targets:
         raise FileNotFoundError(
             f"No .tar checkpoints found under {base_path}"
         )
 
-    pending_model_tars = [
-        model_tar
-        for model_tar in model_tars
-        if not os.path.exists(os.path.join(result_path, f"eval-{model_tar}.csv"))
-    ]
+    pending_targets = []
+    for target in checkpoint_targets:
+        target_result_path = os.path.join(target.checkpoint_dir, "evaluation")
+        result_file = os.path.join(target_result_path, f"eval-{target.model_tar}.csv")
+        if os.path.exists(result_file):
+            continue
+        pending_targets.append((target, target_result_path, result_file))
 
     cli_args.record_video = False
     pbar = (
-        tqdm(total=len(pending_model_tars), position=0)
+        tqdm(total=len(pending_targets), position=0)
         if cli_args.verbose
         else None
     )
     try:
-        for model_tar in pending_model_tars:
-            result_file = os.path.join(result_path, f"eval-{model_tar}.csv")
+        for target, target_result_path, result_file in pending_targets:
+            os.makedirs(target_result_path, exist_ok=True)
             if pbar is not None:
-                pbar.set_description_str(f"Evaluating {model_tar}")
+                relative_dir = os.path.relpath(target.checkpoint_dir, base_path)
+                label = target.model_tar if relative_dir == "." else f"{relative_dir}/{target.model_tar}"
+                pbar.set_description_str(f"Evaluating {label}")
             episode_metrics = run_single_checkpoint_evaluation(
-                base_path=base_path,
-                model_tar=model_tar,
+                base_path=target.checkpoint_dir,
+                model_tar=target.model_tar,
                 env_names=env_names,
                 device=device,
                 cli_args=cli_args,
-                video_dir=result_path,
+                video_dir=target_result_path,
                 progress_position=1,
             )
             solved_metrics = []
