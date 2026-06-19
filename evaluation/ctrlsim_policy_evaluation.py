@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import random
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 from tqdm import tqdm
@@ -18,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from ctrlsim_evaluation_metrics import (
     CTRLSIM_EGO_METRIC_FIELDS,
 )
+from envs.nocturne_ctrlsim.core.level import ScenarioLevel
 from evaluation.evaluation_common import (
     build_metrics_mean_row,
     compute_solved_flag,
@@ -31,6 +35,7 @@ from evaluation.ctrlsim_evaluation_runner import (
     build_zero_action_batch,
     run_batched_ctrlsim_step,
 )
+from util import str2bool
 
 
 TEACHER_EVAL_METRIC_FIELDS = (
@@ -64,12 +69,26 @@ TEACHER_EVAL_SUMMARY_FIELDS = (
 )
 
 
+@dataclass(frozen=True)
+class EpisodeTemplate:
+    """Fixed scenario/seed pair used for deterministic evaluation episodes."""
+
+    scenario_id: str
+    level_seed: int
+
+
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for CtrlSim policy evaluation."""
     parser = argparse.ArgumentParser(
         description="Evaluate CtrlSim teacher ego with replay or teacher opponents."
     )
     parser.add_argument("--scenario_index_path", type=str, required=True)
+    parser.add_argument(
+        "--scenario_csv_path",
+        type=str,
+        default=None,
+        help="Optional CSV whose scenario_id rows define the exact evaluation order.",
+    )
     parser.add_argument("--scenario_data_dir", type=str, required=True)
     parser.add_argument("--preprocess_dir", type=str, required=True)
     parser.add_argument("--vehicle_map_path", type=str, required=True)
@@ -121,10 +140,155 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ego_veh_edge_tilt", type=int, default=0)
     parser.add_argument("--tilt_range_min", type=float, default=0.0)
     parser.add_argument("--tilt_range_max", type=float, default=0.0)
+    parser.add_argument(
+        "--enable_goal_tilt",
+        type=str2bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help="Whether random opponent tilting may modify goal tilt.",
+    )
+    parser.add_argument(
+        "--enable_veh_veh_tilt",
+        type=str2bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help="Whether random opponent tilting may modify vehicle-vehicle tilt.",
+    )
+    parser.add_argument(
+        "--enable_veh_edge_tilt",
+        type=str2bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help="Whether random opponent tilting may modify vehicle-edge tilt.",
+    )
     parser.add_argument("--show_level_log", action="store_true")
     parser.add_argument("--record_video", action="store_true")
     parser.add_argument("--show_vehicle_ids", action="store_true")
     return parser.parse_args()
+
+
+def read_scenario_ids_from_csv(scenario_csv_path: str) -> list[str]:
+    """Read ordered scenario IDs from an evaluation CSV file."""
+    with open(scenario_csv_path, newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames or []
+        if "scenario_id" not in fieldnames:
+            raise ValueError(
+                f"{scenario_csv_path} must contain a 'scenario_id' column"
+            )
+        return [str(row["scenario_id"]) for row in reader]
+
+
+def build_episode_templates(
+    *,
+    scenario_ids: Sequence[str],
+    seed: int,
+) -> list[EpisodeTemplate]:
+    """Generate deterministic per-row level seeds for a fixed scenario list."""
+    rng = random.Random(seed)
+    return [
+        EpisodeTemplate(
+            scenario_id=scenario_id,
+            level_seed=rng.randrange(0, 2**31),
+        )
+        for scenario_id in scenario_ids
+    ]
+
+
+def build_scenario_level(template: EpisodeTemplate) -> ScenarioLevel:
+    """Create the zero-tilt ScenarioLevel used by fixed-scenario evaluation."""
+    return ScenarioLevel(
+        scenario_id=template.scenario_id,
+        seed=template.level_seed,
+        goal_tilt=0,
+        veh_veh_tilt=0,
+        veh_edge_tilt=0,
+    )
+
+
+def evaluate_fixed_episode_templates(
+    *,
+    args: argparse.Namespace,
+    venv,
+    external_teacher,
+) -> list[dict[str, float | str]]:
+    """Evaluate explicit scenario templates without random environment resets."""
+    episode_templates = build_episode_templates(
+        scenario_ids=read_scenario_ids_from_csv(args.scenario_csv_path),
+        seed=args.seed,
+    )
+    if not episode_templates:
+        return []
+
+    action_batch = build_zero_action_batch(venv, args.num_processes)
+    episode_metrics: list[dict[str, float | str]] = []
+    next_template_idx = 0
+    active_templates: list[EpisodeTemplate | None] = []
+    fallback_level = build_scenario_level(episode_templates[0])
+    initial_levels = []
+
+    for _ in range(args.num_processes):
+        if next_template_idx < len(episode_templates):
+            template = episode_templates[next_template_idx]
+            active_templates.append(template)
+            initial_levels.append(build_scenario_level(template))
+            next_template_idx += 1
+        else:
+            active_templates.append(None)
+            initial_levels.append(fallback_level)
+
+    venv.reset_to_level_batch(initial_levels)
+    pbar = tqdm(total=len(episode_templates))
+
+    while len(episode_metrics) < len(episode_templates):
+        _, _, done, infos = run_batched_ctrlsim_step(
+            venv=venv,
+            action=action_batch,
+            external_teacher=external_teacher,
+            reset_random=False,
+            auto_reset_on_done=False,
+            collect_ego_ctrlsim_rtg=False,
+        )
+        reset_levels = []
+        reset_indices = []
+        for idx, info in enumerate(infos):
+            if not done[idx]:
+                continue
+            template = active_templates[idx]
+            if template is not None and "episode" in info:
+                metrics = extract_ctrlsim_episode_metrics(
+                    info,
+                    offroad_progress_threshold=args.progress_threshold,
+                )
+                metrics["solved"] = compute_solved_flag(
+                    progress=float(metrics["progress"]),
+                    collision=float(metrics["collision"]),
+                    offroad=float(metrics["offroad"]),
+                    progress_threshold=args.progress_threshold,
+                )
+                episode_metrics.append(metrics)
+                pbar.update(1)
+                if len(episode_metrics) >= len(episode_templates):
+                    break
+
+            if next_template_idx < len(episode_templates):
+                next_template = episode_templates[next_template_idx]
+                active_templates[idx] = next_template
+                reset_levels.append(build_scenario_level(next_template))
+                next_template_idx += 1
+            else:
+                active_templates[idx] = None
+                reset_levels.append(fallback_level)
+            reset_indices.append(idx)
+
+        if reset_indices and len(episode_metrics) < len(episode_templates):
+            venv.reset_to_level_indices(reset_levels, reset_indices)
+
+    pbar.close()
+    return episode_metrics
 
 def evaluate_teacher_mode(
     args: argparse.Namespace,
@@ -155,6 +319,9 @@ def evaluate_teacher_mode(
         opponent_k=7,
         tilting_mode=args.tilting_mode,
         tilt_range=(float(args.tilt_range_min), float(args.tilt_range_max)),
+        enable_goal_tilt=args.enable_goal_tilt,
+        enable_veh_veh_tilt=args.enable_veh_veh_tilt,
+        enable_veh_edge_tilt=args.enable_veh_edge_tilt,
         show_level_log=args.show_level_log,
         record_video=args.record_video,
         show_vehicle_ids=args.show_vehicle_ids,
@@ -179,6 +346,13 @@ def evaluate_teacher_mode(
     try:
         env_name = evaluator.env_names[0]
         venv = evaluator.venv[env_name]
+        if args.scenario_csv_path:
+            return evaluate_fixed_episode_templates(
+                args=args,
+                venv=venv,
+                external_teacher=external_teacher,
+            )
+
         venv.reset_random()
         action_batch = build_zero_action_batch(venv, args.num_processes)
         episode_metrics: list[dict[str, float | str]] = []

@@ -202,6 +202,9 @@ def collect_replay_nocturne_args(
         "done_on_position_reached_only",
         "goal_pos_tolerance",
         "tilting_mode",
+        "enable_goal_tilt",
+        "enable_veh_veh_tilt",
+        "enable_veh_edge_tilt",
         "use_speed_heading_target",
     ]
     for key in keys:
@@ -249,6 +252,9 @@ def build_replay_nocturne_env(
         "device",
         "tilting_mode",
         "tilt_range",
+        "enable_goal_tilt",
+        "enable_veh_veh_tilt",
+        "enable_veh_edge_tilt",
         "use_speed_heading_target",
         "opponent_runtime_mode",
     }

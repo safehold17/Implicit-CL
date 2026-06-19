@@ -38,6 +38,9 @@ class NocturneCtrlSimEnvConfig:
     student_accel_discretization: int
     student_steer_discretization: int
     tilt_range: tuple[float, float]
+    enable_goal_tilt: bool
+    enable_veh_veh_tilt: bool
+    enable_veh_edge_tilt: bool
     action_repeat_frequency: int
     kl_loss_computation_frequency: int
     sparse_inference_action_repeat: bool
@@ -195,6 +198,9 @@ def build_nocturne_ctrlsim_env_config(
         student_accel_discretization=student_accel_discretization,
         student_steer_discretization=student_steer_discretization,
         tilt_range=_normalize_tilt_range(kwargs.get("tilt_range")),
+        enable_goal_tilt=bool(kwargs.get("enable_goal_tilt", True)),
+        enable_veh_veh_tilt=bool(kwargs.get("enable_veh_veh_tilt", True)),
+        enable_veh_edge_tilt=bool(kwargs.get("enable_veh_edge_tilt", True)),
         action_repeat_frequency=action_repeat_frequency,
         kl_loss_computation_frequency=kl_loss_computation_frequency,
         sparse_inference_action_repeat=bool(

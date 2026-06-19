@@ -157,6 +157,9 @@ def _init_environment_attributes(
     env.mutation_mode = config.mutation_mode
     env.mutation_range = config.mutation_range
     env.tilt_range = config.tilt_range
+    env.enable_goal_tilt = config.enable_goal_tilt
+    env.enable_veh_veh_tilt = config.enable_veh_veh_tilt
+    env.enable_veh_edge_tilt = config.enable_veh_edge_tilt
     env.show_tilting_params = config.show_tilting_params
     env.show_vehicle_ids = config.show_vehicle_ids
     env.show_ego_vehicle_selection = config.show_ego_vehicle_selection

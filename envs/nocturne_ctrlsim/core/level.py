@@ -406,6 +406,9 @@ def sample_random_level(env: Any) -> ScenarioLevel:
             per_vehicle_tilting_length=env.per_vehicle_tilting_length,
             tilt_range=env.tilt_range,
             rng=env.np_random,
+            enable_goal_tilt=getattr(env, "enable_goal_tilt", True),
+            enable_veh_veh_tilt=getattr(env, "enable_veh_veh_tilt", True),
+            enable_veh_edge_tilt=getattr(env, "enable_veh_edge_tilt", True),
         )
     )
     return ScenarioLevel(

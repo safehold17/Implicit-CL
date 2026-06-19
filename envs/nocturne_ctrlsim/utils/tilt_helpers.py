@@ -106,29 +106,55 @@ def sample_random_tilt_components(
     per_vehicle_tilting_length: int,
     tilt_range: tuple[float, float],
     rng: Any,
+    enable_goal_tilt: bool = True,
+    enable_veh_veh_tilt: bool = True,
+    enable_veh_edge_tilt: bool = True,
 ) -> tuple[int, int, int, tuple[int, ...]]:
     """Sample random tilt components for the current tilting mode."""
     zero_per_vehicle = (0,) * per_vehicle_tilting_length
 
     if tilting_mode == "global":
         return (
-            round_clipped_tilt(rng.uniform(*tilt_range), tilt_range),
-            round_clipped_tilt(rng.uniform(*tilt_range), tilt_range),
-            round_clipped_tilt(rng.uniform(*tilt_range), tilt_range),
+            (
+                round_clipped_tilt(rng.uniform(*tilt_range), tilt_range)
+                if enable_goal_tilt
+                else 0
+            ),
+            (
+                round_clipped_tilt(rng.uniform(*tilt_range), tilt_range)
+                if enable_veh_veh_tilt
+                else 0
+            ),
+            (
+                round_clipped_tilt(rng.uniform(*tilt_range), tilt_range)
+                if enable_veh_edge_tilt
+                else 0
+            ),
             zero_per_vehicle,
         )
 
     if tilting_mode == "none":
         return (0, 0, 0, zero_per_vehicle)
 
+    enabled_dims = (
+        enable_goal_tilt,
+        enable_veh_veh_tilt,
+        enable_veh_edge_tilt,
+    )
+    per_vehicle_values = []
+    for index in range(per_vehicle_tilting_length):
+        if enabled_dims[index % 3]:
+            per_vehicle_values.append(
+                round_clipped_tilt(rng.uniform(*tilt_range), tilt_range)
+            )
+        else:
+            per_vehicle_values.append(0)
+
     return (
         0,
         0,
         0,
-        tuple(
-            round_clipped_tilt(rng.uniform(*tilt_range), tilt_range)
-            for _ in range(per_vehicle_tilting_length)
-        ),
+        tuple(per_vehicle_values),
     )
 
 
