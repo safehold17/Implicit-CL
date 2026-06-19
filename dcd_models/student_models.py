@@ -798,6 +798,11 @@ class CtrlSimStudentPolicy(nn.Module):
     # Required by ppo.py and agent.py — this policy is feed-forward, not recurrent.
     is_recurrent = False
 
+    @property
+    def recurrent_hidden_state_size(self):
+        """Match the common policy interface expected by rollout/eval code."""
+        return 1
+
     def __init__(
         self,
         obs_cfg,                 # CtrlSimObsConfig
