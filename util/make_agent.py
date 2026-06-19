@@ -285,7 +285,6 @@ def model_for_env_agent(
             recurrent_arch=recurrent_arch,
             use_lstm=use_lstm)
     elif env_name.startswith('Nocturne') or env_name.startswith('nocturne'):
-        is_teacher = 'adversary_env' in agent_type
         model = model_for_nocturne_agent(
             env=env,
             agent_type=agent_type,
@@ -322,6 +321,24 @@ def _arg_get(args, key, default):
 def make_agent(name, env, args, device='cpu'):
     # Create model instance
     is_adversary_env = 'env' in name
+
+    if (
+        not is_adversary_env
+        and (args.env_name.startswith('Nocturne') or args.env_name.startswith('nocturne'))
+    ):
+        student_model_type = _arg_get(args, 'student_model_type', 'late_fusion')
+        env.student_model_type = student_model_type
+        if student_model_type == 'ctrlsim':
+            from envs.nocturne_ctrlsim.student.ctrlsim_observation import (
+                CtrlSimObsConfig,
+            )
+
+            env.ctrlsim_obs_cfg = CtrlSimObsConfig(
+                num_agents=int(
+                    _arg_get(args, 'ctrlsim_student_num_neighbors', 8)
+                ) + 1,
+                seq_len=int(_arg_get(args, 'ctrlsim_student_seq_len', 10)),
+            )
 
     if is_adversary_env:
         observation_space = env.adversary_observation_space
