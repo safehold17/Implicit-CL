@@ -336,9 +336,23 @@ class RolloutStorage(object):
             self.denorm_value_preds = self.model.popart.denormalize(value_preds) # denormalize all value predictions
             value_preds = self.denorm_value_preds
 
-        self.returns[:-1] = _gae_parallel_scan(
-            self.rewards, value_preds, self.masks, gamma, gae_lambda
-        )
+        if not self.use_proper_time_limits:
+            self.returns[:-1] = _gae_parallel_scan(
+                self.rewards, value_preds, self.masks, gamma, gae_lambda
+            )
+            return
+
+        gae = torch.zeros_like(value_preds[-1])
+        for step in reversed(range(self.rewards.size(0))):
+            truncation_mask = 1.0 - self.bad_masks[step + 1]
+            bootstrap_mask = self.masks[step + 1] + truncation_mask
+            delta = (
+                self.rewards[step]
+                + gamma * value_preds[step + 1] * bootstrap_mask
+                - value_preds[step]
+            )
+            gae = delta + gamma * gae_lambda * self.masks[step + 1] * gae
+            returns_buffer[step] = gae + value_preds[step]
 
     def compute_discounted_returns(self,
                                    returns_buffer, 
@@ -356,9 +370,18 @@ class RolloutStorage(object):
 
         self.returns[-1] = value_preds[-1]
 
+        if not self.use_proper_time_limits:
+            for step in reversed(range(self.rewards.size(0))):
+                returns_buffer[step] = returns_buffer[step + 1] * \
+                    gamma * self.masks[step + 1] + self.rewards[step]
+            return
+
         for step in reversed(range(self.rewards.size(0))):
-            returns_buffer[step] = returns_buffer[step + 1] * \
-                gamma * self.masks[step + 1] + self.rewards[step]
+            truncation_mask = 1.0 - self.bad_masks[step + 1]
+            returns_buffer[step] = self.rewards[step] + gamma * (
+                returns_buffer[step + 1] * self.masks[step + 1]
+                + value_preds[step + 1] * truncation_mask
+            )
 
     def compute_returns(self,
                         next_value,

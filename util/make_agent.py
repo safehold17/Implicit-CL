@@ -202,6 +202,7 @@ def model_for_nocturne_agent(
             num_heads=ctrlsim_num_heads,
             num_encoder_layers=ctrlsim_encoder_layers,
             num_decoder_layers=ctrlsim_decoder_layers,
+            dropout=dropout,
         )
         return model
 

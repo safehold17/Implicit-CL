@@ -592,7 +592,7 @@ class CtrlSimStudentEncoder(nn.Module):
         dim_feedforward: int = 1024,
         num_encoder_layers: int = 2,
         max_timestep: int = 100,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.num_agents = num_agents
@@ -813,7 +813,7 @@ class CtrlSimStudentPolicy(nn.Module):
         num_encoder_layers: int = 2,
         num_decoder_layers: int = 4,
         max_timestep: int = 100,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
     ):
         super().__init__()
         from envs.nocturne_ctrlsim.student.ctrlsim_observation import unpack_obs
@@ -882,20 +882,10 @@ class CtrlSimStudentPolicy(nn.Module):
     # Core forward
     # ------------------------------------------------------------------
 
-    def _forward(self, obs: torch.Tensor, training: bool = False):
-        """Run encoder + decoder and return (ego_logits, value).
-
-        Args:
-            obs: (batch, obs_dim) float tensor.
-            training: if True, encoder runs in train mode (dropout active).
-
-        Returns:
-            ego_logits: (batch, action_dim)
-            value:      (batch, 1)
-        """
+    def _forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run encoder + decoder and return `(ego_logits, value)`."""
         data = self._unpack_obs_fn(obs, self._obs_cfg)
-        # Move tensors to same device as obs.
-        scene_enc = self.encoder(data, eval=not training)
+        scene_enc = self.encoder(data, eval=True)
 
         stacked_emb = scene_enc["stacked_embeddings"]      # (B, T*A, H)
         encoder_emb = scene_enc["encoder_embeddings"]      # (B, R+A, H)
@@ -930,7 +920,7 @@ class CtrlSimStudentPolicy(nn.Module):
             action_log_dist: (batch, action_dim)  full log-prob vector
             rnn_hxs       : unchanged (this policy is not recurrent)
         """
-        ego_logits, value = self._forward(obs, training=False)
+        ego_logits, value = self._forward(obs)
         log_dist = F.log_softmax(ego_logits, dim=-1)
 
         if deterministic:
@@ -947,7 +937,7 @@ class CtrlSimStudentPolicy(nn.Module):
         Returns:
             value: (batch, 1)
         """
-        _, value = self._forward(obs, training=False)
+        _, value = self._forward(obs)
         return value
 
     def evaluate_actions(self, obs, rnn_hxs, masks, action, return_policy_logits: bool = False):
@@ -965,7 +955,7 @@ class CtrlSimStudentPolicy(nn.Module):
             rnn_hxs         : unchanged
             [dist]          : Categorical distribution (only if return_policy_logits)
         """
-        ego_logits, value = self._forward(obs, training=True)
+        ego_logits, value = self._forward(obs)
         dist = torch.distributions.Categorical(logits=ego_logits)
         log_dist = F.log_softmax(ego_logits, dim=-1)
         action_log_probs = log_dist.gather(-1, action.long())
