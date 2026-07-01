@@ -21,8 +21,16 @@
     "clip_param": [0.2],
     "clip_value_loss": [true],
     "max_grad_norm": [0.5],
+
+    "__note2__": ["ctrlsim student parameters"],
+    "ctrlsim_student_hidden_dim": [256],
+    "ctrlsim_student_num_heads": [8],
+    "ctrlsim_student_encoder_layers": [2],
+    "ctrlsim_student_decoder_layers": [4],
+    "ctrlsim_student_seq_len": [10],
+    "ctrlsim_student_num_neighbors": [8],
     
-    "__note2__": ["PLR parameters"],
+    "__note3__": ["PLR parameters"],
     "use_plr": [false],
     "level_replay_prob": [0.5],
     "level_replay_rho": [0.5],
@@ -33,7 +41,7 @@
     "staleness_coef": [0.3],
     "no_exploratory_grad_updates": [false],
 
-    "__note3__": ["ACCEL parameters"],
+    "__note4__": ["ACCEL parameters"],
     "use_editor": [false],
     "level_editor_prob": [1.0],
     "level_editor_method": ["random"],
@@ -42,19 +50,19 @@
     "base_levels": ["batch"],
 
 
-    "__note4__": ["tilting parameters"],
+    "__note5__": ["tilting parameters"],
     "tilting_mode": ["per_vehicle"],
     "tilt_range_min": [-25],
     "tilt_range_max": [25],
 
-    "__note5__": ["warmup parameters"],
+    "__note6__": ["warmup parameters"],
     "use_warmup_level_replay": [false],
     "warmup_level_replay_seed_buffer_size": [8000],
     "warmup_opponent_disable_ratio": [0.0],
     "warmup_opponent_replay_ratio": [0.0],
     "warmup_checkpoint": ["checkpoints/checkpoint_1000.tar"],
 
-    "__note6__": ["logging parameters"],
+    "__note7__": ["logging parameters"],
     "verbose": [false],
     "write_file_outputs": [false],
     "test_env_names": [""],
@@ -64,7 +72,7 @@
     "checkpoint_interval": [1000],
     "archive_interval": [1000],
 
-    "__note7__": ["student reward setup"],
+    "__note8__": ["student reward setup"],
     "use_approaching_goal" : [false],
     "use_persistent_position_reward": [false],
     "use_heading_shaped": [false],
@@ -76,7 +84,7 @@
     "approaching_goal_scaling": [3.0],
     "heading_dense_scaling": [0.1],
 
-    "__note8__": ["student vehicle setup"],
+    "__note9__": ["student vehicle setup"],
     "student_hidden_dim": [256],
     "student_top_k_road": [200],
     "early_termination": [true],
@@ -88,12 +96,12 @@
     "student_accel_discretization": [20],
     "student_steer_discretization": [50],
 
-    "__note9__": ["inference parameters"],
+    "__note10__": ["inference parameters"],
     "sparse_inference_action_repeat": [true],
     "inference_precision": ["amp_bf16"],
     "action_repeat_frequency": [2],
 
-    "__note10__": ["KL loss parameters"],
+    "__note11__": ["KL loss parameters"],
     "use_ego_ctrlsim_kl_loss": [true],
     "ego_ctrlsim_kl_safe_update": [false],
     "ego_ctrlsim_kl_schedule": ["cosine"],
@@ -102,12 +110,12 @@
     "ego_ctrlsim_kl_init_coef" : [0.5],
     "ego_ctrlsim_kl_min_coef": [0.0],
 
-    "__note11__": ["policy reweighting parameters"],
+    "__note12__": ["policy reweighting parameters"],
     "use_policy_reweighting": [false],
     "policy_reweighting_reward_scale": [1.0],
     "policy_reweighting_target": ["rtg"],
 
-    "__note12__": ["enhanced regret example"],
+    "__note13__": ["enhanced regret example"],
     "use_enhanced_regret": [false],
     "regret_enhancement_use_base_regret": [true],
     "regret_enhancement_use_solvable_rate": [true],
@@ -119,7 +127,7 @@
     "include_truncated_rtg_gap": [false],
     "solvable_progress_threshold": [0.85],
 
-    "__note13__": ["dataset parameters"],
+    "__note14__": ["dataset parameters"],
     "scenario_index_path": ["preparation_file/scenario_index_10k_train_no_offroad.json"],
     "vehicle_map_path": ["preparation_file/vehicle_map_10k_train.json"],
     "scenario_data_dir": ["scenario_data/formatted_json_v2_no_tl_train"],
@@ -127,7 +135,7 @@
     "opponent_checkpoint": ["checkpoints/model_fp16.ckpt"],
     "log_dir": ["~/logs/dcd"],
 
-    "__note14__": ["clearml"],
+    "__note15__": ["clearml"],
     "use_clearml": [true],
     "clearml_task": ["dcd-ctrlsim"],
     "clearml_monitor_only": [false],
