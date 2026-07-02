@@ -75,6 +75,8 @@ class NocturneCtrlSimEnvConfig:
     heading_dense_scaling: float
     use_veh_veh_shaped: bool
     use_veh_edge_shaped: bool
+    veh_veh_shaped_scaling: float
+    veh_edge_shaped_scaling: float
     max_veh_veh_distance: float
     veh_edge_reward_distance_clip: float
     reset_random_max_retries: int
@@ -256,6 +258,8 @@ def build_nocturne_ctrlsim_env_config(
         heading_dense_scaling=float(kwargs.get("heading_dense_scaling", 0.1)),
         use_veh_veh_shaped=bool(kwargs.get("use_veh_veh_shaped", True)),
         use_veh_edge_shaped=bool(kwargs.get("use_veh_edge_shaped", True)),
+        veh_veh_shaped_scaling=float(kwargs.get("veh_veh_shaped_scaling", 1.0)),
+        veh_edge_shaped_scaling=float(kwargs.get("veh_edge_shaped_scaling", 1.0)),
         max_veh_veh_distance=float(kwargs.get("max_veh_veh_distance", 15.0)),
         veh_edge_reward_distance_clip=float(
             kwargs.get("veh_edge_reward_distance_clip", 5.0)

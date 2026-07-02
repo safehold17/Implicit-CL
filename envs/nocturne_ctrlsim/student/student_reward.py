@@ -379,6 +379,8 @@ def compute_student_reward(env) -> float:
     use_enhanced_regret = bool(getattr(env, "use_enhanced_regret", False))
     use_veh_veh_shaped = getattr(env, 'use_veh_veh_shaped', True)
     use_veh_edge_shaped = getattr(env, 'use_veh_edge_shaped', True)
+    veh_veh_shaped_scaling = float(getattr(env, "veh_veh_shaped_scaling", 1.0))
+    veh_edge_shaped_scaling = float(getattr(env, "veh_edge_shaped_scaling", 1.0))
     raw_veh_veh_shaped_term = (
         _compute_raw_veh_veh_shaped_reward(
             env,
@@ -401,12 +403,12 @@ def compute_student_reward(env) -> float:
         ego_id,
         ego_pos_arr,
         raw_value=raw_veh_veh_shaped_term,
-    )
+    ) * veh_veh_shaped_scaling
     veh_edge_shaped_term = _compute_veh_edge_shaped_reward(
         env,
         ego_pos_arr,
         raw_value=raw_veh_edge_shaped_term,
-    )
+    ) * veh_edge_shaped_scaling
 
     scalar_reward = (
             position_reward_term

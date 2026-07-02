@@ -237,6 +237,8 @@ def _init_environment_attributes(
     env.heading_dense_scaling = config.heading_dense_scaling
     env.use_veh_veh_shaped = config.use_veh_veh_shaped
     env.use_veh_edge_shaped = config.use_veh_edge_shaped
+    env.veh_veh_shaped_scaling = config.veh_veh_shaped_scaling
+    env.veh_edge_shaped_scaling = config.veh_edge_shaped_scaling
     env.max_veh_veh_distance = config.max_veh_veh_distance
     env.veh_edge_reward_distance_clip = config.veh_edge_reward_distance_clip
     env.reset_random_max_retries = config.reset_random_max_retries

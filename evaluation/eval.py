@@ -238,6 +238,8 @@ def _build_nocturne_env_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
 		'approaching_goal_scaling',
 		'use_veh_veh_shaped',
 		'use_veh_edge_shaped',
+		'veh_veh_shaped_scaling',
+		'veh_edge_shaped_scaling',
 		'max_veh_veh_distance',
 		'veh_edge_reward_distance_clip',
 		'remove_background_vehicles',

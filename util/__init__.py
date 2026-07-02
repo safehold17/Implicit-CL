@@ -251,6 +251,8 @@ def _make_env(args):
             'heading_dense_scaling': getattr(args, 'heading_dense_scaling', 0.1),
             'use_veh_veh_shaped': getattr(args, 'use_veh_veh_shaped', True),
             'use_veh_edge_shaped': getattr(args, 'use_veh_edge_shaped', True),
+            'veh_veh_shaped_scaling': getattr(args, 'veh_veh_shaped_scaling', 1.0),
+            'veh_edge_shaped_scaling': getattr(args, 'veh_edge_shaped_scaling', 1.0),
             'max_veh_veh_distance': getattr(args, 'max_veh_veh_distance', 15.0),
             'veh_edge_reward_distance_clip': getattr(
                 args, 'veh_edge_reward_distance_clip', 5.0

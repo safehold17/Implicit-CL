@@ -1128,6 +1128,18 @@ parser.add_argument(
     help="Whether to include veh-edge shaped reward in student reward aggregation.",
 )
 parser.add_argument(
+    "--veh_veh_shaped_scaling",
+    type=float,
+    default=1.0,
+    help="Scaling factor applied to veh-veh shaped reward in student reward aggregation.",
+)
+parser.add_argument(
+    "--veh_edge_shaped_scaling",
+    type=float,
+    default=1.0,
+    help="Scaling factor applied to veh-edge shaped reward in student reward aggregation.",
+)
+parser.add_argument(
     "--max_veh_veh_distance",
     type=float,
     default=15.0,

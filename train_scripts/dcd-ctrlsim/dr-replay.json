@@ -2,7 +2,7 @@
   "grid": {
     "env_name": ["Nocturne-CtrlSim-v0"],
     "ued_algo": ["domain_randomization"],
-    "student_model_type" : ["ctrlsim"],
+    "student_model_type" : ["late_fusion"],
     "num_processes": [32],
     "num_env_steps": [99942400],
     "seed": [123],
@@ -73,18 +73,20 @@
     "archive_interval": [1000],
 
     "__note8__": ["student reward setup"],
-    "use_approaching_goal" : [false],
+    "use_approaching_goal" : [true],
     "use_persistent_position_reward": [false],
     "use_pos_shaped": [true],
     "use_speed_shaped": [true],
     "use_heading_shaped": [true],
     "use_veh_veh_shaped": [true],
     "use_veh_edge_shaped": [true],
+    "veh_veh_shaped_scaling": [0.1],
+    "veh_edge_shaped_scaling": [0.1],
     "veh_veh_collision_rew_multiplier": [10.0],
     "veh_edge_collision_rew_multiplier": [10.0],
     "pos_target_achieved_rew_multiplier": [15.0],
-    "shaped_goal_distance_scaling": [0.2],
-    "approaching_goal_scaling": [3.0],
+    "shaped_goal_distance_scaling": [0.1],
+    "approaching_goal_scaling": [15.0],
     "heading_dense_scaling": [0.5],
 
     "__note9__": ["student vehicle setup"],
@@ -140,7 +142,7 @@
 
     "__note15__": ["clearml"],
     "use_clearml": [true],
-    "clearml_task": ["dcd-ctrlsim"],
+    "clearml_task": ["LF-replay"],
     "clearml_monitor_only": [false],
     "local_tensorboard": [false]
   }
