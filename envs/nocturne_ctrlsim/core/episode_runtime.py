@@ -14,6 +14,7 @@ bootstrapped. It is responsible for:
 
 from __future__ import annotations
 
+from dataclasses import is_dataclass, replace
 import math
 from typing import Any, Dict, Optional, Tuple
 
@@ -170,6 +171,55 @@ def split_prepared_pack_batch(
     return opponent_prepared, ego_ctrlsim_prepared
 
 
+def _resolve_episode_ego_reweight_tilt(
+    env: Any,
+    level: Any,
+) -> tuple[int, int, int]:
+    """Resolve the episode ego tilt from replay state or fresh sampling."""
+    stored_tilt = (
+        int(getattr(level, "ego_goal_tilt", 0)),
+        int(getattr(level, "ego_veh_veh_tilt", 0)),
+        int(getattr(level, "ego_veh_edge_tilt", 0)),
+    )
+    has_stored_tilt = bool(getattr(level, "has_ego_reweight_tilt", False))
+
+    def _write_level_tilt(
+        ego_tilt: tuple[int, int, int],
+        has_tilt: bool,
+    ) -> None:
+        if is_dataclass(level):
+            env.current_level = replace(
+                level,
+                ego_goal_tilt=ego_tilt[0],
+                ego_veh_veh_tilt=ego_tilt[1],
+                ego_veh_edge_tilt=ego_tilt[2],
+                has_ego_reweight_tilt=has_tilt,
+            )
+            return
+        setattr(level, "ego_goal_tilt", ego_tilt[0])
+        setattr(level, "ego_veh_veh_tilt", ego_tilt[1])
+        setattr(level, "ego_veh_edge_tilt", ego_tilt[2])
+        setattr(level, "has_ego_reweight_tilt", has_tilt)
+        env.current_level = level
+
+    if not getattr(env, "use_policy_reweighting", False):
+        if has_stored_tilt or stored_tilt != (0, 0, 0):
+            _write_level_tilt((0, 0, 0), False)
+        return (0, 0, 0)
+
+    if has_stored_tilt:
+        return stored_tilt
+
+    sampled_tilt = sample_policy_reweighting_ego_tilt(
+        use_policy_reweighting=True,
+        opponent_runtime_mode=getattr(env, "opponent_runtime_mode", "normal"),
+        tilt_range=env.tilt_range,
+        rng=env.np_random,
+    )
+    _write_level_tilt(sampled_tilt, True)
+    return sampled_tilt
+
+
 class NocturneCtrlSimRuntime:
     """Own episode setup and per-step execution for one env instance."""
 
@@ -234,12 +284,8 @@ class NocturneCtrlSimRuntime:
             )
 
         runtime_mode = getattr(env, "opponent_runtime_mode", "normal")
-        env.current_ego_reweight_tilt = sample_policy_reweighting_ego_tilt(
-            use_policy_reweighting=env.use_policy_reweighting,
-            opponent_runtime_mode=runtime_mode,
-            tilt_range=env.tilt_range,
-            rng=env.np_random,
-        )
+        env.current_ego_reweight_tilt = _resolve_episode_ego_reweight_tilt(env, level)
+        level = env.current_level
         # Initialize ego goal first, then collect all available goal points into
         # a single mapping shared by fixups and visualization.
         env._initialize_ego_goal_state_impl(env)
@@ -409,12 +455,8 @@ class NocturneCtrlSimRuntime:
         )
 
         runtime_mode = getattr(env, "opponent_runtime_mode", "normal")
-        env.current_ego_reweight_tilt = sample_policy_reweighting_ego_tilt(
-            use_policy_reweighting=env.use_policy_reweighting,
-            opponent_runtime_mode=runtime_mode,
-            tilt_range=env.tilt_range,
-            rng=env.np_random,
-        )
+        env.current_ego_reweight_tilt = _resolve_episode_ego_reweight_tilt(env, level)
+        level = env.current_level
         if runtime_mode == "normal":
             if env.tilting_mode == "global":
                 env.opponent.set_tilting(
