@@ -16,7 +16,7 @@ from ..services.vehicle_map import (
 )
 
 _NUMERIC_EGO_TILT_MARKER = np.nan
-_NUMERIC_EGO_TILT_TRAILER_LEN = 6
+_NUMERIC_EGO_TILT_TRAILER_LEN = 7
 
 
 @dataclass
@@ -29,6 +29,7 @@ class ScenarioLevel:
     veh_veh_tilt: int
     veh_edge_tilt: int
     per_vehicle_tilting: tuple[int, ...] = ()
+    mode: int = 0
     ego_goal_tilt: int = 0
     ego_veh_veh_tilt: int = 0
     ego_veh_edge_tilt: int = 0
@@ -49,6 +50,8 @@ class ScenarioLevel:
         """Validate level fields after dataclass initialization."""
         if self.seed < 0:
             raise ValueError(f"seed must be non-negative, got {self.seed}")
+        if self.mode not in (0, 1, 2):
+            raise ValueError(f"mode must be one of (0, 1, 2), got {self.mode}")
 
         for name in [
             "goal_tilt",
@@ -84,6 +87,7 @@ class ScenarioLevel:
             self.veh_veh_tilt,
             self.veh_edge_tilt,
             self.per_vehicle_tilting,
+            self.mode,
             self.ego_goal_tilt,
             self.ego_veh_veh_tilt,
             self.ego_veh_edge_tilt,
@@ -99,6 +103,7 @@ class ScenarioLevel:
             veh_veh_tilt=self.veh_veh_tilt,
             veh_edge_tilt=self.veh_edge_tilt,
             per_vehicle_tilting=self.per_vehicle_tilting,
+            mode=self.mode,
             ego_goal_tilt=self.ego_goal_tilt,
             ego_veh_veh_tilt=self.ego_veh_veh_tilt,
             ego_veh_edge_tilt=self.ego_veh_edge_tilt,
@@ -113,21 +118,7 @@ class ScenarioLevel:
     def from_level_string(cls, level_str: str) -> "ScenarioLevel":
         """Parse a level from the stored string representation."""
         values = ast.literal_eval(level_str)
-        per_vehicle_tilting = tuple(values[5]) if len(values) > 5 else ()
-        ego_goal_tilt = 0
-        ego_veh_veh_tilt = 0
-        ego_veh_edge_tilt = 0
-        has_ego_reweight_tilt = False
-        if len(values) >= 10:
-            ego_goal_tilt = values[6]
-            ego_veh_veh_tilt = values[7]
-            ego_veh_edge_tilt = values[8]
-            has_ego_reweight_tilt = bool(values[9])
-        elif len(values) >= 9:
-            ego_goal_tilt = values[6]
-            ego_veh_veh_tilt = values[7]
-            ego_veh_edge_tilt = values[8]
-            has_ego_reweight_tilt = True
+        per_vehicle_tilting = tuple(values[5])
         return cls(
             scenario_id=values[0],
             seed=values[1],
@@ -135,10 +126,11 @@ class ScenarioLevel:
             veh_veh_tilt=values[3],
             veh_edge_tilt=values[4],
             per_vehicle_tilting=per_vehicle_tilting,
-            ego_goal_tilt=ego_goal_tilt,
-            ego_veh_veh_tilt=ego_veh_veh_tilt,
-            ego_veh_edge_tilt=ego_veh_edge_tilt,
-            has_ego_reweight_tilt=has_ego_reweight_tilt,
+            mode=int(values[6]),
+            ego_goal_tilt=values[7],
+            ego_veh_veh_tilt=values[8],
+            ego_veh_edge_tilt=values[9],
+            has_ego_reweight_tilt=bool(values[10]),
         )
 
     def to_encoding(self, scenario_id_to_index: dict[str, int]) -> np.ndarray:
@@ -155,6 +147,7 @@ class ScenarioLevel:
                 self.veh_edge_tilt,
                 *self.per_vehicle_tilting,
                 _NUMERIC_EGO_TILT_MARKER,
+                self.mode,
                 self.ego_goal_tilt,
                 self.ego_veh_veh_tilt,
                 self.ego_veh_edge_tilt,
@@ -177,6 +170,7 @@ class ScenarioLevel:
             veh_veh_tilt,
             veh_edge_tilt,
             per_vehicle_tilting,
+            mode,
             ego_goal_tilt,
             ego_veh_veh_tilt,
             ego_veh_edge_tilt,
@@ -195,6 +189,7 @@ class ScenarioLevel:
             veh_veh_tilt=veh_veh_tilt,
             veh_edge_tilt=veh_edge_tilt,
             per_vehicle_tilting=per_vehicle_tilting,
+            mode=mode,
             ego_goal_tilt=ego_goal_tilt,
             ego_veh_veh_tilt=ego_veh_veh_tilt,
             ego_veh_edge_tilt=ego_veh_edge_tilt,
@@ -205,47 +200,33 @@ class ScenarioLevel:
     def decode_encoding_fields(
         cls,
         encoding: np.ndarray,
-    ) -> tuple[int, float, float, float, tuple[int, ...], int, int, int, bool, int]:
+    ) -> tuple[int, float, float, float, tuple[int, ...], int, int, int, int, bool, int]:
         """Decode primitive level fields from the PLR representation."""
-        ego_goal_tilt = 0
-        ego_veh_veh_tilt = 0
-        ego_veh_edge_tilt = 0
-        has_ego_reweight_tilt = False
-        if (
-            len(encoding) >= 4 + _NUMERIC_EGO_TILT_TRAILER_LEN
-            and np.isnan(float(encoding[-_NUMERIC_EGO_TILT_TRAILER_LEN]))
-        ):
-            seed_idx = len(encoding) - 1
-            per_vehicle_stop = len(encoding) - _NUMERIC_EGO_TILT_TRAILER_LEN
-            per_vehicle_tilting = tuple(
-                cls._coerce_integer_tilt(
-                    f"per_vehicle_tilting[{idx - 4}]",
-                    encoding[idx],
-                )
-                for idx in range(4, per_vehicle_stop)
+        if len(encoding) < 4 + _NUMERIC_EGO_TILT_TRAILER_LEN:
+            raise ValueError("Unexpected Nocturne numeric encoding length.")
+        if not np.isnan(float(encoding[-_NUMERIC_EGO_TILT_TRAILER_LEN])):
+            raise ValueError("Expected Nocturne numeric encoding sentinel before mode.")
+
+        seed_idx = len(encoding) - 1
+        per_vehicle_stop = len(encoding) - _NUMERIC_EGO_TILT_TRAILER_LEN
+        per_vehicle_tilting = tuple(
+            cls._coerce_integer_tilt(
+                f"per_vehicle_tilting[{idx - 4}]",
+                encoding[idx],
             )
-            ego_goal_tilt = cls._coerce_integer_tilt("ego_goal_tilt", encoding[-5])
-            ego_veh_veh_tilt = cls._coerce_integer_tilt(
-                "ego_veh_veh_tilt",
-                encoding[-4],
-            )
-            ego_veh_edge_tilt = cls._coerce_integer_tilt(
-                "ego_veh_edge_tilt",
-                encoding[-3],
-            )
-            has_ego_reweight_tilt = bool(int(float(encoding[-2])))
-        elif len(encoding) <= 5:
-            per_vehicle_tilting = ()
-            seed_idx = 4
-        else:
-            seed_idx = len(encoding) - 1
-            per_vehicle_tilting = tuple(
-                cls._coerce_integer_tilt(
-                    f"per_vehicle_tilting[{idx - 4}]",
-                    encoding[idx],
-                )
-                for idx in range(4, seed_idx)
-            )
+            for idx in range(4, per_vehicle_stop)
+        )
+        mode = int(float(encoding[-6]))
+        ego_goal_tilt = cls._coerce_integer_tilt("ego_goal_tilt", encoding[-5])
+        ego_veh_veh_tilt = cls._coerce_integer_tilt(
+            "ego_veh_veh_tilt",
+            encoding[-4],
+        )
+        ego_veh_edge_tilt = cls._coerce_integer_tilt(
+            "ego_veh_edge_tilt",
+            encoding[-3],
+        )
+        has_ego_reweight_tilt = bool(int(float(encoding[-2])))
 
         return (
             int(float(encoding[0])),
@@ -253,6 +234,7 @@ class ScenarioLevel:
             cls._coerce_integer_tilt("veh_veh_tilt", encoding[2]),
             cls._coerce_integer_tilt("veh_edge_tilt", encoding[3]),
             per_vehicle_tilting,
+            mode,
             ego_goal_tilt,
             ego_veh_veh_tilt,
             ego_veh_edge_tilt,

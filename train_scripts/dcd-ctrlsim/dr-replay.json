@@ -43,7 +43,8 @@
 
     "__note4__": ["ACCEL parameters"],
     "use_editor": [false],
-    "level_editor_prob": [1.0],
+    "level_editor_prob": [0.7],
+    "accel_replay_mode_prob": [0.5],
     "level_editor_method": ["random"],
     "mutation_mode": ["all"],
     "mutation_range": [5.0],

@@ -38,6 +38,7 @@
     "__note3__": ["ACCEL parameters"],
     "use_editor": [true],
     "level_editor_prob": [1.0],
+    "accel_replay_mode_prob": [0.5],
     "level_editor_method": ["random"],
     "mutation_mode": ["all"],
     "mutation_range": [5.0],

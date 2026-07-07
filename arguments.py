@@ -385,6 +385,12 @@ parser.add_argument(
     help="Probability of mutating a replayed level under PLR.",
 )
 parser.add_argument(
+    "--accel_replay_mode_prob",
+    type=float,
+    default=0.5,
+    help="Probability of skipping ACCEL edit and scoring a replay-mode level instead.",
+)
+parser.add_argument(
     "--level_editor_method",
     type=str,
     default="random",

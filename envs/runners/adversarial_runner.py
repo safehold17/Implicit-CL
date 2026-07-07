@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from collections import deque, defaultdict
+from dataclasses import replace
 
 import numpy as np
 import torch
@@ -365,6 +366,10 @@ class AdversarialRunner(object):
         max_return_queue_size = 10
         self.agent_returns = deque(maxlen=max_return_queue_size)
         self.adversary_agent_returns = deque(maxlen=max_return_queue_size)
+        self._normal_level_seed_queue = deque()
+        self._replay_level_seed_queue = deque()
+        self._normal_main_level_seed_queue = deque()
+        self._gt_replay_main_queue = deque()
 
     def train(self):
         self.is_training = True
@@ -549,8 +554,43 @@ class AdversarialRunner(object):
             stats[k + '_plr_passable_mass'] = sampler.solvable_mass
             stats[k + '_plr_max_score'] = sampler.max_score 
             stats[k + '_plr_weighted_num_edits'] = self.weighted_num_edits
+        stats.update(self._get_plr_buffer_level_stats())
 
         return stats
+
+    def _get_plr_buffer_level_stats(self):
+        """Return PLR buffer level counts and ratios grouped by mode."""
+        mode_counts = {
+            0: 0,
+            1: 0,
+            2: 0,
+        }
+        seed2level = getattr(self.level_store, "seed2level", None)
+        if seed2level is not None:
+            for level_seed in seed2level:
+                mode = int(self._get_level_mode_for_seed(int(level_seed)))
+                if mode in mode_counts:
+                    mode_counts[mode] += 1
+
+        total_count = sum(mode_counts.values())
+        if total_count > 0:
+            random_ratio = mode_counts[0] / total_count
+            edited_ratio = mode_counts[1] / total_count
+            gt_ratio = mode_counts[2] / total_count
+        else:
+            random_ratio = 0.0
+            edited_ratio = 0.0
+            gt_ratio = 0.0
+
+        return {
+            'plr_buffer_total_level_count': total_count,
+            'plr_buffer_random_level_count': mode_counts[0],
+            'plr_buffer_edited_level_count': mode_counts[1],
+            'plr_buffer_gt_level_count': mode_counts[2],
+            'plr_buffer_random_level_ratio': random_ratio,
+            'plr_buffer_edited_level_ratio': edited_ratio,
+            'plr_buffer_gt_level_ratio': gt_ratio,
+        }
 
     def _get_env_stats_car_racing(self, agent_info, adversary_agent_info):
         infos = self.venv.get_complexity_info()
@@ -642,6 +682,152 @@ class AdversarialRunner(object):
 
         return level_sampler, updateable
 
+    def _get_level_mode_for_seed(self, level_seed: int) -> int:
+        """Resolve the serialized mode for a buffered level seed."""
+        if self.level_store is None:
+            return 0
+
+        raw_level = self.level_store.get_level(int(level_seed))
+        from envs.nocturne_ctrlsim.core.level import ScenarioLevel
+
+        if isinstance(raw_level, ScenarioLevel):
+            return int(raw_level.mode)
+        if isinstance(raw_level, str):
+            return int(ScenarioLevel.from_level_string(raw_level).mode)
+        if isinstance(raw_level, np.ndarray):
+            if raw_level.dtype.kind == "U":
+                return int(raw_level[-6])
+            return int(ScenarioLevel.decode_encoding_fields(raw_level)[5])
+
+        raise TypeError(f"Unsupported replay level type: {type(raw_level)}")
+
+    def _queue_level_seeds_for_rollout(self, level_seeds):
+        """Append seeds into normal/replay rollout queues based on level mode."""
+        for level_seed in level_seeds:
+            mode = self._get_level_mode_for_seed(int(level_seed))
+            if mode == 2:
+                self._replay_level_seed_queue.append(int(level_seed))
+            else:
+                self._normal_level_seed_queue.append(int(level_seed))
+
+    def _ensure_main_replay_queues(self):
+        """Initialize main replay batching queues on first use."""
+        if not hasattr(self, "_normal_main_level_seed_queue"):
+            self._normal_main_level_seed_queue = deque()
+        if not hasattr(self, "_gt_replay_main_queue"):
+            self._gt_replay_main_queue = deque()
+
+    def _sample_mode_consistent_replay_batch(self, level_sampler):
+        """Sample replay seeds until one runtime-specific batch is ready."""
+        batch_size = int(self.args.num_processes)
+        self._ensure_main_replay_queues()
+
+        while True:
+            level_seed = int(level_sampler.sample_replay_level())
+            mode = self._get_level_mode_for_seed(level_seed)
+
+            if mode == 2:
+                self._gt_replay_main_queue.append(level_seed)
+                if len(self._gt_replay_main_queue) >= batch_size:
+                    return {
+                        "level_seeds": [
+                            self._gt_replay_main_queue.popleft()
+                            for _ in range(batch_size)
+                        ],
+                        "opponent_runtime_mode": "replay",
+                    }
+            else:
+                self._normal_main_level_seed_queue.append(level_seed)
+                if len(self._normal_main_level_seed_queue) >= batch_size:
+                    return {
+                        "level_seeds": [
+                            self._normal_main_level_seed_queue.popleft()
+                            for _ in range(batch_size)
+                        ],
+                        "opponent_runtime_mode": "normal",
+                    }
+
+    def _prepare_mode_consistent_replay_env_rollout(self, level_sampler):
+        """Build env-rollout kwargs for one mode-consistent replay batch."""
+        replay_batch = self._sample_mode_consistent_replay_batch(level_sampler)
+        self.set_opponent_runtime_mode(replay_batch["opponent_runtime_mode"])
+        return {
+            "level_replay": False,
+            "fixed_seeds": replay_batch["level_seeds"],
+        }
+
+    def _drain_ready_rollout_batches(self):
+        """Pop all ready FIFO batches whose queue length reached num_processes."""
+        batch_size = int(self.args.num_processes)
+        ready_batches = []
+
+        while len(self._normal_level_seed_queue) >= batch_size:
+            ready_batches.append(
+                {
+                    "level_seeds": [
+                        self._normal_level_seed_queue.popleft()
+                        for _ in range(batch_size)
+                    ],
+                    "opponent_runtime_mode": "normal",
+                }
+            )
+
+        while len(self._replay_level_seed_queue) >= batch_size:
+            ready_batches.append(
+                {
+                    "level_seeds": [
+                        self._replay_level_seed_queue.popleft()
+                        for _ in range(batch_size)
+                    ],
+                    "opponent_runtime_mode": "replay",
+                }
+            )
+
+        return ready_batches
+
+    def _score_ready_level_batches(self, agent, level_sampler, update_level_sampler):
+        """Score all ready queued level batches using the mode-specific runtime."""
+        ready_batches = self._drain_ready_rollout_batches()
+        if not ready_batches:
+            return
+
+        previous_mode = self._get_opponent_runtime_mode()
+        try:
+            for ready_batch in ready_batches:
+                batch_mode = ready_batch["opponent_runtime_mode"]
+                batch_seeds = [int(seed) for seed in ready_batch["level_seeds"]]
+                self.set_opponent_runtime_mode(batch_mode)
+                force_sampler_update = batch_mode == "replay"
+
+                current_seeds = [
+                    int(seed)
+                    for seed in (self.current_level_seeds or [])
+                ]
+                if batch_seeds != current_seeds:
+                    self.agent_rollout(
+                        agent=None,
+                        num_steps=None,
+                        is_env=True,
+                        fixed_seeds=batch_seeds,
+                    )
+
+                self._force_plr_level_sampler_update = force_sampler_update
+                try:
+                    self.agent_rollout(
+                        agent=agent,
+                        num_steps=self.agent_rollout_steps,
+                        update=self.is_training,
+                        level_replay=False,
+                        level_sampler=level_sampler,
+                        update_level_sampler=update_level_sampler,
+                        update_agent_separately=self.use_accel_paired,
+                        sample_only=True,
+                    )
+                finally:
+                    self._force_plr_level_sampler_update = False
+        finally:
+            self.set_opponent_runtime_mode(previous_mode)
+
     def _is_warmup_replay_plr_active(self):
         """Return whether the dedicated warmup replay PLR buffer is active."""
         return bool(
@@ -687,9 +873,44 @@ class AdversarialRunner(object):
         else:
             return False
 
-    def _update_plr_with_current_unseen_levels(self, parent_seeds=None):
-        args = self.args
+    def _should_use_accel_replay_mode(self) -> bool:
+        """Return whether ACCEL should skip edit and score replay-mode levels."""
+        accel_replay_mode_prob = float(
+            getattr(self.args, 'accel_replay_mode_prob', 0.5)
+        )
+        return np.random.rand() < accel_replay_mode_prob
+
+    def _get_active_levels_for_plr_insert(self, mode_override=None):
+        """Return active levels serialized for LevelStore insertion."""
         levels = self._get_active_levels()
+        if mode_override is None or not self.use_byte_encoding:
+            return levels
+
+        base_env = self.ued_venv.unwrapped
+        from envs.nocturne_ctrlsim.core.level import (
+            coerce_level,
+        )
+
+        serialized_levels = []
+        for encoding in self.ued_venv.get_encodings():
+            if isinstance(encoding, np.ndarray) and encoding.dtype.kind == "U":
+                updated_encoding = np.array(encoding, copy=True)
+                updated_encoding[-6] = str(int(mode_override))
+                serialized_levels.append(updated_encoding.tobytes())
+                continue
+
+            level = coerce_level(base_env, encoding)
+            serialized_levels.append(
+                replace(level, mode=int(mode_override))
+                .to_encoding(base_env.scenario_id_to_index)
+                .tobytes()
+            )
+
+        return serialized_levels
+
+    def _update_plr_with_current_unseen_levels(self, parent_seeds=None, mode_override=None):
+        args = self.args
+        levels = self._get_active_levels_for_plr_insert(mode_override=mode_override)
         self.current_level_seeds = \
             self.level_store.insert(levels, parent_seeds=parent_seeds)
         if args.log_plr_buffer_stats or args.reject_unsolvable_seeds:
@@ -714,6 +935,9 @@ class AdversarialRunner(object):
         all_replay_seeds = set()
         for level_sampler in self.all_level_samplers:
             all_replay_seeds.update([x for x in level_sampler.seeds if x >= 0])
+            staging_seed_set = getattr(level_sampler, "staging_seed_set", None)
+            if staging_seed_set:
+                all_replay_seeds.update(int(seed) for seed in staging_seed_set)
         self.level_store.reconcile_seeds(all_replay_seeds)
 
     def _get_weighted_num_edits(self):
@@ -775,6 +999,7 @@ class AdversarialRunner(object):
                       edit_level=False,
                       num_edits=0, 
                       fixed_seeds=None,
+                      insert_mode=None,
                       kl_dict=None,
                       update_agent_separately=False):
         if sample_only and discard_grad:
@@ -792,13 +1017,21 @@ class AdversarialRunner(object):
                 else:
                     self.ued_venv.reset_to_level_batch(levels)
                     self.ued_venv.mutate_level(num_edits=num_edits)
-                self._update_plr_with_current_unseen_levels(parent_seeds=fixed_seeds)
+                self._update_plr_with_current_unseen_levels(
+                    parent_seeds=fixed_seeds,
+                    mode_override=insert_mode,
+                )
                 return
             if level_replay: # Get replay levels
                 self.current_level_seeds = [
                     level_sampler.sample_replay_level()
                     for _ in range(args.num_processes)
                 ]
+                levels = [self.level_store.get_level(seed) for seed in self.current_level_seeds]
+                self._pending_replay_obs = self.ued_venv.reset_to_level_batch(levels)
+                return self.current_level_seeds
+            if fixed_seeds is not None:
+                self.current_level_seeds = [int(seed) for seed in fixed_seeds]
                 levels = [self.level_store.get_level(seed) for seed in self.current_level_seeds]
                 self._pending_replay_obs = self.ued_venv.reset_to_level_batch(levels)
                 return self.current_level_seeds
@@ -1351,8 +1584,13 @@ class AdversarialRunner(object):
     ):
         """Finalize a sample-only rollout without entering PPO update."""
         plr_runtime_enabled = self.plr_runtime_enabled
+        should_update_level_sampler = bool(
+            (plr_runtime_enabled or getattr(self, "_force_plr_level_sampler_update", False))
+            and level_sampler
+            and update_level_sampler
+        )
 
-        if plr_runtime_enabled and level_sampler and update_level_sampler:
+        if should_update_level_sampler:
             level_sampler.update_with_rollouts(
                 agent.storage,
                 external_scores=external_scores,
@@ -1361,7 +1599,7 @@ class AdversarialRunner(object):
 
         agent.storage.after_update()
 
-        if plr_runtime_enabled and level_sampler and update_level_sampler:
+        if should_update_level_sampler:
             level_sampler.after_update()
 
         rollout_info = {
@@ -1490,6 +1728,7 @@ class AdversarialRunner(object):
     def run(self):
         args = self.args
         plr_runtime_enabled = self.plr_runtime_enabled
+        original_runtime_mode = self._get_opponent_runtime_mode()
         is_nocturne_env = (
             args.env_name.startswith('Nocturne') or args.env_name.startswith('nocturne')
         )
@@ -1513,19 +1752,26 @@ class AdversarialRunner(object):
         if self.is_training and not student_discard_grad and not student_sample_only:
             self.student_grad_updates += 1
 
+        level_sampler, is_updateable = self._get_level_sampler('agent')
+        env_rollout_kwargs = {
+            "level_replay": level_replay,
+            "level_sampler": level_sampler,
+            "update_level_sampler": False,
+        }
+        if level_replay:
+            env_rollout_kwargs.update(
+                self._prepare_mode_consistent_replay_env_rollout(level_sampler)
+            )
+
         # Generate a batch of adversarial environments
         env_info = self.agent_rollout(
             agent=adversary_env, 
             num_steps=self.adversary_env_rollout_steps, 
             update=False,
             is_env=True,
-            level_replay=level_replay,
-            level_sampler=self._get_level_sampler('agent')[0],
-            update_level_sampler=False)
+            **env_rollout_kwargs)
 
         # Run agent episodes
-        level_sampler, is_updateable = self._get_level_sampler('agent')
-        
         kl_dict_agent = None
         if self.use_accel_paired:
             kl_dict_agent = None
@@ -1552,14 +1798,23 @@ class AdversarialRunner(object):
 
         # Use a separate PLR curriculum for the antagonist
         if level_replay and self.is_paired and (args.protagonist_plr == args.antagonist_plr):
+            adversary_level_sampler = self._get_level_sampler('adversary_agent')[0]
+            adversary_env_rollout_kwargs = {
+                "level_replay": level_replay,
+                "level_sampler": adversary_level_sampler,
+                "update_level_sampler": False,
+            }
+            adversary_env_rollout_kwargs.update(
+                self._prepare_mode_consistent_replay_env_rollout(
+                    adversary_level_sampler
+                )
+            )
             self.agent_rollout(
                 agent=adversary_env, 
                 num_steps=self.adversary_env_rollout_steps, 
                 update=False,
                 is_env=True,
-                level_replay=level_replay,
-                level_sampler=self._get_level_sampler('adversary_agent')[0],
-                update_level_sampler=False)
+                **adversary_env_rollout_kwargs)
 
         adversary_agent_info = defaultdict(float)
         if self.is_paired:
@@ -1651,8 +1906,8 @@ class AdversarialRunner(object):
                 
             adversary_agent_info.update(adversary_agent_update_rollout_info)
 
-        # Sample whether the decision to edit levels
-        edit_level = self._should_edit_level() and level_replay
+        # Sample whether ACCEL post-processing should run on replayed levels.
+        run_accel_postprocess = self._should_edit_level() and level_replay
 
         if level_replay:
             sampled_level_info = {
@@ -1667,7 +1922,7 @@ class AdversarialRunner(object):
 
         # ==== This part performs ACCEL ====
         # If editing, mutate levels just replayed by PLR
-        if level_replay and edit_level:
+        if level_replay and run_accel_postprocess:
             # Choose base levels for mutation
             if self.base_levels == 'batch':
                 fixed_seeds = env_info
@@ -1697,30 +1952,32 @@ class AdversarialRunner(object):
                 fixed_seeds = base_fixed_seeds
                 level_sampler, is_updateable = self._get_level_sampler('agent')
 
-                # Edit selected levels
-                self.agent_rollout(
-                    agent=None,
-                    num_steps=None,
-                    is_env=True,
-                    edit_level=True,
-                    num_edits=args.num_edits,
-                    fixed_seeds=fixed_seeds)
-
-                self.total_num_edits += 1
-                sampled_level_info['num_edits'] = [x+1 for x in sampled_level_info['num_edits']]
-
-                # Evaluate edited levels
-                agent_info_edited_level = self.agent_rollout(
-                    agent=agent,
-                    num_steps=self.agent_rollout_steps,
-                    update=self.is_training,
-                    level_replay=False,
-                    level_sampler=level_sampler,
-                    update_level_sampler=is_updateable,
-                    update_agent_separately=self.use_accel_paired,
-                    sample_only=True)
-                
                 if self.use_accel_paired:
+                    self.agent_rollout(
+                        agent=None,
+                        num_steps=None,
+                        is_env=True,
+                        edit_level=True,
+                        num_edits=args.num_edits,
+                        fixed_seeds=fixed_seeds,
+                    )
+
+                    self.total_num_edits += 1
+                    sampled_level_info['num_edits'] = [
+                        x + 1 for x in sampled_level_info['num_edits']
+                    ]
+
+                    agent_info_edited_level = self.agent_rollout(
+                        agent=agent,
+                        num_steps=self.agent_rollout_steps,
+                        update=self.is_training,
+                        level_replay=False,
+                        level_sampler=level_sampler,
+                        update_level_sampler=is_updateable,
+                        update_agent_separately=self.use_accel_paired,
+                        sample_only=True,
+                    )
+
                     adversary_agent_info_edited_level = self.agent_rollout(
                         agent=adversary_agent,
                         num_steps=self.agent_rollout_steps,
@@ -1729,27 +1986,92 @@ class AdversarialRunner(object):
                         level_sampler=None,
                         update_level_sampler=False,
                         update_agent_separately=self.use_accel_paired,
-                        discard_grad=True)
-                    
-                    external_scores = self._calculate_paired_regret_scores(agent_info_edited_level, adversary_agent_info_edited_level, type=args.accel_paired_score_function)
-                    
-                    # update agent level sampler
-                    _ = self._update_agent_separately(agent, 
-                                        level_sampler=level_sampler, 
-                                        update_level_sampler=is_updateable,
-                                        discard_grad=True,
-                                        kl_dict=None,
-                                        external_scores=external_scores)
-                    
-                    
-                    # update antagonist agent too
-                    _ = self._update_agent_separately(adversary_agent,
-                                        level_sampler=level_sampler, 
-                                        update_level_sampler=is_updateable,
-                                        discard_grad=True,
-                                        kl_dict=None,
-                                        external_scores=external_scores)
+                        discard_grad=True,
+                    )
+
+                    external_scores = self._calculate_paired_regret_scores(
+                        agent_info_edited_level,
+                        adversary_agent_info_edited_level,
+                        type=args.accel_paired_score_function,
+                    )
+
+                    _ = self._update_agent_separately(
+                        agent,
+                        level_sampler=level_sampler,
+                        update_level_sampler=is_updateable,
+                        discard_grad=True,
+                        kl_dict=None,
+                        external_scores=external_scores,
+                    )
+
+                    _ = self._update_agent_separately(
+                        adversary_agent,
+                        level_sampler=level_sampler,
+                        update_level_sampler=is_updateable,
+                        discard_grad=True,
+                        kl_dict=None,
+                        external_scores=external_scores,
+                    )
+                elif self._should_use_accel_replay_mode():
+                    previous_mode = self._get_opponent_runtime_mode()
+                    self.set_opponent_runtime_mode('replay')
+                    try:
+                        replay_levels = [
+                            self.level_store.get_level(seed) for seed in fixed_seeds
+                        ]
+                        self._pending_replay_obs = self.ued_venv.reset_to_level_batch(
+                            replay_levels
+                        )
+                        self._update_plr_with_current_unseen_levels(
+                            parent_seeds=fixed_seeds,
+                            mode_override=2,
+                        )
+                        self._queue_level_seeds_for_rollout(self.current_level_seeds)
+                        self._score_ready_level_batches(
+                            agent=agent,
+                            level_sampler=level_sampler,
+                            update_level_sampler=is_updateable,
+                        )
+                    finally:
+                        self.set_opponent_runtime_mode(previous_mode)
+                else:
+                    self.agent_rollout(
+                        agent=None,
+                        num_steps=None,
+                        is_env=True,
+                        edit_level=True,
+                        num_edits=args.num_edits,
+                        fixed_seeds=fixed_seeds,
+                        insert_mode=1,
+                    )
+
+                    self.total_num_edits += 1
+                    sampled_level_info['num_edits'] = [
+                        x + 1 for x in sampled_level_info['num_edits']
+                    ]
+                    self._queue_level_seeds_for_rollout(self.current_level_seeds)
+                    self._score_ready_level_batches(
+                        agent=agent,
+                        level_sampler=level_sampler,
+                        update_level_sampler=is_updateable,
+                    )
         # ==== ACCEL end ====
+
+        tb_per_process_level_modes_snapshot = None
+        if level_replay and self.current_level_seeds is not None:
+            current_level_seeds = [int(seed) for seed in self.current_level_seeds]
+            if len(current_level_seeds) == int(args.num_processes):
+                tb_per_process_level_modes_snapshot = []
+                for level_seed in current_level_seeds:
+                    try:
+                        mode = self._get_level_mode_for_seed(level_seed)
+                    except KeyError:
+                        mode = 0
+                    tb_per_process_level_modes_snapshot.append(mode)
+
+        plr_buffer_level_stats_snapshot = None
+        if args.use_plr:
+            plr_buffer_level_stats_snapshot = self._get_plr_buffer_level_stats()
 
         if plr_runtime_enabled:
             self._reconcile_level_store_and_samplers()
@@ -1798,6 +2120,10 @@ class AdversarialRunner(object):
                 tilting_mode=tilting_mode,
                 log_replay_complexity=False,
             )
+        tb_per_process_level_modes = None
+        if level_replay and tb_per_process_stats and tb_per_process_level_modes_snapshot is not None:
+            if len(tb_per_process_level_modes_snapshot) == len(tb_per_process_stats):
+                tb_per_process_level_modes = tb_per_process_level_modes_snapshot
 
         if (not level_replay) or log_replay_complexity:
 
@@ -1872,9 +2198,15 @@ class AdversarialRunner(object):
                     float(rollout_safe_done_count) / float(total_done_count)
                 )
 
-        # Log PLR buffer stats
-        if args.use_plr and args.log_plr_buffer_stats:
-            stats.update(self._get_plr_buffer_stats())
+        # Always log PLR buffer level composition; extra PLR sampler stats stay gated.
+        if args.use_plr:
+            if plr_buffer_level_stats_snapshot is not None:
+                stats.update(plr_buffer_level_stats_snapshot)
+            if args.log_plr_buffer_stats:
+                plr_buffer_stats = self._get_plr_buffer_stats()
+                if plr_buffer_level_stats_snapshot is not None:
+                    plr_buffer_stats.update(plr_buffer_level_stats_snapshot)
+                stats.update(plr_buffer_stats)
 
         [self.agent_returns.append(r) for b in agent_info['returns'] for r in reversed(b)]
         mean_agent_return = 0
@@ -1974,5 +2306,10 @@ class AdversarialRunner(object):
 
         if tb_per_process_stats:
             stats['_tb_per_process_stats'] = tb_per_process_stats
+            if tb_per_process_level_modes is not None:
+                stats['_tb_per_process_level_modes'] = tb_per_process_level_modes
+
+        if level_replay:
+            self.set_opponent_runtime_mode(original_runtime_mode)
 
         return stats

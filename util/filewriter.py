@@ -24,6 +24,25 @@ from typing import Any, Dict
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
+_TB_REPLAY_SOURCE_TAG_BY_MODE = {
+    0: "random_level_replay",
+    1: "edited_level_replay",
+    2: "gt_level_replay",
+}
+
+_TB_LEVEL_COUNT_TAG_BY_STAT = {
+    "plr_buffer_total_level_count": "level_count/total",
+    "plr_buffer_random_level_count": "level_count/random",
+    "plr_buffer_edited_level_count": "level_count/edited",
+    "plr_buffer_gt_level_count": "level_count/gt",
+}
+
+_TB_LEVEL_RATIO_TAG_BY_STAT = {
+    "plr_buffer_random_level_ratio": "level_ratio/random",
+    "plr_buffer_edited_level_ratio": "level_ratio/edited",
+    "plr_buffer_gt_level_ratio": "level_ratio/gt",
+}
+
 
 def gather_metadata() -> Dict:
     date_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -451,6 +470,7 @@ class FileWriter:
             value = self._get_float_stat(stats, key)
             if value is not None:
                 self._report_mode_split_metric(metric_name, global_step, value, mode_name)
+        self._report_level_count_metrics(stats, global_step)
         self._report_split_process_metrics(stats, global_step, mode_name)
         if self.tensor_board_writer is not None:
             self.tensor_board_writer.flush()
@@ -528,7 +548,7 @@ class FileWriter:
     @staticmethod
     def _get_tb_mode_name(stats: Dict) -> str:
         """Return the TensorBoard mode suffix for the current update."""
-        return "plr_only" if bool(stats.get("level_replay", False)) else "non_plr"
+        return "plr_mixed" if bool(stats.get("level_replay", False)) else "non_plr"
 
     def _report_mode_split_metric(
         self,
@@ -547,14 +567,56 @@ class FileWriter:
         if not per_process_stats:
             return
 
+        replay_source_process_stats = self._get_replay_source_process_stats(
+            stats,
+            per_process_stats,
+        )
         for metric_name, metric_keys in self._tb_mode_split_process_metric_keys.items():
             mean_value = self._get_process_metric_mean(per_process_stats, metric_keys)
             if mean_value is None:
                 continue
             self._report_mode_split_metric(metric_name, step, mean_value, mode_name)
+            for replay_source_tag, tagged_process_stats in replay_source_process_stats.items():
+                tagged_mean_value = self._get_process_metric_mean(
+                    tagged_process_stats,
+                    metric_keys,
+                )
+                if tagged_mean_value is None:
+                    continue
+                self._report_metric_scalar(
+                    f"{metric_name}/{replay_source_tag}",
+                    step,
+                    tagged_mean_value,
+                )
 
     def _flush_tb_process_avg_buffers(self):
         """Compatibility no-op for the legacy close() call path."""
+
+    def _get_replay_source_process_stats(self, stats: Dict, per_process_stats):
+        """Group replay process stats by serialized level source mode."""
+        if not bool(stats.get("level_replay", False)):
+            return {}
+
+        per_process_level_modes = stats.get("_tb_per_process_level_modes")
+        if per_process_level_modes is None:
+            return {}
+        if len(per_process_level_modes) != len(per_process_stats):
+            return {}
+
+        grouped_process_stats = {
+            tag: [] for tag in _TB_REPLAY_SOURCE_TAG_BY_MODE.values()
+        }
+        for process_stats, raw_mode in zip(per_process_stats, per_process_level_modes):
+            tag = _TB_REPLAY_SOURCE_TAG_BY_MODE.get(int(raw_mode))
+            if tag is None:
+                continue
+            grouped_process_stats[tag].append(process_stats)
+
+        return {
+            tag: tagged_stats
+            for tag, tagged_stats in grouped_process_stats.items()
+            if tagged_stats
+        }
 
     def _get_process_metric_mean(self, per_process_stats, metric_keys):
         """Return the mean value for the first available metric key per process row."""
@@ -586,6 +648,19 @@ class FileWriter:
             from util.clearml import report_clearml_scalar
 
             report_clearml_scalar(self.clearml_logger, tag, value, step)
+
+    def _report_level_count_metrics(self, stats: Dict, step: int) -> None:
+        """Report PLR buffer level-count and level-ratio metrics."""
+        for stat_name, tag in _TB_LEVEL_COUNT_TAG_BY_STAT.items():
+            value = self._get_float_stat(stats, stat_name)
+            if value is None:
+                continue
+            self._report_metric_scalar(tag, step, value)
+        for stat_name, tag in _TB_LEVEL_RATIO_TAG_BY_STAT.items():
+            value = self._get_float_stat(stats, stat_name)
+            if value is None:
+                continue
+            self._report_metric_scalar(tag, step, value)
 
     def _append_avg_row(self):
         if not os.path.exists(self.paths["logs"]):
