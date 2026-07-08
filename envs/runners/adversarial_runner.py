@@ -938,6 +938,15 @@ class AdversarialRunner(object):
             staging_seed_set = getattr(level_sampler, "staging_seed_set", None)
             if staging_seed_set:
                 all_replay_seeds.update(int(seed) for seed in staging_seed_set)
+        for queue_name in (
+            "_normal_main_level_seed_queue",
+            "_gt_replay_main_queue",
+            "_normal_level_seed_queue",
+            "_replay_level_seed_queue",
+        ):
+            level_seed_queue = getattr(self, queue_name, None)
+            if level_seed_queue:
+                all_replay_seeds.update(int(seed) for seed in level_seed_queue)
         self.level_store.reconcile_seeds(all_replay_seeds)
 
     def _get_weighted_num_edits(self):
