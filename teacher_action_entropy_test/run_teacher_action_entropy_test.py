@@ -178,7 +178,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--num_processes", type=int, default=32)
-    parser.add_argument("--num_episodes", type=int, default=1024)
+    parser.add_argument("--num_episodes", type=int, default=100000)
     parser.add_argument("--num_steps", type=int, default=90)
     parser.add_argument(
         "--progress_threshold",
@@ -260,13 +260,54 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=str,
         default="teacher-action-entropy",
     )
+    parser.add_argument(
+        "--clearml_dataset_project",
+        type=str,
+        default="ctrlsim_dataset",
+    )
+    parser.add_argument(
+        "--clearml_dataset_name",
+        type=str,
+        default="ctrlsim_dataset",
+    )
     parser.add_argument("--artifact_chunk_size", type=int, default=1000)
     return parser.parse_args(argv)
 
 
+def _remap_clearml_dataset_paths(args: argparse.Namespace, dataset_dir: str) -> None:
+    """Resolve dataset-backed resource paths on a ClearML worker."""
+    default_paths = {
+        "scenario_index_path": "preparation_file/scenario_index_10k_train_no_offroad.json",
+        "scenario_data_dir": "scenario_data/formatted_json_v2_no_tl_train",
+        "preprocess_dir": "compressed_preprocessed_data/train",
+        "checkpoint_path": "checkpoints/model_fp16.ckpt",
+        "vehicle_map_path": "preparation_file/vehicle_map_10k_train.json",
+    }
+    for key, default_relative_path in default_paths.items():
+        path = getattr(args, key, None)
+        if not path:
+            continue
+        if os.path.isabs(path):
+            resolved_path = path if os.path.exists(path) else os.path.join(dataset_dir, default_relative_path)
+        else:
+            resolved_path = os.path.join(dataset_dir, path)
+        if not os.path.exists(resolved_path):
+            raise FileNotFoundError(
+                f"ClearML dataset missing required path for {key}: {resolved_path}"
+            )
+        setattr(args, key, resolved_path)
+
+
 def maybe_create_clearml_task(args: argparse.Namespace) -> Any:
-    """Create a ClearML task only when the CLI explicitly enables it."""
+    """Create a ClearML task and remap dataset-backed paths on workers."""
     is_clearml_worker = bool(os.environ.get("CLEARML_TASK_ID"))
+    if bool(getattr(args, "use_clearml", False)) and bool(
+        getattr(args, "clearml_monitor_only", False)
+    ):
+        raise ValueError(
+            "--use_clearml and --clearml_monitor_only are mutually exclusive"
+        )
+
     clearml_enabled = (
         bool(getattr(args, "use_clearml", False))
         or bool(getattr(args, "clearml_monitor_only", False))
@@ -292,6 +333,14 @@ def maybe_create_clearml_task(args: argparse.Namespace) -> Any:
         auto_resource_monitoring=True,
     )
     if is_clearml_worker:
+        from util.clearml import download_clearml_dataset
+
+        if args.clearml_dataset_project and args.clearml_dataset_name:
+            dataset_dir = download_clearml_dataset(
+                args.clearml_dataset_project,
+                args.clearml_dataset_name,
+            )
+            _remap_clearml_dataset_paths(args, dataset_dir)
         return task
 
     task.connect(vars(args))
