@@ -951,11 +951,15 @@ class AdversarialRunner(object):
 
     def _get_weighted_num_edits(self):
         level_sampler = self._get_active_default_level_sampler()
-        seed_num_edits = np.zeros(level_sampler.seed_buffer_size)
-        for idx, value in enumerate(self.level_store.seed2parent.values()):
-            seed_num_edits[idx] = len(value)
-        weighted_num_edits = np.dot(level_sampler.sample_weights(), seed_num_edits)
-        return weighted_num_edits
+        sample_weights = level_sampler.sample_weights()
+        seed_num_edits = np.zeros_like(sample_weights, dtype=np.float64)
+        for idx, seed in enumerate(level_sampler.seeds):
+            if seed >= 0:
+                seed_num_edits[idx] = len(
+                    self.level_store.seed2parent.get(int(seed), [])
+                )
+        weighted_num_edits = np.dot(sample_weights, seed_num_edits)
+        return float(weighted_num_edits)
 
     def _resolve_non_plr_base_seed(self, seed):
         """
