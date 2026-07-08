@@ -233,7 +233,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--show_level_log", action="store_true")
     parser.add_argument("--record_video", action="store_true")
     parser.add_argument("--show_vehicle_ids", action="store_true")
-    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--verbose", action="store_true", default=True)
     parser.add_argument(
         "--use_clearml",
         type=str2bool,
