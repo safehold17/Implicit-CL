@@ -289,7 +289,39 @@ class FileWriter:
             "train_agent_dist_entropy": "agent_dist_entropy",
             "train_safe_episode_rate": "safe_episode_rate",
             "train_kl_loss_ego_ctrlsim": "ego_ctrlsim_kl_loss",
+            "train_kl_loss_ego_ctrlsim_forward": (
+                "ego_ctrlsim_forward_kl_loss"
+            ),
+            "train_kl_loss_ego_ctrlsim_reverse": (
+                "ego_ctrlsim_reverse_kl_loss"
+            ),
             "train_kl_loss_weight": "ego_ctrlsim_kl_loss_weight",
+            "train_kl_teacher_episode_entropy": (
+                "ego_ctrlsim_teacher_episode_entropy"
+            ),
+            "train_kl_adaptive_alpha": "ego_ctrlsim_adaptive_alpha",
+            "train_kl_reverse_episode_fraction": (
+                "ego_ctrlsim_reverse_episode_fraction"
+            ),
+            "train_kl_mixed_episode_fraction": (
+                "ego_ctrlsim_mixed_episode_fraction"
+            ),
+            "train_kl_forward_episode_fraction": (
+                "ego_ctrlsim_forward_episode_fraction"
+            ),
+            "train_kl_valid_sample_count": "ego_ctrlsim_kl_valid_sample_count",
+            "train_kl_teacher_completed_episode_count": (
+                "ego_ctrlsim_teacher_completed_episode_count"
+            ),
+            "train_kl_safe_invalid_episode_count": (
+                "ego_ctrlsim_safe_invalid_episode_count"
+            ),
+            "train_kl_nonfinite_logits_episode_count": (
+                "ego_ctrlsim_nonfinite_logits_episode_count"
+            ),
+            "train_kl_cliffhanger_excluded_count": (
+                "ego_ctrlsim_cliffhanger_excluded_count"
+            ),
             "ego_heading_error_to_gt": "ego_heading_error_to_gt",
             "ego_turn_heading_error_to_gt": "ego_turn_heading_error_to_gt",
             "ego_non_turn_heading_error_to_gt": "ego_non_turn_heading_error_to_gt",

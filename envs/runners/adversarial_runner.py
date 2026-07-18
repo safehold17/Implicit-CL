@@ -1105,22 +1105,73 @@ class AdversarialRunner(object):
         has_ego_ctrlsim_kl_storage = (
             getattr(agent.storage, "ego_ctrlsim_valid", None) is not None
         )
-        track_ego_ctrlsim_kl_safe_update = (
+        track_ego_ctrlsim_kl = (
             is_nocturne_rollout
             and bool(getattr(args, "use_ego_ctrlsim_kl_loss", False))
             and has_ego_ctrlsim_kl_storage
+        )
+        track_ego_ctrlsim_kl_safe_update = (
+            track_ego_ctrlsim_kl
             and bool(getattr(args, "ego_ctrlsim_kl_safe_update", True))
+        )
+        track_ego_ctrlsim_adaptive_kl = (
+            is_nocturne_rollout
+            and bool(getattr(args, "use_ego_ctrlsim_kl_loss", False))
+            and bool(getattr(args, "use_ego_ctrlsim_adaptive_kl_loss", True))
+            and getattr(agent.storage, "ego_ctrlsim_logits_present", None)
+            is not None
+            and getattr(agent.storage, "ego_ctrlsim_episode_entropy", None)
+            is not None
         )
         current_episode_kl_steps_by_process = (
             [[] for _ in range(args.num_processes)]
-            if track_ego_ctrlsim_kl_safe_update
+            if track_ego_ctrlsim_kl
             else None
         )
         current_episode_kl_disabled_by_process = (
             [False for _ in range(args.num_processes)]
-            if track_ego_ctrlsim_kl_safe_update
+            if track_ego_ctrlsim_kl
             else None
         )
+        current_episode_nonfinite_logits_by_process = (
+            [False for _ in range(args.num_processes)]
+            if track_ego_ctrlsim_kl
+            else None
+        )
+        current_episode_teacher_steps_by_process = (
+            [[] for _ in range(args.num_processes)]
+            if track_ego_ctrlsim_adaptive_kl
+            else None
+        )
+        current_episode_adaptive_kl_steps_by_process = (
+            [[] for _ in range(args.num_processes)]
+            if track_ego_ctrlsim_adaptive_kl
+            else None
+        )
+        current_episode_entropy_sum_by_process = (
+            np.zeros(args.num_processes, dtype=np.float64)
+            if track_ego_ctrlsim_adaptive_kl
+            else None
+        )
+        current_episode_entropy_count_by_process = (
+            np.zeros(args.num_processes, dtype=np.int64)
+            if track_ego_ctrlsim_adaptive_kl
+            else None
+        )
+        current_episode_safe_invalid_by_process = (
+            [False for _ in range(args.num_processes)]
+            if track_ego_ctrlsim_adaptive_kl
+            else None
+        )
+        ego_ctrlsim_teacher_episode_entropy_sum = 0.0
+        ego_ctrlsim_teacher_completed_episode_count = 0
+        ego_ctrlsim_eligible_episode_count = 0
+        ego_ctrlsim_reverse_episode_count = 0
+        ego_ctrlsim_mixed_episode_count = 0
+        ego_ctrlsim_forward_episode_count = 0
+        ego_ctrlsim_safe_invalid_episode_count = 0
+        ego_ctrlsim_nonfinite_logits_episode_count = 0
+        ego_ctrlsim_cliffhanger_excluded_count = 0
         track_nocturne_enhanced_regret = (
             is_nocturne_rollout
             and bool(getattr(args, "use_enhanced_regret", False))
@@ -1195,6 +1246,8 @@ class AdversarialRunner(object):
                 )
                 if args.clip_reward:
                     reward = torch.clamp(reward, -args.clip_reward, args.clip_reward)
+
+            environment_done = np.asarray(done, dtype=bool).copy()
 
             if not is_env:
                 rollout_done_count_by_process += done.astype(np.int64)
@@ -1332,11 +1385,44 @@ class AdversarialRunner(object):
                 current_level_seeds = torch.tensor(self.current_level_seeds, dtype=torch.int).view(-1, 1)
             ego_ctrlsim_action_logits = None
             ego_ctrlsim_valid = None
+            ego_ctrlsim_logits_present = None
+            ego_ctrlsim_teacher_entropy = None
             current_step_unsafe_by_process = None
+            current_step_nonfinite_logits_by_process = None
             if is_nocturne_rollout:
                 ego_ctrlsim_action_logits, ego_ctrlsim_valid = (
                     collect_ego_ctrlsim_action_logits(infos)
                 )
+                finite_logits_mask = None
+                if ego_ctrlsim_valid is not None:
+                    finite_logits_mask = torch.isfinite(
+                        ego_ctrlsim_action_logits
+                    ).all(dim=-1, keepdim=True)
+                    current_step_nonfinite_logits_by_process = (
+                        ego_ctrlsim_valid & ~finite_logits_mask
+                    ).squeeze(-1).tolist()
+                if (
+                    track_ego_ctrlsim_adaptive_kl
+                    and ego_ctrlsim_valid is not None
+                ):
+                    ego_ctrlsim_logits_present = (
+                        ego_ctrlsim_valid & finite_logits_mask
+                    )
+                    ego_ctrlsim_teacher_entropy = torch.zeros(
+                        args.num_processes,
+                        dtype=torch.float32,
+                    )
+                    finite_teacher_mask = (
+                        ego_ctrlsim_logits_present.squeeze(-1)
+                    )
+                    if bool(finite_teacher_mask.any().item()):
+                        ego_ctrlsim_teacher_entropy[finite_teacher_mask] = (
+                            torch.distributions.Categorical(
+                                logits=ego_ctrlsim_action_logits[
+                                    finite_teacher_mask
+                                ]
+                            ).entropy()
+                        )
                 if track_ego_ctrlsim_kl_safe_update:
                     current_step_unsafe_by_process = [
                         (
@@ -1345,19 +1431,40 @@ class AdversarialRunner(object):
                         )
                         for info in infos
                     ]
-                    for process_idx, step_unsafe in enumerate(
-                        current_step_unsafe_by_process
-                    ):
-                        if ego_ctrlsim_valid is not None:
-                            if (
-                                current_episode_kl_disabled_by_process[process_idx]
-                                or step_unsafe
-                            ):
+                if track_ego_ctrlsim_kl:
+                    for process_idx in range(args.num_processes):
+                        nonfinite_logits = bool(
+                            current_step_nonfinite_logits_by_process
+                            and current_step_nonfinite_logits_by_process[
+                                process_idx
+                            ]
+                        )
+                        step_unsafe = bool(
+                            current_step_unsafe_by_process
+                            and current_step_unsafe_by_process[process_idx]
+                        )
+                        if (
+                            current_episode_kl_disabled_by_process[process_idx]
+                            or nonfinite_logits
+                            or step_unsafe
+                        ):
+                            if ego_ctrlsim_valid is not None:
                                 ego_ctrlsim_valid[process_idx].fill_(False)
+                        if nonfinite_logits:
+                            current_episode_kl_disabled_by_process[
+                                process_idx
+                            ] = True
+                            current_episode_nonfinite_logits_by_process[
+                                process_idx
+                            ] = True
                         if step_unsafe:
                             current_episode_kl_disabled_by_process[
                                 process_idx
                             ] = True
+                            if track_ego_ctrlsim_adaptive_kl:
+                                current_episode_safe_invalid_by_process[
+                                    process_idx
+                                ] = True
 
             agent.insert(
                 obs, recurrent_hidden_states, 
@@ -1366,16 +1473,20 @@ class AdversarialRunner(object):
                 level_seeds=current_level_seeds,
                 cliffhanger_masks=cliffhanger_masks,
                 ego_ctrlsim_action_logits=ego_ctrlsim_action_logits,
-                ego_ctrlsim_valid=ego_ctrlsim_valid)
+                ego_ctrlsim_valid=ego_ctrlsim_valid,
+                ego_ctrlsim_logits_present=ego_ctrlsim_logits_present)
 
-            if (
-                track_ego_ctrlsim_kl_safe_update
-                and getattr(agent.storage, "ego_ctrlsim_valid", None) is not None
-            ):
-                for process_idx, step_unsafe in enumerate(
-                    current_step_unsafe_by_process
-                ):
-                    if step_unsafe:
+            if track_ego_ctrlsim_kl:
+                for process_idx in range(args.num_processes):
+                    nonfinite_logits = bool(
+                        current_step_nonfinite_logits_by_process
+                        and current_step_nonfinite_logits_by_process[process_idx]
+                    )
+                    step_unsafe = bool(
+                        current_step_unsafe_by_process
+                        and current_step_unsafe_by_process[process_idx]
+                    )
+                    if nonfinite_logits or step_unsafe:
                         for stored_step in current_episode_kl_steps_by_process[
                             process_idx
                         ]:
@@ -1390,8 +1501,140 @@ class AdversarialRunner(object):
                         current_episode_kl_steps_by_process[process_idx].append(step)
 
                     if bool(done[process_idx]):
+                        if current_episode_nonfinite_logits_by_process[
+                            process_idx
+                        ]:
+                            ego_ctrlsim_nonfinite_logits_episode_count += 1
                         current_episode_kl_steps_by_process[process_idx].clear()
-                        current_episode_kl_disabled_by_process[process_idx] = False
+                        if not track_ego_ctrlsim_adaptive_kl:
+                            current_episode_kl_disabled_by_process[
+                                process_idx
+                            ] = False
+                            current_episode_nonfinite_logits_by_process[
+                                process_idx
+                            ] = False
+
+            if track_ego_ctrlsim_adaptive_kl:
+                for process_idx in range(args.num_processes):
+                    logits_present = (
+                        ego_ctrlsim_logits_present is not None
+                        and bool(
+                            ego_ctrlsim_logits_present[
+                                process_idx
+                            ].any().item()
+                        )
+                    )
+                    if (
+                        logits_present
+                        and not current_episode_nonfinite_logits_by_process[
+                            process_idx
+                        ]
+                    ):
+                        current_episode_teacher_steps_by_process[
+                            process_idx
+                        ].append(step)
+                        current_episode_entropy_sum_by_process[process_idx] += (
+                            float(ego_ctrlsim_teacher_entropy[process_idx].item())
+                        )
+                        current_episode_entropy_count_by_process[process_idx] += 1
+                        if bool(ego_ctrlsim_valid[process_idx].any().item()):
+                            current_episode_adaptive_kl_steps_by_process[
+                                process_idx
+                            ].append(step)
+
+                    if bool(environment_done[process_idx]):
+                        entropy_count = int(
+                            current_episode_entropy_count_by_process[process_idx]
+                        )
+                        if current_episode_nonfinite_logits_by_process[
+                            process_idx
+                        ]:
+                            pass
+                        elif entropy_count > 0:
+                            episode_entropy = (
+                                current_episode_entropy_sum_by_process[
+                                    process_idx
+                                ]
+                                / entropy_count
+                            )
+                            ego_ctrlsim_teacher_episode_entropy_sum += (
+                                episode_entropy
+                            )
+                            ego_ctrlsim_teacher_completed_episode_count += 1
+                            for stored_step in (
+                                current_episode_teacher_steps_by_process[
+                                    process_idx
+                                ]
+                            ):
+                                agent.storage.ego_ctrlsim_episode_entropy[
+                                    stored_step, process_idx
+                                ].fill_(episode_entropy)
+                            episode_has_valid_kl = any(
+                                bool(
+                                    agent.storage.ego_ctrlsim_valid[
+                                        stored_step, process_idx
+                                    ].any().item()
+                                )
+                                for stored_step in (
+                                    current_episode_teacher_steps_by_process[
+                                        process_idx
+                                    ]
+                                )
+                            )
+                            if episode_has_valid_kl:
+                                ego_ctrlsim_eligible_episode_count += 1
+                                low_threshold = getattr(
+                                    args,
+                                    "ego_ctrlsim_kl_entropy_low_threshold",
+                                    2.30,
+                                )
+                                high_threshold = getattr(
+                                    args,
+                                    "ego_ctrlsim_kl_entropy_high_threshold",
+                                    4.05,
+                                )
+                                if episode_entropy <= low_threshold:
+                                    ego_ctrlsim_reverse_episode_count += 1
+                                elif episode_entropy >= high_threshold:
+                                    ego_ctrlsim_forward_episode_count += 1
+                                else:
+                                    ego_ctrlsim_mixed_episode_count += 1
+                            elif current_episode_safe_invalid_by_process[
+                                process_idx
+                            ]:
+                                ego_ctrlsim_safe_invalid_episode_count += 1
+                    elif step == num_steps - 1:
+                        if (
+                            current_episode_entropy_count_by_process[
+                                process_idx
+                            ]
+                            > 0
+                        ):
+                            ego_ctrlsim_cliffhanger_excluded_count += 1
+                        for stored_step in (
+                            current_episode_adaptive_kl_steps_by_process[
+                                process_idx
+                            ]
+                        ):
+                            agent.storage.ego_ctrlsim_valid[
+                                stored_step, process_idx
+                            ].fill_(False)
+                    else:
+                        continue
+
+                    current_episode_teacher_steps_by_process[
+                        process_idx
+                    ].clear()
+                    current_episode_adaptive_kl_steps_by_process[
+                        process_idx
+                    ].clear()
+                    current_episode_entropy_sum_by_process[process_idx] = 0.0
+                    current_episode_entropy_count_by_process[process_idx] = 0
+                    current_episode_safe_invalid_by_process[process_idx] = False
+                    current_episode_kl_disabled_by_process[process_idx] = False
+                    current_episode_nonfinite_logits_by_process[
+                        process_idx
+                    ] = False
 
         # Add generated env to level store (as a constructive string representation)
         if is_env and plr_runtime_enabled and not level_replay:
@@ -1427,6 +1670,40 @@ class AdversarialRunner(object):
             })
 
         rollout_info.update(self._get_rollout_return_stats(rollout_returns))
+        if track_ego_ctrlsim_kl:
+            rollout_info["ego_ctrlsim_nonfinite_logits_episode_count"] = (
+                ego_ctrlsim_nonfinite_logits_episode_count
+            )
+        if track_ego_ctrlsim_adaptive_kl:
+            completed_denominator = max(
+                ego_ctrlsim_teacher_completed_episode_count,
+                1,
+            )
+            eligible_denominator = max(ego_ctrlsim_eligible_episode_count, 1)
+            rollout_info.update({
+                "ego_ctrlsim_teacher_episode_entropy": (
+                    ego_ctrlsim_teacher_episode_entropy_sum
+                    / completed_denominator
+                ),
+                "ego_ctrlsim_reverse_episode_fraction": (
+                    ego_ctrlsim_reverse_episode_count / eligible_denominator
+                ),
+                "ego_ctrlsim_mixed_episode_fraction": (
+                    ego_ctrlsim_mixed_episode_count / eligible_denominator
+                ),
+                "ego_ctrlsim_forward_episode_fraction": (
+                    ego_ctrlsim_forward_episode_count / eligible_denominator
+                ),
+                "ego_ctrlsim_teacher_completed_episode_count": (
+                    ego_ctrlsim_teacher_completed_episode_count
+                ),
+                "ego_ctrlsim_safe_invalid_episode_count": (
+                    ego_ctrlsim_safe_invalid_episode_count
+                ),
+                "ego_ctrlsim_cliffhanger_excluded_count": (
+                    ego_ctrlsim_cliffhanger_excluded_count
+                ),
+            })
         if not is_env:
             rollout_info["rollout_done_count_by_process"] = (
                 rollout_done_count_by_process.tolist()
@@ -1565,14 +1842,16 @@ class AdversarialRunner(object):
                     if 'ppo_total_loss' in info.keys():
                         ppo_total_loss = info.pop('ppo_total_loss')
                         rollout_info.update({'ppo_total_loss': ppo_total_loss})
-                    if 'ego_ctrlsim_kl_loss' in info.keys():
-                        ego_ctrlsim_kl_loss = info.pop('ego_ctrlsim_kl_loss')
-                        rollout_info.update({'ego_ctrlsim_kl_loss': ego_ctrlsim_kl_loss})
-                    if 'ego_ctrlsim_kl_loss_weight' in info.keys():
-                        ego_ctrlsim_kl_loss_weight = info.pop('ego_ctrlsim_kl_loss_weight')
-                        rollout_info.update({
-                            'ego_ctrlsim_kl_loss_weight': ego_ctrlsim_kl_loss_weight
-                        })
+                    for metric_key in (
+                        'ego_ctrlsim_kl_loss',
+                        'ego_ctrlsim_kl_loss_weight',
+                        'ego_ctrlsim_forward_kl_loss',
+                        'ego_ctrlsim_reverse_kl_loss',
+                        'ego_ctrlsim_adaptive_alpha',
+                        'ego_ctrlsim_kl_valid_sample_count',
+                    ):
+                        if metric_key in info:
+                            rollout_info[metric_key] = info.pop(metric_key)
 
                     rollout_info.update({
                         'value_loss': value_loss,
@@ -1684,14 +1963,16 @@ class AdversarialRunner(object):
         if 'kl_loss' in info.keys():
             kl_loss = info.pop('kl_loss')
             rollout_info.update({'kl_loss': kl_loss})
-        if 'ego_ctrlsim_kl_loss' in info.keys():
-            ego_ctrlsim_kl_loss = info.pop('ego_ctrlsim_kl_loss')
-            rollout_info.update({'ego_ctrlsim_kl_loss': ego_ctrlsim_kl_loss})
-        if 'ego_ctrlsim_kl_loss_weight' in info.keys():
-            ego_ctrlsim_kl_loss_weight = info.pop('ego_ctrlsim_kl_loss_weight')
-            rollout_info.update({
-                'ego_ctrlsim_kl_loss_weight': ego_ctrlsim_kl_loss_weight
-            })
+        for metric_key in (
+            'ego_ctrlsim_kl_loss',
+            'ego_ctrlsim_kl_loss_weight',
+            'ego_ctrlsim_forward_kl_loss',
+            'ego_ctrlsim_reverse_kl_loss',
+            'ego_ctrlsim_adaptive_alpha',
+            'ego_ctrlsim_kl_valid_sample_count',
+        ):
+            if metric_key in info:
+                rollout_info[metric_key] = info.pop(metric_key)
 
         # Compute LZ complexity of action trajectories
         if self.args.log_action_complexity:
@@ -2255,6 +2536,42 @@ class AdversarialRunner(object):
             'ego_ctrlsim_kl_loss': agent_info.get('ego_ctrlsim_kl_loss', None),
             'ego_ctrlsim_kl_loss_weight': agent_info.get(
                 'ego_ctrlsim_kl_loss_weight', None
+            ),
+            'ego_ctrlsim_forward_kl_loss': agent_info.get(
+                'ego_ctrlsim_forward_kl_loss', None
+            ),
+            'ego_ctrlsim_reverse_kl_loss': agent_info.get(
+                'ego_ctrlsim_reverse_kl_loss', None
+            ),
+            'ego_ctrlsim_adaptive_alpha': agent_info.get(
+                'ego_ctrlsim_adaptive_alpha', None
+            ),
+            'ego_ctrlsim_kl_valid_sample_count': agent_info.get(
+                'ego_ctrlsim_kl_valid_sample_count', None
+            ),
+            'ego_ctrlsim_teacher_episode_entropy': agent_info.get(
+                'ego_ctrlsim_teacher_episode_entropy', None
+            ),
+            'ego_ctrlsim_reverse_episode_fraction': agent_info.get(
+                'ego_ctrlsim_reverse_episode_fraction', None
+            ),
+            'ego_ctrlsim_mixed_episode_fraction': agent_info.get(
+                'ego_ctrlsim_mixed_episode_fraction', None
+            ),
+            'ego_ctrlsim_forward_episode_fraction': agent_info.get(
+                'ego_ctrlsim_forward_episode_fraction', None
+            ),
+            'ego_ctrlsim_teacher_completed_episode_count': agent_info.get(
+                'ego_ctrlsim_teacher_completed_episode_count', None
+            ),
+            'ego_ctrlsim_safe_invalid_episode_count': agent_info.get(
+                'ego_ctrlsim_safe_invalid_episode_count', None
+            ),
+            'ego_ctrlsim_nonfinite_logits_episode_count': agent_info.get(
+                'ego_ctrlsim_nonfinite_logits_episode_count', None
+            ),
+            'ego_ctrlsim_cliffhanger_excluded_count': agent_info.get(
+                'ego_ctrlsim_cliffhanger_excluded_count', None
             ),
             'ego_heading_error_to_gt': agent_info.get(
                 'ego_heading_error_to_gt', None

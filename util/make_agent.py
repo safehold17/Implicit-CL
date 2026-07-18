@@ -4,6 +4,9 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import math
+from typing import Any
+
 import torch
 from algos import PPO, RolloutStorage, ACAgent
 from dcd_models import \
@@ -319,6 +322,55 @@ def _arg_get(args, key, default):
     return getattr(args, key, default)
 
 
+def _validate_ego_ctrlsim_kl_config(
+    args: Any,
+    action_dim: int | None,
+) -> None:
+    """Validate the active ego CtrlSim KL mode and entropy thresholds."""
+    if not bool(_arg_get(args, 'use_ego_ctrlsim_kl_loss', False)):
+        return
+
+    mode_count = sum(
+        bool(_arg_get(args, name, default))
+        for name, default in (
+            ('use_ego_ctrlsim_forward_kl_loss', False),
+            ('use_ego_ctrlsim_reverse_kl_loss', False),
+            ('use_ego_ctrlsim_adaptive_kl_loss', True),
+        )
+    )
+    if mode_count != 1:
+        raise ValueError(
+            "ego CtrlSim KL requires exactly one of Forward, Reverse, or "
+            "Adaptive KL to be enabled."
+        )
+
+    if not bool(_arg_get(args, 'use_ego_ctrlsim_adaptive_kl_loss', True)):
+        return
+
+    low_threshold = float(
+        _arg_get(args, 'ego_ctrlsim_kl_entropy_low_threshold', 2.30)
+    )
+    high_threshold = float(
+        _arg_get(args, 'ego_ctrlsim_kl_entropy_high_threshold', 4.05)
+    )
+    if (
+        not math.isfinite(low_threshold)
+        or not math.isfinite(high_threshold)
+        or low_threshold < 0.0
+        or low_threshold >= high_threshold
+    ):
+        raise ValueError(
+            "Adaptive ego CtrlSim KL entropy thresholds must be finite, "
+            "non-negative, and satisfy low < high."
+        )
+
+    if action_dim is not None and high_threshold > math.log(action_dim):
+        raise ValueError(
+            "Adaptive ego CtrlSim KL high threshold must not exceed the "
+            "maximum entropy log(action_dim)."
+        )
+
+
 def make_agent(name, env, args, device='cpu'):
     # Create model instance
     is_adversary_env = 'env' in name
@@ -363,6 +415,14 @@ def make_agent(name, env, args, device='cpu'):
         num_mini_batch = args.num_mini_batch
         max_grad_norm = args.max_grad_norm
         use_popart = _arg_get(args, 'use_popart', False)
+
+    if not is_adversary_env:
+        action_dim = (
+            int(action_space.n)
+            if action_space.__class__.__name__ == 'Discrete'
+            else None
+        )
+        _validate_ego_ctrlsim_kl_config(args, action_dim)
 
     recurrent_hidden_size = args.recurrent_hidden_size
 
@@ -447,6 +507,21 @@ def make_agent(name, env, args, device='cpu'):
             entropy_coef=entropy_coef,
             kl_loss_coef=args.kl_loss_coef,
             use_ego_ctrlsim_kl_loss=args.use_ego_ctrlsim_kl_loss,
+            use_ego_ctrlsim_forward_kl_loss=(
+                args.use_ego_ctrlsim_forward_kl_loss
+            ),
+            use_ego_ctrlsim_reverse_kl_loss=(
+                args.use_ego_ctrlsim_reverse_kl_loss
+            ),
+            use_ego_ctrlsim_adaptive_kl_loss=(
+                args.use_ego_ctrlsim_adaptive_kl_loss
+            ),
+            ego_ctrlsim_kl_entropy_low_threshold=(
+                args.ego_ctrlsim_kl_entropy_low_threshold
+            ),
+            ego_ctrlsim_kl_entropy_high_threshold=(
+                args.ego_ctrlsim_kl_entropy_high_threshold
+            ),
             ego_ctrlsim_kl_schedule=args.ego_ctrlsim_kl_schedule,
             ego_ctrlsim_kl_init_coef=args.ego_ctrlsim_kl_init_coef,
             ego_ctrlsim_kl_min_coef=args.ego_ctrlsim_kl_min_coef,
@@ -469,6 +544,10 @@ def make_agent(name, env, args, device='cpu'):
             use_proper_time_limits=use_proper_time_limits,
             use_popart=use_popart,
             use_ego_ctrlsim_action_logits=args.use_ego_ctrlsim_kl_loss,
+            use_ego_ctrlsim_episode_entropy=(
+                args.use_ego_ctrlsim_kl_loss
+                and args.use_ego_ctrlsim_adaptive_kl_loss
+            ),
         )
 
         agent = ACAgent(algo=algo, storage=storage).to(device)

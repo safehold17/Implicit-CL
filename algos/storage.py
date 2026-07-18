@@ -99,6 +99,7 @@ class RolloutStorage(object):
                  use_proper_time_limits=False, 
                  use_popart=False,
                  use_ego_ctrlsim_action_logits=False,
+                 use_ego_ctrlsim_episode_entropy=False,
                  device='cpu'):
 
         self.device = device
@@ -158,11 +159,28 @@ class RolloutStorage(object):
                 1,
                 dtype=torch.bool,
             )
+            if use_ego_ctrlsim_episode_entropy:
+                self.ego_ctrlsim_logits_present = torch.zeros(
+                    num_steps,
+                    num_processes,
+                    1,
+                    dtype=torch.bool,
+                )
+                self.ego_ctrlsim_episode_entropy = torch.zeros(
+                    num_steps,
+                    num_processes,
+                    1,
+                )
+            else:
+                self.ego_ctrlsim_logits_present = None
+                self.ego_ctrlsim_episode_entropy = None
         else:
             if action_space.__class__.__name__ == 'Discrete':
                 self.actions = self.actions.long()
             self.ego_ctrlsim_action_logits = None
             self.ego_ctrlsim_valid = None
+            self.ego_ctrlsim_logits_present = None
+            self.ego_ctrlsim_episode_entropy = None
 
         self.masks = torch.ones(num_steps + 1, num_processes, 1)
 
@@ -207,6 +225,14 @@ class RolloutStorage(object):
             self.ego_ctrlsim_action_logits = self.ego_ctrlsim_action_logits.to(device)
         if self.ego_ctrlsim_valid is not None:
             self.ego_ctrlsim_valid = self.ego_ctrlsim_valid.to(device)
+        if self.ego_ctrlsim_logits_present is not None:
+            self.ego_ctrlsim_logits_present = (
+                self.ego_ctrlsim_logits_present.to(device)
+            )
+        if self.ego_ctrlsim_episode_entropy is not None:
+            self.ego_ctrlsim_episode_entropy = (
+                self.ego_ctrlsim_episode_entropy.to(device)
+            )
 
         if self.use_proper_time_limits:
             if self.is_dict_obs:
@@ -231,7 +257,9 @@ class RolloutStorage(object):
 
     def insert(self, obs, recurrent_hidden_states, actions, action_log_probs, action_log_dist,
                value_preds, rewards, masks, bad_masks, level_seeds=None, cliffhanger_masks=None,
-               ego_ctrlsim_action_logits=None, ego_ctrlsim_valid=None):
+               ego_ctrlsim_action_logits=None, ego_ctrlsim_valid=None,
+               ego_ctrlsim_logits_present=None,
+               ego_ctrlsim_episode_entropy=None):
         if len(rewards.shape) == 3: rewards = rewards.squeeze(2)
 
         if self.is_dict_obs:
@@ -269,6 +297,18 @@ class RolloutStorage(object):
             if ego_ctrlsim_action_logits is not None:
                 self.ego_ctrlsim_action_logits[self.step].copy_(
                     ego_ctrlsim_action_logits
+                )
+        if self.ego_ctrlsim_logits_present is not None:
+            self.ego_ctrlsim_logits_present[self.step].fill_(False)
+            if ego_ctrlsim_logits_present is not None:
+                self.ego_ctrlsim_logits_present[self.step].copy_(
+                    ego_ctrlsim_logits_present
+                )
+        if self.ego_ctrlsim_episode_entropy is not None:
+            self.ego_ctrlsim_episode_entropy[self.step].zero_()
+            if ego_ctrlsim_episode_entropy is not None:
+                self.ego_ctrlsim_episode_entropy[self.step].copy_(
+                    ego_ctrlsim_episode_entropy
                 )
 
         self.step = (self.step + 1) % self.num_steps
@@ -521,9 +561,19 @@ class RolloutStorage(object):
             'returns': self.returns[:-1].view(-1, 1),
             'masks': self.masks[:-1].view(-1, 1),
             'action_log_probs': self.action_log_probs.view(-1, 1),
+            'ego_ctrlsim_logits_present': None,
+            'ego_ctrlsim_episode_entropy': None,
             'ego_ctrlsim_action_logits': None,
             'ego_ctrlsim_valid': None,
         }
+        if self.ego_ctrlsim_logits_present is not None:
+            flat_views['ego_ctrlsim_logits_present'] = (
+                self.ego_ctrlsim_logits_present.view(-1, 1)
+            )
+        if self.ego_ctrlsim_episode_entropy is not None:
+            flat_views['ego_ctrlsim_episode_entropy'] = (
+                self.ego_ctrlsim_episode_entropy.view(-1, 1)
+            )
         if self.ego_ctrlsim_action_logits is not None:
             flat_views['ego_ctrlsim_action_logits'] = (
                 self.ego_ctrlsim_action_logits.view(
@@ -582,8 +632,18 @@ class RolloutStorage(object):
                 adv_targ = None
             else:
                 adv_targ = advantages.view(-1, 1)[indices]
+            ego_ctrlsim_logits_present_batch = None
+            ego_ctrlsim_episode_entropy_batch = None
             ego_ctrlsim_action_logits_batch = None
             ego_ctrlsim_valid_batch = None
+            if flat_views['ego_ctrlsim_logits_present'] is not None:
+                ego_ctrlsim_logits_present_batch = flat_views[
+                    'ego_ctrlsim_logits_present'
+                ][indices]
+            if flat_views['ego_ctrlsim_episode_entropy'] is not None:
+                ego_ctrlsim_episode_entropy_batch = flat_views[
+                    'ego_ctrlsim_episode_entropy'
+                ][indices]
             if flat_views['ego_ctrlsim_action_logits'] is not None:
                 ego_ctrlsim_action_logits_batch = flat_views[
                     'ego_ctrlsim_action_logits'
@@ -598,6 +658,7 @@ class RolloutStorage(object):
 
             yield obs_batch, recurrent_hidden_states_batch, actions_batch, \
                 value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ, \
+                ego_ctrlsim_logits_present_batch, ego_ctrlsim_episode_entropy_batch, \
                 ego_ctrlsim_action_logits_batch, ego_ctrlsim_valid_batch
 
     def recurrent_generator(self, advantages, num_mini_batch):
@@ -621,6 +682,8 @@ class RolloutStorage(object):
             masks_batch = []
             old_action_log_probs_batch = []
             adv_targ = []
+            ego_ctrlsim_logits_present_batch = []
+            ego_ctrlsim_episode_entropy_batch = []
             ego_ctrlsim_action_logits_batch = []
             ego_ctrlsim_valid_batch = []
 
@@ -639,6 +702,14 @@ class RolloutStorage(object):
                 old_action_log_probs_batch.append(
                     self.action_log_probs[:, ind])
                 adv_targ.append(advantages[:, ind])
+                if self.ego_ctrlsim_logits_present is not None:
+                    ego_ctrlsim_logits_present_batch.append(
+                        self.ego_ctrlsim_logits_present[:, ind]
+                    )
+                if self.ego_ctrlsim_episode_entropy is not None:
+                    ego_ctrlsim_episode_entropy_batch.append(
+                        self.ego_ctrlsim_episode_entropy[:, ind]
+                    )
                 if self.ego_ctrlsim_action_logits is not None:
                     ego_ctrlsim_action_logits_batch.append(
                         self.ego_ctrlsim_action_logits[:, ind]
@@ -662,6 +733,18 @@ class RolloutStorage(object):
             old_action_log_probs_batch = torch.stack(
                 old_action_log_probs_batch, 1)
             adv_targ = torch.stack(adv_targ, 1)
+            if self.ego_ctrlsim_logits_present is not None:
+                ego_ctrlsim_logits_present_batch = torch.stack(
+                    ego_ctrlsim_logits_present_batch, 1
+                )
+            else:
+                ego_ctrlsim_logits_present_batch = None
+            if self.ego_ctrlsim_episode_entropy is not None:
+                ego_ctrlsim_episode_entropy_batch = torch.stack(
+                    ego_ctrlsim_episode_entropy_batch, 1
+                )
+            else:
+                ego_ctrlsim_episode_entropy_batch = None
             if self.ego_ctrlsim_action_logits is not None:
                 ego_ctrlsim_action_logits_batch = torch.stack(
                     ego_ctrlsim_action_logits_batch, 1
@@ -688,6 +771,14 @@ class RolloutStorage(object):
             old_action_log_probs_batch = _flatten_helper(T, N, \
                     old_action_log_probs_batch)
             adv_targ = _flatten_helper(T, N, adv_targ)
+            if ego_ctrlsim_logits_present_batch is not None:
+                ego_ctrlsim_logits_present_batch = _flatten_helper(
+                    T, N, ego_ctrlsim_logits_present_batch
+                )
+            if ego_ctrlsim_episode_entropy_batch is not None:
+                ego_ctrlsim_episode_entropy_batch = _flatten_helper(
+                    T, N, ego_ctrlsim_episode_entropy_batch
+                )
             if ego_ctrlsim_action_logits_batch is not None:
                 ego_ctrlsim_action_logits_batch = _flatten_helper(
                     T, N, ego_ctrlsim_action_logits_batch
@@ -704,4 +795,5 @@ class RolloutStorage(object):
 
             yield obs_batch, recurrent_hidden_states_batch, actions_batch, \
                 value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ, \
+                ego_ctrlsim_logits_present_batch, ego_ctrlsim_episode_entropy_batch, \
                 ego_ctrlsim_action_logits_batch, ego_ctrlsim_valid_batch

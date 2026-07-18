@@ -1277,6 +1277,42 @@ parser.add_argument(
     help="Whether to enable the ego_ctrlsim teacher-vs-student KL loss",
 )
 parser.add_argument(
+    "--use_ego_ctrlsim_forward_kl_loss",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=False,
+    help="Whether to use Forward KL for the ego_ctrlsim KL loss.",
+)
+parser.add_argument(
+    "--use_ego_ctrlsim_reverse_kl_loss",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=False,
+    help="Whether to use Reverse KL for the ego_ctrlsim KL loss.",
+)
+parser.add_argument(
+    "--use_ego_ctrlsim_adaptive_kl_loss",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=True,
+    help="Whether to adapt the ego_ctrlsim KL direction from episode entropy.",
+)
+parser.add_argument(
+    "--ego_ctrlsim_kl_entropy_low_threshold",
+    type=float,
+    default=2.30,
+    help="Low teacher episode-entropy threshold in nats.",
+)
+parser.add_argument(
+    "--ego_ctrlsim_kl_entropy_high_threshold",
+    type=float,
+    default=4.05,
+    help="High teacher episode-entropy threshold in nats.",
+)
+parser.add_argument(
     "--kl_loss_coef",
     type=float,
     default=0.2,

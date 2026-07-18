@@ -16,6 +16,28 @@ import torch.nn.functional as F
 import torch.optim as optim
 import random 
 
+
+def _categorical_kl_from_logits(
+    teacher_logits: torch.Tensor,
+    student_logits: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute both categorical KL directions in FP32 log space."""
+    teacher_log_probs = F.log_softmax(
+        teacher_logits.detach().float(),
+        dim=-1,
+    )
+    student_log_probs = F.log_softmax(student_logits.float(), dim=-1)
+    teacher_probs = teacher_log_probs.exp()
+    student_probs = student_log_probs.exp()
+    forward_kl = (
+        teacher_probs * (teacher_log_probs - student_log_probs)
+    ).sum(dim=-1)
+    reverse_kl = (
+        student_probs * (student_log_probs - teacher_log_probs)
+    ).sum(dim=-1)
+    return forward_kl, reverse_kl
+
+
 class PPO():
     """
     Vanilla PPO
@@ -29,6 +51,11 @@ class PPO():
                  entropy_coef,
                  kl_loss_coef=0.0,
                  use_ego_ctrlsim_kl_loss=False,
+                 use_ego_ctrlsim_forward_kl_loss=False,
+                 use_ego_ctrlsim_reverse_kl_loss=False,
+                 use_ego_ctrlsim_adaptive_kl_loss=True,
+                 ego_ctrlsim_kl_entropy_low_threshold=2.30,
+                 ego_ctrlsim_kl_entropy_high_threshold=4.05,
                  ego_ctrlsim_kl_schedule='constant',
                  ego_ctrlsim_kl_init_coef=0.5,
                  ego_ctrlsim_kl_min_coef=0.0,
@@ -51,6 +78,15 @@ class PPO():
 
         # new ego_ctrlsim policy vs student policy KL
         self.use_ego_ctrlsim_kl_loss = use_ego_ctrlsim_kl_loss
+        self.use_ego_ctrlsim_forward_kl_loss = use_ego_ctrlsim_forward_kl_loss
+        self.use_ego_ctrlsim_reverse_kl_loss = use_ego_ctrlsim_reverse_kl_loss
+        self.use_ego_ctrlsim_adaptive_kl_loss = use_ego_ctrlsim_adaptive_kl_loss
+        self.ego_ctrlsim_kl_entropy_low_threshold = (
+            ego_ctrlsim_kl_entropy_low_threshold
+        )
+        self.ego_ctrlsim_kl_entropy_high_threshold = (
+            ego_ctrlsim_kl_entropy_high_threshold
+        )
         self.ego_ctrlsim_kl_schedule = ego_ctrlsim_kl_schedule
         self.ego_ctrlsim_kl_init_coef = ego_ctrlsim_kl_init_coef
         self.ego_ctrlsim_kl_min_coef = ego_ctrlsim_kl_min_coef
@@ -119,9 +155,12 @@ class PPO():
         if use_model_kl_loss:
             kl_loss_epoch = 0
     
-        # Running accumulator for the ego_ctrlsim teacher-vs-student KL term.
-        ego_ctrlsim_kl_loss_epoch = 0
-        ego_ctrlsim_kl_loss_updates = 0
+        # Sample-weighted accumulators for ego_ctrlsim KL diagnostics.
+        ego_ctrlsim_kl_loss_sum = 0.0
+        ego_ctrlsim_forward_kl_loss_sum = 0.0
+        ego_ctrlsim_reverse_kl_loss_sum = 0.0
+        ego_ctrlsim_adaptive_alpha_sum = 0.0
+        ego_ctrlsim_kl_sample_count = 0
 
         if self.log_grad_norm:
             grad_norms = []
@@ -149,11 +188,15 @@ class PPO():
                 if self.actor_critic.is_recurrent:
                     obs_batch, recurrent_hidden_states_batch, actions_batch, \
                     value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \
-                            adv_targ, ego_ctrlsim_action_logits_batch, ego_ctrlsim_valid_batch = sample
+                            adv_targ, ego_ctrlsim_logits_present_batch, \
+                            ego_ctrlsim_episode_entropy_batch, \
+                            ego_ctrlsim_action_logits_batch, ego_ctrlsim_valid_batch = sample
                 else:
                     obs_batch, recurrent_hidden_states_batch, actions_batch, \
                     value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \
-                            adv_targ, ego_ctrlsim_action_logits_batch, ego_ctrlsim_valid_batch = sample
+                            adv_targ, ego_ctrlsim_logits_present_batch, \
+                            ego_ctrlsim_episode_entropy_batch, \
+                            ego_ctrlsim_action_logits_batch, ego_ctrlsim_valid_batch = sample
 
                 has_valid_ego_ctrlsim_teacher = (
                     _rollout_has_valid_ego
@@ -234,18 +277,46 @@ class PPO():
                     ego_ctrlsim_valid_mask = ego_ctrlsim_valid_batch.squeeze(-1).bool()
                     # 仅对 rollout 中真正做过 ego teacher 推理的 timestep 计算 KL。
                     # 稀疏 KL 下，无效 timestep 只是“没有 teacher 样本”，不能把它们当成全零 logits；否则会把缺失监督误解释为一个伪造的 teacher 分布。
-                    dist_ego_ctrlsim_teacher = torch.distributions.Categorical(
-                        logits=ego_ctrlsim_action_logits_batch[ego_ctrlsim_valid_mask],
-                    )
                     # student 分布也必须对齐到同一批有效样本，否则 teacher/student
                     # 的 KL 会混入未采样 timestep，破坏当前稀疏 KL cadence 的语义。
-                    dist_ego_ctrlsim_student = torch.distributions.Categorical(
-                        logits=dist_protagonist.logits[ego_ctrlsim_valid_mask],
+                    (
+                        ego_ctrlsim_forward_kl_div,
+                        ego_ctrlsim_reverse_kl_div,
+                    ) = _categorical_kl_from_logits(
+                        ego_ctrlsim_action_logits_batch[
+                            ego_ctrlsim_valid_mask
+                        ],
+                        dist_protagonist.logits[ego_ctrlsim_valid_mask],
                     )
-                    ego_ctrlsim_kl_div = torch.distributions.kl.kl_divergence(
-                        dist_ego_ctrlsim_teacher,
-                        dist_ego_ctrlsim_student,
-                    )
+                    if self.use_ego_ctrlsim_forward_kl_loss:
+                        ego_ctrlsim_kl_div = ego_ctrlsim_forward_kl_div
+                    elif self.use_ego_ctrlsim_reverse_kl_loss:
+                        ego_ctrlsim_kl_div = ego_ctrlsim_reverse_kl_div
+                    else:
+                        if ego_ctrlsim_episode_entropy_batch is None:
+                            raise ValueError(
+                                "Adaptive ego CtrlSim KL requires episode entropy."
+                            )
+                        episode_entropy = ego_ctrlsim_episode_entropy_batch[
+                            ego_ctrlsim_valid_mask
+                        ].squeeze(-1)
+                        adaptive_alpha = torch.clamp(
+                            (
+                                episode_entropy
+                                - self.ego_ctrlsim_kl_entropy_low_threshold
+                            )
+                            / (
+                                self.ego_ctrlsim_kl_entropy_high_threshold
+                                - self.ego_ctrlsim_kl_entropy_low_threshold
+                            ),
+                            min=0.0,
+                            max=1.0,
+                        )
+                        ego_ctrlsim_kl_div = (
+                            adaptive_alpha * ego_ctrlsim_forward_kl_div
+                            + (1.0 - adaptive_alpha)
+                            * ego_ctrlsim_reverse_kl_div
+                        )
                     ego_ctrlsim_kl_loss = ego_ctrlsim_kl_div.mean()  # mean KL loss over the valid subset of the mini-batch
 
                 # 在标准 PPO loss 上叠加两个互相独立的 KL 正则项
@@ -287,8 +358,18 @@ class PPO():
                 if use_model_kl_loss:
                     kl_loss_epoch += kl_loss.item()
                 if use_ego_ctrlsim_kl_loss:
-                    ego_ctrlsim_kl_loss_epoch += ego_ctrlsim_kl_loss.item()
-                    ego_ctrlsim_kl_loss_updates += 1
+                    ego_ctrlsim_kl_loss_sum += ego_ctrlsim_kl_div.sum().item()
+                    ego_ctrlsim_forward_kl_loss_sum += (
+                        ego_ctrlsim_forward_kl_div.sum().item()
+                    )
+                    ego_ctrlsim_reverse_kl_loss_sum += (
+                        ego_ctrlsim_reverse_kl_div.sum().item()
+                    )
+                    if self.use_ego_ctrlsim_adaptive_kl_loss:
+                        ego_ctrlsim_adaptive_alpha_sum += (
+                            adaptive_alpha.sum().item()
+                        )
+                    ego_ctrlsim_kl_sample_count += ego_ctrlsim_kl_div.numel()
 
         num_updates = self.ppo_epoch * self.num_mini_batch
 
@@ -300,9 +381,6 @@ class PPO():
         if use_model_kl_loss:
             kl_loss_epoch /= num_updates
     
-        if ego_ctrlsim_kl_loss_updates > 0:
-            ego_ctrlsim_kl_loss_epoch /= ego_ctrlsim_kl_loss_updates
-
         info = {}
         if self.log_grad_norm:
             info = {'grad_norms': grad_norms}
@@ -312,9 +390,22 @@ class PPO():
             info['kl_loss'] = kl_loss_epoch
         if self.use_ego_ctrlsim_kl_loss and discard_grad is False:
             info['ego_ctrlsim_kl_loss_weight'] = ego_ctrlsim_kl_coef
-        # 单独记录 ego_ctrlsim KL，避免和旧的在线 KL 指标混淆。
-        # Log ego_ctrlsim KL separately so it does not get mixed with the legacy online KL metric.
-        if ego_ctrlsim_kl_loss_updates > 0:
-            info['ego_ctrlsim_kl_loss'] = ego_ctrlsim_kl_loss_epoch
+            denominator = max(ego_ctrlsim_kl_sample_count, 1)
+            info['ego_ctrlsim_kl_loss'] = (
+                ego_ctrlsim_kl_loss_sum / denominator
+            )
+            info['ego_ctrlsim_forward_kl_loss'] = (
+                ego_ctrlsim_forward_kl_loss_sum / denominator
+            )
+            info['ego_ctrlsim_reverse_kl_loss'] = (
+                ego_ctrlsim_reverse_kl_loss_sum / denominator
+            )
+            if self.use_ego_ctrlsim_adaptive_kl_loss:
+                info['ego_ctrlsim_adaptive_alpha'] = (
+                    ego_ctrlsim_adaptive_alpha_sum / denominator
+                )
+            info['ego_ctrlsim_kl_valid_sample_count'] = int(
+                rollouts.ego_ctrlsim_valid.sum().item()
+            )
 
         return value_loss_epoch, action_loss_epoch, dist_entropy_epoch, info
