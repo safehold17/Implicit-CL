@@ -1594,9 +1594,9 @@ class AdversarialRunner(object):
                                     4.05,
                                 )
                                 if episode_entropy <= low_threshold:
-                                    ego_ctrlsim_reverse_episode_count += 1
-                                elif episode_entropy >= high_threshold:
                                     ego_ctrlsim_forward_episode_count += 1
+                                elif episode_entropy >= high_threshold:
+                                    ego_ctrlsim_reverse_episode_count += 1
                                 else:
                                     ego_ctrlsim_mixed_episode_count += 1
                             elif current_episode_safe_invalid_by_process[

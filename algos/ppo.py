@@ -300,10 +300,12 @@ class PPO():
                         episode_entropy = ego_ctrlsim_episode_entropy_batch[
                             ego_ctrlsim_valid_mask
                         ].squeeze(-1)
+                        # Confident teachers use Forward KL; uncertain teachers
+                        # use Reverse KL to select a teacher-supported mode.
                         adaptive_alpha = torch.clamp(
                             (
-                                episode_entropy
-                                - self.ego_ctrlsim_kl_entropy_low_threshold
+                                self.ego_ctrlsim_kl_entropy_high_threshold
+                                - episode_entropy
                             )
                             / (
                                 self.ego_ctrlsim_kl_entropy_high_threshold
