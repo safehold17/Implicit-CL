@@ -1123,6 +1123,10 @@ class AdversarialRunner(object):
             and getattr(agent.storage, "ego_ctrlsim_episode_entropy", None)
             is not None
         )
+        adaptive_kl_include_cliffhanger = (
+            track_ego_ctrlsim_adaptive_kl
+            and bool(getattr(args, "adaptive_kl_include_cliffhanger", True))
+        )
         current_episode_kl_steps_by_process = (
             [[] for _ in range(args.num_processes)]
             if track_ego_ctrlsim_kl
@@ -1171,7 +1175,9 @@ class AdversarialRunner(object):
         ego_ctrlsim_forward_episode_count = 0
         ego_ctrlsim_safe_invalid_episode_count = 0
         ego_ctrlsim_nonfinite_logits_episode_count = 0
+        ego_ctrlsim_cliffhanger_included_count = 0
         ego_ctrlsim_cliffhanger_excluded_count = 0
+        ego_ctrlsim_cliffhanger_entropy_sum = 0.0
         track_nocturne_enhanced_regret = (
             is_nocturne_rollout
             and bool(getattr(args, "use_enhanced_regret", False))
@@ -1542,7 +1548,17 @@ class AdversarialRunner(object):
                                 process_idx
                             ].append(step)
 
-                    if bool(environment_done[process_idx]):
+                    is_cliffhanger = (
+                        step == num_steps - 1
+                        and not bool(environment_done[process_idx])
+                    )
+                    include_current_cliffhanger = (
+                        is_cliffhanger and adaptive_kl_include_cliffhanger
+                    )
+                    if (
+                        bool(environment_done[process_idx])
+                        or include_current_cliffhanger
+                    ):
                         entropy_count = int(
                             current_episode_entropy_count_by_process[process_idx]
                         )
@@ -1557,10 +1573,11 @@ class AdversarialRunner(object):
                                 ]
                                 / entropy_count
                             )
-                            ego_ctrlsim_teacher_episode_entropy_sum += (
-                                episode_entropy
-                            )
-                            ego_ctrlsim_teacher_completed_episode_count += 1
+                            if bool(environment_done[process_idx]):
+                                ego_ctrlsim_teacher_episode_entropy_sum += (
+                                    episode_entropy
+                                )
+                                ego_ctrlsim_teacher_completed_episode_count += 1
                             for stored_step in (
                                 current_episode_teacher_steps_by_process[
                                     process_idx
@@ -1583,6 +1600,11 @@ class AdversarialRunner(object):
                             )
                             if episode_has_valid_kl:
                                 ego_ctrlsim_eligible_episode_count += 1
+                                if include_current_cliffhanger:
+                                    ego_ctrlsim_cliffhanger_included_count += 1
+                                    ego_ctrlsim_cliffhanger_entropy_sum += (
+                                        episode_entropy
+                                    )
                                 low_threshold = getattr(
                                     args,
                                     "ego_ctrlsim_kl_entropy_low_threshold",
@@ -1603,7 +1625,7 @@ class AdversarialRunner(object):
                                 process_idx
                             ]:
                                 ego_ctrlsim_safe_invalid_episode_count += 1
-                    elif step == num_steps - 1:
+                    elif is_cliffhanger:
                         if (
                             current_episode_entropy_count_by_process[
                                 process_idx
@@ -1679,6 +1701,10 @@ class AdversarialRunner(object):
                 ego_ctrlsim_teacher_completed_episode_count,
                 1,
             )
+            cliffhanger_denominator = max(
+                ego_ctrlsim_cliffhanger_included_count,
+                1,
+            )
             eligible_denominator = max(ego_ctrlsim_eligible_episode_count, 1)
             rollout_info.update({
                 "ego_ctrlsim_teacher_episode_entropy": (
@@ -1700,8 +1726,15 @@ class AdversarialRunner(object):
                 "ego_ctrlsim_safe_invalid_episode_count": (
                     ego_ctrlsim_safe_invalid_episode_count
                 ),
+                "ego_ctrlsim_cliffhanger_included_count": (
+                    ego_ctrlsim_cliffhanger_included_count
+                ),
                 "ego_ctrlsim_cliffhanger_excluded_count": (
                     ego_ctrlsim_cliffhanger_excluded_count
+                ),
+                "ego_ctrlsim_cliffhanger_segment_entropy": (
+                    ego_ctrlsim_cliffhanger_entropy_sum
+                    / cliffhanger_denominator
                 ),
             })
         if not is_env:
@@ -2570,8 +2603,14 @@ class AdversarialRunner(object):
             'ego_ctrlsim_nonfinite_logits_episode_count': agent_info.get(
                 'ego_ctrlsim_nonfinite_logits_episode_count', None
             ),
+            'ego_ctrlsim_cliffhanger_included_count': agent_info.get(
+                'ego_ctrlsim_cliffhanger_included_count', None
+            ),
             'ego_ctrlsim_cliffhanger_excluded_count': agent_info.get(
                 'ego_ctrlsim_cliffhanger_excluded_count', None
+            ),
+            'ego_ctrlsim_cliffhanger_segment_entropy': agent_info.get(
+                'ego_ctrlsim_cliffhanger_segment_entropy', None
             ),
             'ego_heading_error_to_gt': agent_info.get(
                 'ego_heading_error_to_gt', None

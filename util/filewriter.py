@@ -319,8 +319,14 @@ class FileWriter:
             "train_kl_nonfinite_logits_episode_count": (
                 "ego_ctrlsim_nonfinite_logits_episode_count"
             ),
+            "train_kl_cliffhanger_included_count": (
+                "ego_ctrlsim_cliffhanger_included_count"
+            ),
             "train_kl_cliffhanger_excluded_count": (
                 "ego_ctrlsim_cliffhanger_excluded_count"
+            ),
+            "train_kl_cliffhanger_segment_entropy": (
+                "ego_ctrlsim_cliffhanger_segment_entropy"
             ),
             "ego_heading_error_to_gt": "ego_heading_error_to_gt",
             "ego_turn_heading_error_to_gt": "ego_turn_heading_error_to_gt",

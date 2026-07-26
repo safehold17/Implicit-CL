@@ -1301,6 +1301,14 @@ parser.add_argument(
     help="Whether to adapt the ego_ctrlsim KL direction from episode entropy.",
 )
 parser.add_argument(
+    "--adaptive_kl_include_cliffhanger",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=True,
+    help="Whether Adaptive KL should include rollout-tail episode fragments.",
+)
+parser.add_argument(
     "--ego_ctrlsim_kl_entropy_low_threshold",
     type=float,
     default=2.30,
