@@ -322,6 +322,44 @@ def _arg_get(args, key, default):
     return getattr(args, key, default)
 
 
+def _resolve_ego_ctrlsim_kl_config(args: Any) -> dict[str, bool | float]:
+    """Resolve KL settings while preserving legacy Forward-KL behavior."""
+    missing = object()
+    mode_names = (
+        'use_ego_ctrlsim_forward_kl_loss',
+        'use_ego_ctrlsim_reverse_kl_loss',
+        'use_ego_ctrlsim_adaptive_kl_loss',
+    )
+    mode_values = {
+        name: _arg_get(args, name, missing)
+        for name in mode_names
+    }
+    if all(value is missing for value in mode_values.values()):
+        mode_values = {
+            'use_ego_ctrlsim_forward_kl_loss': True,
+            'use_ego_ctrlsim_reverse_kl_loss': False,
+            'use_ego_ctrlsim_adaptive_kl_loss': False,
+        }
+    else:
+        mode_values = {
+            name: False if value is missing else bool(value)
+            for name, value in mode_values.items()
+        }
+
+    return {
+        'use_ego_ctrlsim_kl_loss': bool(
+            _arg_get(args, 'use_ego_ctrlsim_kl_loss', False)
+        ),
+        **mode_values,
+        'ego_ctrlsim_kl_entropy_low_threshold': float(
+            _arg_get(args, 'ego_ctrlsim_kl_entropy_low_threshold', 2.30)
+        ),
+        'ego_ctrlsim_kl_entropy_high_threshold': float(
+            _arg_get(args, 'ego_ctrlsim_kl_entropy_high_threshold', 4.05)
+        ),
+    }
+
+
 def _validate_ego_ctrlsim_kl_config(
     args: Any,
     action_dim: int | None,
@@ -373,6 +411,7 @@ def _validate_ego_ctrlsim_kl_config(
 
 def make_agent(name, env, args, device='cpu'):
     # Create model instance
+    ego_ctrlsim_kl_config = _resolve_ego_ctrlsim_kl_config(args)
     is_adversary_env = 'env' in name
 
     if (
@@ -422,7 +461,7 @@ def make_agent(name, env, args, device='cpu'):
             if action_space.__class__.__name__ == 'Discrete'
             else None
         )
-        _validate_ego_ctrlsim_kl_config(args, action_dim)
+        _validate_ego_ctrlsim_kl_config(ego_ctrlsim_kl_config, action_dim)
 
     recurrent_hidden_size = args.recurrent_hidden_size
 
@@ -506,21 +545,23 @@ def make_agent(name, env, args, device='cpu'):
             value_loss_coef=args.value_loss_coef,
             entropy_coef=entropy_coef,
             kl_loss_coef=args.kl_loss_coef,
-            use_ego_ctrlsim_kl_loss=args.use_ego_ctrlsim_kl_loss,
+            use_ego_ctrlsim_kl_loss=(
+                ego_ctrlsim_kl_config['use_ego_ctrlsim_kl_loss']
+            ),
             use_ego_ctrlsim_forward_kl_loss=(
-                args.use_ego_ctrlsim_forward_kl_loss
+                ego_ctrlsim_kl_config['use_ego_ctrlsim_forward_kl_loss']
             ),
             use_ego_ctrlsim_reverse_kl_loss=(
-                args.use_ego_ctrlsim_reverse_kl_loss
+                ego_ctrlsim_kl_config['use_ego_ctrlsim_reverse_kl_loss']
             ),
             use_ego_ctrlsim_adaptive_kl_loss=(
-                args.use_ego_ctrlsim_adaptive_kl_loss
+                ego_ctrlsim_kl_config['use_ego_ctrlsim_adaptive_kl_loss']
             ),
             ego_ctrlsim_kl_entropy_low_threshold=(
-                args.ego_ctrlsim_kl_entropy_low_threshold
+                ego_ctrlsim_kl_config['ego_ctrlsim_kl_entropy_low_threshold']
             ),
             ego_ctrlsim_kl_entropy_high_threshold=(
-                args.ego_ctrlsim_kl_entropy_high_threshold
+                ego_ctrlsim_kl_config['ego_ctrlsim_kl_entropy_high_threshold']
             ),
             ego_ctrlsim_kl_schedule=args.ego_ctrlsim_kl_schedule,
             ego_ctrlsim_kl_init_coef=args.ego_ctrlsim_kl_init_coef,
@@ -543,10 +584,12 @@ def make_agent(name, env, args, device='cpu'):
             recurrent_arch=args.recurrent_arch,
             use_proper_time_limits=use_proper_time_limits,
             use_popart=use_popart,
-            use_ego_ctrlsim_action_logits=args.use_ego_ctrlsim_kl_loss,
+            use_ego_ctrlsim_action_logits=(
+                ego_ctrlsim_kl_config['use_ego_ctrlsim_kl_loss']
+            ),
             use_ego_ctrlsim_episode_entropy=(
-                args.use_ego_ctrlsim_kl_loss
-                and args.use_ego_ctrlsim_adaptive_kl_loss
+                ego_ctrlsim_kl_config['use_ego_ctrlsim_kl_loss']
+                and ego_ctrlsim_kl_config['use_ego_ctrlsim_adaptive_kl_loss']
             ),
         )
 
