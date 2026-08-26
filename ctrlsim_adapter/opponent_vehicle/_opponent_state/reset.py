@@ -143,6 +143,8 @@ def reset_current_episode(
     adapter._pending_sparse_actions_step_t = None
     adapter._pending_sparse_actions = {}
     adapter._ego_action_scale = 1.0
+    if bool(getattr(adapter, "use_policy_reweighting_new", False)):
+        adapter._policy_reweighting_state.reset()
     initialize_episode_sampling_seed(adapter)
 
     adapter._veh_id_to_idx = {}

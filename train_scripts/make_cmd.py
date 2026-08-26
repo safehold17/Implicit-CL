@@ -25,6 +25,7 @@ INTERNAL_DEFAULT_KEYS = {
     'use_editor',
     'use_ego_ctrlsim_kl_loss',
     'use_policy_reweighting',
+    'use_policy_reweighting_new',
     'use_plr',
     'tilting_mode',
 }
@@ -173,6 +174,11 @@ def parse_args():
 
 def xpid_from_params(p, prefix=''):
     prefix_str = '' if prefix == '' else f'{prefix}-'
+    policy_reweighting_suffix = (
+        '-prwn'
+        if bool(p.get('use_policy_reweighting_new', False))
+        else f'-prw{int(bool(p["use_policy_reweighting"]))}'
+    )
     return (
         f'{prefix_str}'
         f'steps{p["num_env_steps"]}'
@@ -182,7 +188,7 @@ def xpid_from_params(p, prefix=''):
         f'-edit{int(bool(p["use_editor"]))}'
         f'-tilt{p["tilting_mode"]}'
         f'-kl{int(bool(p["use_ego_ctrlsim_kl_loss"]))}'
-        f'-prw{int(bool(p["use_policy_reweighting"]))}'
+        f'{policy_reweighting_suffix}'
     )
 
 if __name__ == '__main__':

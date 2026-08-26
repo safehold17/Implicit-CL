@@ -21,6 +21,8 @@ _RTG_STAGE_TAG = 0
 # Keep the side-channel RTG sample in its own stateless-sampling namespace so
 # it never collides with baseline RTG decode or action decode tickets.
 _SIDE_CHANNEL_RTG_STAGE_TAG = 2
+# Keep new-policy raw RTG draws independent from baseline and legacy samples.
+_UNTILTED_RTG_STAGE_TAG = 3
 
 
 def _build_flat_tilt_logits(
@@ -160,6 +162,40 @@ def sample_tilted_rtg_side_channel_batched_impl(
     return continuous.detach().cpu().numpy().astype(np.float32, copy=False)
 
 
+def sample_untilted_rtg_side_channel_batched_impl(
+    teacher: Any,
+    flat_rtg_logits: torch.Tensor,
+    sampling_seed: np.ndarray,
+    step_t: np.ndarray,
+    veh_id: np.ndarray,
+    stage_tag: int = _UNTILTED_RTG_STAGE_TAG,
+) -> np.ndarray:
+    """Sample raw RTG logits without tilt or decoded-output writeback."""
+    row_count = int(flat_rtg_logits.shape[0])
+    if row_count == 0:
+        return np.zeros((0, teacher.num_reward_components), dtype=np.float32)
+
+    logits_3 = flat_rtg_logits.to(dtype=torch.float32).reshape(
+        row_count,
+        teacher.rtg_discretization,
+        teacher.num_reward_components,
+    )
+    discrete = _sample_rtg_indices(
+        teacher=teacher,
+        flat_rtg_logits=logits_3,
+        flat_tilt_logits=torch.zeros_like(logits_3),
+        sampling_seed=np.asarray(sampling_seed, dtype=np.uint64),
+        step_t=np.asarray(step_t, dtype=np.int64),
+        veh_id=np.asarray(veh_id, dtype=np.int64),
+        stage_tag=stage_tag,
+    )
+    continuous = _undiscretize_rtg_indices_batched(
+        teacher=teacher,
+        discrete_idx=discrete,
+    )
+    return continuous.detach().cpu().numpy().astype(np.float32, copy=False)
+
+
 def decode_rtg_jobs_batched_impl(
     teacher: Any,
     batched_data: MotionData,
@@ -267,18 +303,21 @@ def decode_rtg_jobs_batched_impl(
             )
         else:
             effective_scale_t = effective_scale_t.to(device=device, dtype=torch.float32)
-        unique_scale_t = torch.ones(
-            (unique_row_indices_t.shape[0],),
-            dtype=torch.float32,
-            device=device,
-        )
-        unique_scale_t.scatter_reduce_(
-            0,
-            inverse_t,
-            effective_scale_t,
-            reduce="amax",
-            include_self=True,
-        )
+        if getattr(teacher, "use_policy_reweighting_new", False):
+            unique_scale_t = effective_scale_t[unique_row_indices_t]
+        else:
+            unique_scale_t = torch.ones(
+                (unique_row_indices_t.shape[0],),
+                dtype=torch.float32,
+                device=device,
+            )
+            unique_scale_t.scatter_reduce_(
+                0,
+                inverse_t,
+                effective_scale_t,
+                reduce="amax",
+                include_self=True,
+            )
         flat_rtg_logits = flat_rtg_logits * unique_scale_t.view(-1, 1, 1)
     step_t_t = decode_meta.get("step_t_t")
     if step_t_t is None:

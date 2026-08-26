@@ -334,6 +334,16 @@ class FileWriter:
             "policy_reweighting_scale": "policy_reweighting_scale",
             "policy_reweighting_raw_rtg_error": "policy_reweighting_raw_rtg_error",
             "policy_reweighting_normalized_rtg_error": "policy_reweighting_normalized_rtg_error",
+            "policy_reweighting_new_goal_squared_error": (
+                "policy_reweighting_new_goal_squared_error"
+            ),
+            "policy_reweighting_new_veh_squared_error": (
+                "policy_reweighting_new_veh_squared_error"
+            ),
+            "policy_reweighting_new_road_squared_error": (
+                "policy_reweighting_new_road_squared_error"
+            ),
+            "policy_reweighting_new_query_gap": "policy_reweighting_new_query_gap",
             "regret_base_score": "base_regret",
             "regret_enhancement_solvable_rate": "solvable_rate",
             "regret_enhancement_learnability": "learnability",

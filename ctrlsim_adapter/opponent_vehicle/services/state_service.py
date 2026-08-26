@@ -427,6 +427,8 @@ class OpponentStateService:
         Note: the data has already been updated on the final step, so there is no need to call _update_vehicle_data_dict again here.
         """
         adapter = self.adapter
+        if bool(getattr(adapter, "use_policy_reweighting_new", False)):
+            adapter._policy_reweighting_state.discard()
         for veh in vehicles:
             veh_id = veh.getID()
             if veh_id in adapter._vehicle_data_dict:

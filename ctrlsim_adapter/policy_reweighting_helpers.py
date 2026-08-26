@@ -31,6 +31,18 @@ class AdversarialRTGRunningStats:
     error_sigma: float
     error_count: float
 
+
+def resolve_policy_reweighting_mode(
+    use_policy_reweighting: bool,
+    use_policy_reweighting_new: bool,
+) -> str:
+    """Resolve new, legacy, or disabled policy-reweighting mode."""
+    if use_policy_reweighting_new:
+        return "new"
+    if use_policy_reweighting:
+        return "legacy"
+    return "disabled"
+
 def _to_numpy_vector(
     rtg_value: Sequence[float] | np.ndarray | torch.Tensor,
 ) -> np.ndarray:

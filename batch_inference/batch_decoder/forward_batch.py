@@ -12,6 +12,9 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 
+from ..external_teacher_batch_collator import (
+    map_new_ego_action_scales_to_opponent_rows,
+)
 from .action import decode_action_stage_batched_impl
 from ..batch_ipc.prepared import (
     get_prepared_focal_data_veh_ids,
@@ -196,18 +199,41 @@ def forward_job_batch_impl(
     rtg_logits = preds["rtg_preds"]
 
     batch_jobs = batch_meta["jobs"]
+    if getattr(teacher, "use_policy_reweighting_new", False):
+        owner_scales_by_job = teacher._compute_new_ego_action_scales_by_job(
+            jobs=batch_jobs,
+            rtg_logits=rtg_logits,
+            decode_meta=batch_meta["decode_meta"]["rtg"],
+        )
+        target_meta = batch_meta["decode_meta"][teacher.policy_reweighting_target]
+        ego_action_scales_by_job, effective_scales_by_row = (
+            map_new_ego_action_scales_to_opponent_rows(
+                jobs=batch_jobs,
+                owner_scales_by_job=owner_scales_by_job,
+                decode_meta=target_meta,
+            )
+        )
+        if effective_scales_by_row is not None:
+            target_meta["effective_scale"] = effective_scales_by_row
+            target_meta["effective_scale_t"] = torch.as_tensor(
+                effective_scales_by_row,
+                dtype=torch.float32,
+                device=rtg_logits.device,
+            )
+
     flat_rtg_results = decode_rtg_jobs_batched_fn(
         teacher=teacher,
         batched_data=batched_data,
         rtg_logits=rtg_logits,
         decode_meta=batch_meta["decode_meta"]["rtg"],
     )
-    ego_action_scales_by_job = teacher._compute_ego_action_scales_by_job(
-        jobs=batch_jobs,
-        rtg_logits=rtg_logits,
-        decode_meta=batch_meta["decode_meta"]["rtg"],
-        flat_rtg_results=flat_rtg_results,
-    )
+    if not getattr(teacher, "use_policy_reweighting_new", False):
+        ego_action_scales_by_job = teacher._compute_ego_action_scales_by_job(
+            jobs=batch_jobs,
+            rtg_logits=rtg_logits,
+            decode_meta=batch_meta["decode_meta"]["rtg"],
+            flat_rtg_results=flat_rtg_results,
+        )
 
     action_decode_outputs = decode_action_stage_batched_impl(
         teacher=teacher,

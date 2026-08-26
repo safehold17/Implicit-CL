@@ -420,7 +420,11 @@ class NocturneCtrlSimAdversarial(gym.Env):
         else:
             base_level = level_service.coerce_level(self, level)
 
-        if self.tilting_mode == 'none' and not self.use_policy_reweighting:
+        if (
+            self.tilting_mode == 'none'
+            and not self.use_policy_reweighting
+            and not self.use_policy_reweighting_new
+        ):
             return self.reset_to_level(base_level)
 
         mutated = level_service.mutate_level_internal(self, base_level)

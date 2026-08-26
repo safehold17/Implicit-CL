@@ -2637,7 +2637,10 @@ class AdversarialRunner(object):
         if (
             is_nocturne_env
             and self.external_teacher is not None
-            and bool(getattr(args, "use_policy_reweighting", False))
+            and (
+                bool(getattr(args, "use_policy_reweighting", False))
+                or bool(getattr(args, "use_policy_reweighting_new", False))
+            )
         ):
             stats.update(self.external_teacher.consume_policy_reweighting_update_stats())
 

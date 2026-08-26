@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple, TypedDict
 
-PREPARED_IPC_FORMAT = "prepared_v4"
+PREPARED_IPC_FORMAT = "prepared_v5"
 MODEL_OUTPUTS_IPC_FORMAT = "model_outputs_v2"
 VALID_STATUS_VALUES = {"ok", "skip"}
 INLINE_MOTION_STORAGE = "inline"
@@ -42,6 +42,9 @@ class PreparedPayload(TypedDict):
     ego_context_owner_focal_id: int | None
     ego_reweight_tilt: Tuple[int, int, int]
     delayed_ego_action_scale: float
+    target_rtg: Any
+    target_rtg_valid: bool
+    query_gap: int
     sampling: SamplingPayload
     default_tilt: Tuple[int, int, int]
     tilt_by_veh_id: Dict[int, Tuple[int, int, int]]

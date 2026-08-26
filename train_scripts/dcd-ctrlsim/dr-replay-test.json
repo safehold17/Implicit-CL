@@ -3,8 +3,8 @@
     "env_name": ["Nocturne-CtrlSim-v0"],
     "ued_algo": ["domain_randomization"],
     "student_model_type" : ["late_fusion"],
-    "num_processes": [32],
-    "num_env_steps": [65536000],
+    "num_processes": [16],
+    "num_env_steps": [4096000],
     "seed": [123],
 
     "__note1__": ["learning parameters"],
@@ -15,7 +15,7 @@
     "handle_timelimits": [true],
     "num_steps": [256],
     "ppo_epoch": [10],
-    "num_mini_batch": [32],
+    "num_mini_batch": [16],
     "entropy_coef": [0.01],
     "value_loss_coef": [0.5],
     "clip_param": [0.2],
@@ -52,7 +52,7 @@
 
 
     "__note5__": ["tilting parameters"],
-    "tilting_mode": ["per_vehicle"],
+    "tilting_mode": ["none"],
     "tilt_range_min": [-25],
     "tilt_range_max": [25],
 
@@ -61,7 +61,7 @@
     "warmup_level_replay_seed_buffer_size": [8000],
     "warmup_opponent_disable_ratio": [0.0],
     "warmup_opponent_replay_ratio": [0.0],
-    "warmup_checkpoint": ["checkpoints/reverse-KL/model_2000.tar"],
+    "warmup_checkpoint": [""],
 
     "__note7__": ["logging parameters"],
     "verbose": [false],
@@ -124,7 +124,7 @@
 
     "__note12__": ["policy reweighting parameters"],
     "use_policy_reweighting": [false],
-    "use_policy_reweighting_new": [false],
+    "use_policy_reweighting_new": [true],
     "policy_reweighting_reward_scale": [1.0],
     "policy_reweighting_target": ["rtg"],
 
@@ -141,17 +141,23 @@
     "solvable_progress_threshold": [0.85],
 
     "__note14__": ["dataset parameters"],
-    "scenario_index_path": ["preparation_file/scenario_index_10k_train_no_offroad.json"],
-    "vehicle_map_path": ["preparation_file/vehicle_map_10k_train.json"],
-    "scenario_data_dir": ["scenario_data/formatted_json_v2_no_tl_train"],
-    "preprocess_dir": ["compressed_preprocessed_data/train"],
-    "opponent_checkpoint": ["checkpoints/model_fp16.ckpt"],
+    "scenario_index_path": ["/home/chen/data/preparation/scenario_index_1k_train_no_offroad.json"],
+    "vehicle_map_path": ["/home/chen/data/preparation/vehicle_map_1k_train_no_offroad.json"],
     "log_dir": ["~/logs/dcd"],
+    "scenario_data_dir": [
+      "/media/chen/Dataset/ctrlsim_dataset/scenario_data/formatted_json_v2_no_tl_train"
+    ],
+    "preprocess_dir": [
+      "/media/chen/Dataset/ctrlsim_dataset/compressed_preprocessed_data/train"
+    ],
+    "opponent_checkpoint": [
+      "/media/chen/Dataset/ctrlsim_dataset/checkpoints/model_fp16.ckpt"
+    ],
 
     "__note15__": ["clearml"],
-    "use_clearml": [true],
+    "use_clearml": [false],
     "clearml_task": ["LF-replay"],
     "clearml_monitor_only": [false],
-    "local_tensorboard": [false]
+    "local_tensorboard": [true]
   }
 }

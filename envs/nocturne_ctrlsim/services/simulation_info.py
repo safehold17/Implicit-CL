@@ -94,7 +94,10 @@ def _build_policy_reweighting_info(env) -> Dict[str, float]:
     ego_reweight_tilt = (0.0, 0.0, 0.0)
 
     if (
-        bool(getattr(env, 'use_policy_reweighting', False))
+        (
+            bool(getattr(env, 'use_policy_reweighting', False))
+            or bool(getattr(env, 'use_policy_reweighting_new', False))
+        )
         and str(getattr(env, 'opponent_runtime_mode', 'normal')) == 'normal'
         and len(getattr(env, 'opponent_vehicle_ids', ())) > 0
     ):

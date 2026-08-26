@@ -508,7 +508,10 @@ def mutate_level_internal(env: Any, level: ScenarioLevel) -> ScenarioLevel:
     )
 
     rng = env.np_random
-    if getattr(env, "use_policy_reweighting", False):
+    if (
+        getattr(env, "use_policy_reweighting", False)
+        or getattr(env, "use_policy_reweighting_new", False)
+    ):
         params = ["ego_goal_tilt", "ego_veh_veh_tilt", "ego_veh_edge_tilt"]
         mutations: dict[str, Any] = {"has_ego_reweight_tilt": True}
         dims = mutation_dims(env.mutation_mode, rng)

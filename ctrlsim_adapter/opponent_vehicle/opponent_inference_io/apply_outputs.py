@@ -87,10 +87,37 @@ def _append_rtg_history_for_tracked_vehicles(
         veh_data["rtgs"].append(zero_rtg.copy())
 
 
+def _update_new_policy_reweighting_state(
+    adapter: Any,
+    *,
+    rtg_veh_ids: np.ndarray,
+    rtg_values: np.ndarray,
+) -> None:
+    """Start pending state from the decoded ego RTG for an active new-mode query."""
+    if not bool(getattr(adapter, "use_policy_reweighting_new", False)):
+        return
+
+    state = adapter._policy_reweighting_state
+    if not any(adapter._ego_reweight_tilt):
+        return
+
+    ego_rows = np.flatnonzero(rtg_veh_ids == int(adapter._ego_id))
+    if ego_rows.size == 0:
+        return
+    state.start_query(rtg_values[int(ego_rows[-1])])
+
+
 def apply_predictions(
     adapter: Any,
     model_outputs: Optional[Dict[str, Any]],
 ) -> Dict[int, Tuple[float, float]]:
+    zero_tilt_new_mode = (
+        bool(getattr(adapter, "use_policy_reweighting_new", False))
+        and not any(adapter._ego_reweight_tilt)
+    )
+    if zero_tilt_new_mode:
+        reset_ego_action_scale(adapter)
+        adapter._policy_reweighting_state.discard()
     if adapter._policy is None:
         return {}
 
@@ -112,7 +139,11 @@ def apply_predictions(
             return pending_actions
         return {}
 
-    adapter._ego_action_scale = float(model_outputs.get("ego_action_scale", 1.0))
+    adapter._ego_action_scale = (
+        1.0
+        if zero_tilt_new_mode
+        else float(model_outputs.get("ego_action_scale", 1.0))
+    )
 
     action_veh_ids = np.asarray(model_outputs["action_veh_ids"], dtype=np.int64)
     action_values = np.asarray(model_outputs["action_values"], dtype=np.float32).reshape((-1, 2))
@@ -122,6 +153,11 @@ def apply_predictions(
         np.asarray(model_outputs["processed_rtg_veh_ids"], dtype=np.int64).tolist()
     )
     dead_ids = set(np.asarray(model_outputs["dead_ids"], dtype=np.int64).tolist())
+    _update_new_policy_reweighting_state(
+        adapter,
+        rtg_veh_ids=rtg_veh_ids,
+        rtg_values=rtg_values,
+    )
 
     for veh_id, rtg_row in _iter_flat_result_rows(rtg_veh_ids, rtg_values, value_width=3):
         veh_data = require_vehicle_data(adapter._vehicle_data_dict, veh_id, "rtg_results", step_t)

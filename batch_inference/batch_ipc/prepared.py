@@ -259,6 +259,9 @@ def pack_prepared(prepared: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "delayed_ego_action_scale": np.float32(
             float(prepared_typed.get("delayed_ego_action_scale", 1.0))
         ),
+        "target_rtg": as_float32_array(prepared_typed["target_rtg"]),
+        "target_rtg_valid": np.bool_(prepared_typed["target_rtg_valid"]),
+        "query_gap": np.int32(int(prepared_typed["query_gap"])),
     }
     sampling_seed = prepared_typed.get("sampling_seed")
     if sampling_seed is not None:
@@ -328,9 +331,47 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
 
     require_keys(
         packed,
-        ("status", "step_t", "token_index", "dead_ids"),
+        (
+            "status",
+            "step_t",
+            "token_index",
+            "dead_ids",
+            "target_rtg",
+            "target_rtg_valid",
+            "query_gap",
+        ),
         "packed prepared payload",
     )
+    target_rtg_payload = packed["target_rtg"]
+    if (
+        not isinstance(target_rtg_payload, np.ndarray)
+        or target_rtg_payload.shape != (3,)
+        or target_rtg_payload.dtype != np.float32
+    ):
+        raise ValueError(
+            "packed prepared payload target_rtg must be a float32 array with shape [3]."
+        )
+    target_rtg_valid_payload = packed["target_rtg_valid"]
+    if not isinstance(target_rtg_valid_payload, np.bool_):
+        raise ValueError(
+            "packed prepared payload target_rtg_valid must be an np.bool_ scalar."
+        )
+    query_gap_payload = packed["query_gap"]
+    if not isinstance(query_gap_payload, np.int32):
+        raise ValueError(
+            "packed prepared payload query_gap must be an np.int32 scalar."
+        )
+    if int(query_gap_payload) < 0:
+        raise ValueError("packed prepared payload query_gap must be non-negative.")
+    if not bool(target_rtg_valid_payload):
+        if np.any(target_rtg_payload != 0):
+            raise ValueError(
+                "packed prepared payload invalid target_rtg metadata must use zeros."
+            )
+        if int(query_gap_payload) != 0:
+            raise ValueError(
+                "packed prepared payload invalid target_rtg metadata must use query_gap=0."
+            )
     ego_id_value = int(np.int32(packed.get("ego_id", -1)))
     owner_focal_id_value = int(np.int32(packed.get("ego_context_owner_focal_id", -1)))
     ego_reweight_tilt_arr = np.asarray(
@@ -358,10 +399,14 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "delayed_ego_action_scale": float(
             np.float32(packed.get("delayed_ego_action_scale", 1.0))
         ),
+        "target_rtg": target_rtg_payload.copy(),
+        "target_rtg_valid": bool(target_rtg_valid_payload),
+        "query_gap": int(query_gap_payload),
     }
     if "sampling_seed" in packed:
         prepared["sampling_seed"] = int(packed["sampling_seed"])
     if status == "skip":
+        validate_prepared_payload(prepared)
         return prepared
 
     require_keys(
@@ -399,62 +444,70 @@ def unpack_prepared(packed: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
 
     motion_storage = str(packed.get("motion_storage", INLINE_MOTION_STORAGE))
     motion_data_np, shm_handles = _unpack_motion_batches(packed, motion_storage)
-
-    prepared.update(
-        {
-            "shared_timesteps": unpack_motion_array(
-                "timesteps",
-                np.asarray(packed["shared_timesteps"]),
-            ),
-            "sampling": {
-                "action_temperature": float(sampling_values[0]),
-                "nucleus_sampling": bool(int(sampling_flags[0])),
-                "nucleus_threshold": float(sampling_values[1]),
-            },
-            "default_tilt": (
-                int(default_tilt[0]),
-                int(default_tilt[1]),
-                int(default_tilt[2]),
-            ),
-            "tilt_by_veh_id": _unpack_tilt_mapping(
-                packed["tilt_veh_ids"],
-                packed["tilt_values"],
-            ),
-            "focal_ids": np.asarray(packed["focal_ids"], dtype=np.int64),
-            "predict_rtgs": np.asarray(packed["predict_rtgs"], dtype=np.bool_),
-            "data_veh_ids_flat": np.asarray(packed["data_veh_ids_flat"], dtype=np.int64),
-            "data_veh_ids_offsets": np.asarray(
-                packed["data_veh_ids_offsets"],
-                dtype=np.int64,
-            ),
-            "veh_ids_in_context_flat": np.asarray(
-                packed["veh_ids_in_context_flat"],
-                dtype=np.int64,
-            ),
-            "veh_ids_in_context_offsets": np.asarray(
-                packed["veh_ids_in_context_offsets"],
-                dtype=np.int64,
-            ),
-            "data_veh_model_indices_flat": np.asarray(
-                packed["data_veh_model_indices_flat"],
-                dtype=np.int64,
-            ),
-            "data_veh_model_indices_offsets": np.asarray(
-                packed["data_veh_model_indices_offsets"],
-                dtype=np.int64,
-            ),
-            "context_veh_model_indices_flat": np.asarray(
-                packed["context_veh_model_indices_flat"],
-                dtype=np.int64,
-            ),
-            "context_veh_model_indices_offsets": np.asarray(
-                packed["context_veh_model_indices_offsets"],
-                dtype=np.int64,
-            ),
-            "motion_data_np": motion_data_np,
-            "_ipc_shm_handles": shm_handles,
-        }
-    )
+    try:
+        prepared.update(
+            {
+                "shared_timesteps": unpack_motion_array(
+                    "timesteps",
+                    np.asarray(packed["shared_timesteps"]),
+                ),
+                "sampling": {
+                    "action_temperature": float(sampling_values[0]),
+                    "nucleus_sampling": bool(int(sampling_flags[0])),
+                    "nucleus_threshold": float(sampling_values[1]),
+                },
+                "default_tilt": (
+                    int(default_tilt[0]),
+                    int(default_tilt[1]),
+                    int(default_tilt[2]),
+                ),
+                "tilt_by_veh_id": _unpack_tilt_mapping(
+                    packed["tilt_veh_ids"],
+                    packed["tilt_values"],
+                ),
+                "focal_ids": np.asarray(packed["focal_ids"], dtype=np.int64),
+                "predict_rtgs": np.asarray(packed["predict_rtgs"], dtype=np.bool_),
+                "data_veh_ids_flat": np.asarray(
+                    packed["data_veh_ids_flat"],
+                    dtype=np.int64,
+                ),
+                "data_veh_ids_offsets": np.asarray(
+                    packed["data_veh_ids_offsets"],
+                    dtype=np.int64,
+                ),
+                "veh_ids_in_context_flat": np.asarray(
+                    packed["veh_ids_in_context_flat"],
+                    dtype=np.int64,
+                ),
+                "veh_ids_in_context_offsets": np.asarray(
+                    packed["veh_ids_in_context_offsets"],
+                    dtype=np.int64,
+                ),
+                "data_veh_model_indices_flat": np.asarray(
+                    packed["data_veh_model_indices_flat"],
+                    dtype=np.int64,
+                ),
+                "data_veh_model_indices_offsets": np.asarray(
+                    packed["data_veh_model_indices_offsets"],
+                    dtype=np.int64,
+                ),
+                "context_veh_model_indices_flat": np.asarray(
+                    packed["context_veh_model_indices_flat"],
+                    dtype=np.int64,
+                ),
+                "context_veh_model_indices_offsets": np.asarray(
+                    packed["context_veh_model_indices_offsets"],
+                    dtype=np.int64,
+                ),
+                "motion_data_np": motion_data_np,
+                "_ipc_shm_handles": shm_handles,
+            }
+        )
+        validate_prepared_payload(prepared)
+    except Exception:
+        for shm_handle in shm_handles:
+            release_shared_memory_handle(shm_handle)
+        raise
     return prepared
 
 

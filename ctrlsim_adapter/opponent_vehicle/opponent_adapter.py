@@ -18,7 +18,11 @@ from .services.reward_service import OpponentRewardService
 from .services.state_service import OpponentStateService
 from .sparse_inference import SparseInferenceConfig, SparseInferenceController
 from .tilting import TiltConfig
-from ctrlsim_adapter.policy_reweighting_helpers import AdversarialRTGConfig
+from .opponent_inference_io.policy_reweighting_state import PolicyReweightingState
+from ctrlsim_adapter.policy_reweighting_helpers import (
+    AdversarialRTGConfig,
+    resolve_policy_reweighting_mode,
+)
 
 
 class CtrlSimOpponentAdapter:
@@ -65,6 +69,7 @@ class CtrlSimOpponentAdapter:
         use_ego_ctrlsim_kl_loss: bool = False,
         use_enhanced_regret: bool = False,
         use_policy_reweighting: bool = False,
+        use_policy_reweighting_new: bool = False,
         policy_reweighting_reward_scale: float = 1.0,
         policy_reweighting_epsilon: float = 1e-6,
         policy_reweighting_target: str = "rtg",
@@ -94,6 +99,7 @@ class CtrlSimOpponentAdapter:
         use_enhanced_regret: whether to export ego teacher RTGs for regret enhancement.
         use_policy_reweighting: 是否启用 opponent policy delayed reweighting
         use_policy_reweighting: whether to enable delayed opponent policy reweighting.
+        use_policy_reweighting_new: whether to enable the new policy reweighting mode.
         policy_reweighting_reward_scale: policy reweighting scalar multiplier.
         policy_reweighting_epsilon: numerical-stability term for policy reweighting.
         policy_reweighting_target: delayed reweighting target, either rtg or action.
@@ -120,7 +126,12 @@ class CtrlSimOpponentAdapter:
         self.sparse_inference_action_repeat = bool(sparse_inference_action_repeat)
         self.use_ego_ctrlsim_kl_loss = bool(use_ego_ctrlsim_kl_loss)
         self.use_enhanced_regret = bool(use_enhanced_regret)
-        self.use_policy_reweighting = bool(use_policy_reweighting)
+        self.policy_reweighting_mode = resolve_policy_reweighting_mode(
+            use_policy_reweighting=bool(use_policy_reweighting),
+            use_policy_reweighting_new=bool(use_policy_reweighting_new),
+        )
+        self.use_policy_reweighting = self.policy_reweighting_mode == "legacy"
+        self.use_policy_reweighting_new = self.policy_reweighting_mode == "new"
         self.policy_reweighting_target = str(policy_reweighting_target)
         self.policy_reweighting_config = AdversarialRTGConfig(
             enabled=self.use_policy_reweighting,
@@ -180,6 +191,7 @@ class CtrlSimOpponentAdapter:
         self._pending_sparse_actions: Dict[int, Tuple[float, float]] = {}
         self._ego_action_scale: float = 1.0
         self._ego_reweight_tilt: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self._policy_reweighting_state = PolicyReweightingState()
         # Whether to move non-controlled vehicles out of the scene when GT is missing.
         self.allow_set_position_for_noncontrolled: bool = False
         # 缓存 vehicles 列表，供 apply_predictions warm-up 使用

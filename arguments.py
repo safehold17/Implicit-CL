@@ -1373,6 +1373,14 @@ parser.add_argument(
     help="Whether to enable delayed opponent policy reweighting.",
 )
 parser.add_argument(
+    "--use_policy_reweighting_new",
+    type=str2bool,
+    nargs="?",
+    const=True,
+    default=False,
+    help="Whether to enable the new delayed opponent policy reweighting mode.",
+)
+parser.add_argument(
     "--policy_reweighting_reward_scale",
     type=float,
     default=1.0,

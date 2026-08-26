@@ -19,6 +19,7 @@ from batch_inference.batch_ipc.prepared import (
     get_prepared_focal_context_veh_ids,
     get_prepared_focal_data_model_indices,
     get_prepared_focal_data_veh_ids,
+    get_prepared_focal_id,
     get_prepared_focal_motion_data,
     get_prepared_focal_predict_rtgs,
 )
@@ -259,6 +260,69 @@ def _build_action_effective_scale_metadata(
         1.0,
         float(delayed_scale),
     ).astype(np.float32, copy=False)
+
+
+def map_new_ego_action_scales_to_opponent_rows(
+    *,
+    jobs: List[Dict[str, Any]],
+    owner_scales_by_job: List[float],
+    decode_meta: Dict[str, np.ndarray],
+) -> Tuple[List[float], np.ndarray | None]:
+    """Map valid owner scales to same-env opponent jobs and non-ego rows."""
+    scales_by_env: Dict[int, float] = {}
+    for job_idx, job in enumerate(jobs):
+        prepared = job["prepared"]
+        focal_idx = int(job["focal_idx"])
+        owner_focal_id = prepared.get("ego_context_owner_focal_id")
+        if (
+            bool(prepared["target_rtg_valid"])
+            and int(prepared["query_gap"]) > 0
+            and any(float(value) != 0.0 for value in prepared["ego_reweight_tilt"])
+            and owner_focal_id is not None
+            and get_prepared_focal_id(prepared, focal_idx) == int(owner_focal_id)
+            and prepared.get("ego_id") is not None
+        ):
+            env_idx = int(job["env_idx"])
+            if env_idx in scales_by_env:
+                raise ValueError(
+                    "multiple valid owner scale sources for "
+                    f"env_idx={env_idx}"
+                )
+            scales_by_env[env_idx] = float(owner_scales_by_job[job_idx])
+
+    scales_by_job = [1.0] * len(jobs)
+    if not scales_by_env:
+        return scales_by_job, None
+
+    for job_idx, job in enumerate(jobs):
+        env_idx = int(job["env_idx"])
+        if (
+            str(job.get("job_type", "opponent")) == "opponent"
+            and env_idx in scales_by_env
+        ):
+            scales_by_job[job_idx] = scales_by_env[env_idx]
+
+    row_job_indices = np.asarray(decode_meta["job_idx"], dtype=np.int64)
+    row_vehicle_ids = np.asarray(decode_meta["veh_id"], dtype=np.int64)
+    scales_by_row = np.asarray(
+        decode_meta["effective_scale"],
+        dtype=np.float32,
+    ).copy()
+    for row_idx, job_idx in enumerate(row_job_indices):
+        job = jobs[int(job_idx)]
+        env_scale = scales_by_env.get(int(job["env_idx"]))
+        if env_scale is None:
+            continue
+        if str(job.get("job_type", "opponent")) != "opponent":
+            scales_by_row[row_idx] = 1.0
+            continue
+        ego_id = job["prepared"].get("ego_id")
+        if ego_id is None or int(row_vehicle_ids[row_idx]) != int(ego_id):
+            scales_by_row[row_idx] = env_scale
+        else:
+            scales_by_row[row_idx] = 1.0
+
+    return scales_by_job, scales_by_row
 
 
 def build_decode_metadata(

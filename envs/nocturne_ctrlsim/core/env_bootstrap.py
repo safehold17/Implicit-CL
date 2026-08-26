@@ -45,6 +45,8 @@ def _init_config_state(
     env.use_ego_ctrlsim_kl_loss = config.use_ego_ctrlsim_kl_loss
     env.use_enhanced_regret = config.use_enhanced_regret
     env.use_policy_reweighting = config.use_policy_reweighting
+    env.use_policy_reweighting_new = config.use_policy_reweighting_new
+    env.policy_reweighting_mode = config.policy_reweighting_mode
     env.policy_reweighting_target = config.policy_reweighting_target
     env.policy_reweighting_config = config.policy_reweighting_config
     env.action_repeat_frequency = config.action_repeat_frequency
@@ -122,6 +124,7 @@ def _init_data_bridge_and_opponent(
         use_ego_ctrlsim_kl_loss=config.use_ego_ctrlsim_kl_loss,
         use_enhanced_regret=config.use_enhanced_regret,
         use_policy_reweighting=config.use_policy_reweighting,
+        use_policy_reweighting_new=config.use_policy_reweighting_new,
         policy_reweighting_reward_scale=env.policy_reweighting_config.reward_scale,
         policy_reweighting_epsilon=env.policy_reweighting_config.epsilon,
         policy_reweighting_target=config.policy_reweighting_target,

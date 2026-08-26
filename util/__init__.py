@@ -285,6 +285,9 @@ def _make_env(args):
             'use_policy_reweighting': getattr(
                 args, 'use_policy_reweighting', False
             ),
+            'use_policy_reweighting_new': getattr(
+                args, 'use_policy_reweighting_new', False
+            ),
             'policy_reweighting_reward_scale': getattr(
                 args, 'policy_reweighting_reward_scale', 1.0
             ),

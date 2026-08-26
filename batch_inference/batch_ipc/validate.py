@@ -60,7 +60,40 @@ def validate_prepared_payload(prepared: Dict[str, Any]) -> None:
 
     Validate the structural integrity of the flat prepared payload.
     """
-    require_keys(prepared, ("status", "step_t", "token_index", "dead_ids"), "prepared")
+    require_keys(
+        prepared,
+        (
+            "status",
+            "step_t",
+            "token_index",
+            "dead_ids",
+            "target_rtg",
+            "target_rtg_valid",
+            "query_gap",
+        ),
+        "prepared",
+    )
+    target_rtg = np.asarray(prepared["target_rtg"])
+    if target_rtg.shape != (3,):
+        raise ValueError("prepared['target_rtg'] must have shape [3].")
+    if target_rtg.dtype != np.float32:
+        raise ValueError("prepared['target_rtg'] must have dtype float32.")
+    target_rtg_valid = prepared["target_rtg_valid"]
+    if not isinstance(target_rtg_valid, (bool, np.bool_)):
+        raise ValueError("prepared['target_rtg_valid'] must be a bool.")
+    query_gap = prepared["query_gap"]
+    if isinstance(query_gap, (bool, np.bool_)) or not isinstance(
+        query_gap,
+        (int, np.integer),
+    ):
+        raise ValueError("prepared['query_gap'] must be an integer.")
+    if int(query_gap) < 0:
+        raise ValueError("prepared['query_gap'] must be non-negative.")
+    if not bool(target_rtg_valid):
+        if np.any(target_rtg != 0):
+            raise ValueError("prepared invalid target_rtg metadata must use zeros.")
+        if int(query_gap) != 0:
+            raise ValueError("prepared invalid target_rtg metadata must use query_gap=0.")
     status = require_valid_status(prepared["status"], "prepared")
     if status == "skip":
         return

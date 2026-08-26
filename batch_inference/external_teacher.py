@@ -25,6 +25,7 @@ from ctrlsim_adapter.policy_reweighting_helpers import (
     AdversarialRTGRunningStats,
     compute_scale_from_error,
     recover_current_ego_rtgs,
+    resolve_policy_reweighting_mode,
 )
 
 from .batch_decoder import rtg as rtg_impl
@@ -34,7 +35,9 @@ from .batch_decoder.forward_batch import (
 from .batch_decoder.forward_batch import forward_job_batch_impl
 from .batch_decoder.rtg import (
     _SIDE_CHANNEL_RTG_STAGE_TAG,
+    _UNTILTED_RTG_STAGE_TAG,
     sample_tilted_rtg_side_channel_batched_impl,
+    sample_untilted_rtg_side_channel_batched_impl,
 )
 from .batch_ipc import pack_model_outputs, release_prepared_payload, unpack_prepared
 from .batch_ipc.prepared import (
@@ -69,13 +72,20 @@ def build_external_teacher_kwargs(
         "policy_reweighting_config",
         None,
     )
+    policy_reweighting_mode = resolve_policy_reweighting_mode(
+        use_policy_reweighting=bool(
+            _config_get(config_source, "use_policy_reweighting", False)
+        ),
+        use_policy_reweighting_new=bool(
+            _config_get(config_source, "use_policy_reweighting_new", False)
+        ),
+    )
     return {
         "checkpoint_path": checkpoint_path,
         "device": device,
         "inference_precision": inference_precision,
-        "use_policy_reweighting": bool(
-            _config_get(config_source, "use_policy_reweighting", False)
-        ),
+        "use_policy_reweighting": policy_reweighting_mode == "legacy",
+        "use_policy_reweighting_new": policy_reweighting_mode == "new",
         "policy_reweighting_target": str(
             _config_get(config_source, "policy_reweighting_target", "rtg")
         ),
@@ -109,6 +119,7 @@ class ExternalTeacher:
         base_seed: int = 1,
         inference_precision: str = "fp32",
         use_policy_reweighting: bool = False,
+        use_policy_reweighting_new: bool = False,
         policy_reweighting_target: str = "rtg",
         policy_reweighting_reward_scale: float = 1.0,
         policy_reweighting_epsilon: float = 1e-6,
@@ -116,9 +127,15 @@ class ExternalTeacher:
         self.device = device
         self.base_seed = base_seed
         self.inference_precision = inference_precision
+        self.policy_reweighting_mode = resolve_policy_reweighting_mode(
+            use_policy_reweighting=bool(use_policy_reweighting),
+            use_policy_reweighting_new=bool(use_policy_reweighting_new),
+        )
+        self.use_policy_reweighting = self.policy_reweighting_mode == "legacy"
+        self.use_policy_reweighting_new = self.policy_reweighting_mode == "new"
         self.policy_reweighting_target = str(policy_reweighting_target)
         self.policy_reweighting_config = AdversarialRTGConfig(
-            enabled=bool(use_policy_reweighting),
+            enabled=self.use_policy_reweighting,
             reward_scale=float(policy_reweighting_reward_scale),
             epsilon=float(policy_reweighting_epsilon),
         )
@@ -276,10 +293,19 @@ class ExternalTeacher:
     def _decode_prepared_batch(
         self, per_env_prepared: List[Optional[Dict[str, Any]]]
     ) -> List[Optional[Dict[str, Any]]]:
-        return [
-            None if prepared is None else unpack_prepared(prepared)
-            for prepared in per_env_prepared
-        ]
+        decoded_prepared: List[Optional[Dict[str, Any]]] = []
+        decode_complete = False
+        try:
+            for prepared in per_env_prepared:
+                decoded_prepared.append(
+                    None if prepared is None else unpack_prepared(prepared)
+                )
+            decode_complete = True
+            return decoded_prepared
+        finally:
+            if not decode_complete:
+                for prepared in decoded_prepared:
+                    release_prepared_payload(prepared)
 
     def _pack_outputs(
         self, outputs: List[Optional[Dict[str, Any]]]
@@ -406,6 +432,20 @@ class ExternalTeacher:
             error_count=float(rms.count),
         )
 
+    def _get_rtg_component_widths(self) -> np.ndarray:
+        """Return checkpoint RTG ranges used by normalized discrepancy."""
+        return np.asarray(
+            [
+                float(getattr(self, "max_rtg_pos", 10.0))
+                - float(getattr(self, "min_rtg_pos", 0.0)),
+                float(getattr(self, "max_rtg_veh", 90.0))
+                - float(getattr(self, "min_rtg_veh", -10.0)),
+                float(getattr(self, "max_rtg_road", 90.0))
+                - float(getattr(self, "min_rtg_road", -10.0)),
+            ],
+            dtype=np.float32,
+        )
+
     def _update_policy_reweighting_error_stats(self, error_value: float) -> None:
         """Update the shared RTG-error running statistics with one new sample."""
         if not self.policy_reweighting_config.enabled:
@@ -443,6 +483,29 @@ class ExternalTeacher:
         stats["raw_rtg_error_sum"] += float(raw_rtg_error)
         stats["normalized_rtg_error_sum"] += float(normalized_rtg_error)
 
+    def _accumulate_new_policy_reweighting_update_sample(
+        self,
+        *,
+        effective_scale: float,
+        raw_rtg_error: float,
+        normalized_rtg_error: float,
+        component_errors: np.ndarray,
+        query_gap: int,
+    ) -> None:
+        """Accumulate one new-policy sample for later logging."""
+        self._accumulate_policy_reweighting_update_sample(
+            effective_scale=effective_scale,
+            raw_rtg_error=raw_rtg_error,
+            normalized_rtg_error=normalized_rtg_error,
+        )
+        stats = self._policy_reweighting_update_accumulator
+        stats["component_error_sums"] += np.asarray(
+            component_errors,
+            dtype=np.float64,
+        )
+        stats["query_gap_sum"] += float(query_gap)
+        stats["new_sample_count"] += 1.0
+
     def _reset_policy_reweighting_update_accumulator(self) -> None:
         """Reset the update-level policy reweighting accumulator to zeros."""
         self._policy_reweighting_update_accumulator = {
@@ -450,6 +513,9 @@ class ExternalTeacher:
             "effective_scale_sum": 0.0,
             "raw_rtg_error_sum": 0.0,
             "normalized_rtg_error_sum": 0.0,
+            "component_error_sums": np.zeros(3, dtype=np.float64),
+            "query_gap_sum": 0.0,
+            "new_sample_count": 0.0,
         }
 
     def consume_policy_reweighting_update_stats(self) -> Dict[str, float]:
@@ -467,8 +533,145 @@ class ExternalTeacher:
                 stats["normalized_rtg_error_sum"]
             ) / count,
         }
+        new_sample_count = float(stats["new_sample_count"])
+        if new_sample_count > 0.0:
+            component_error_means = stats["component_error_sums"] / new_sample_count
+            result.update(
+                {
+                    "policy_reweighting_new_goal_squared_error": float(
+                        component_error_means[0]
+                    ),
+                    "policy_reweighting_new_veh_squared_error": float(
+                        component_error_means[1]
+                    ),
+                    "policy_reweighting_new_road_squared_error": float(
+                        component_error_means[2]
+                    ),
+                    "policy_reweighting_new_query_gap": float(
+                        stats["query_gap_sum"]
+                    )
+                    / new_sample_count,
+                }
+            )
         self._reset_policy_reweighting_update_accumulator()
         return result
+
+    def _compute_new_ego_action_scales_by_job(
+        self,
+        *,
+        jobs: List[Dict[str, Any]],
+        rtg_logits: torch.Tensor,
+        decode_meta: Dict[str, np.ndarray],
+    ) -> List[float]:
+        """Compute new-policy scales from raw ego RTG samples and v5 targets."""
+        scales = [1.0] * len(jobs)
+        if not jobs or not self.use_policy_reweighting_new:
+            return scales
+
+        row_by_job_and_vehicle = _build_last_decode_row_by_job_and_vehicle(decode_meta)
+        idx_in_model = np.asarray(decode_meta["idx_in_model"], dtype=np.int64)
+        token_index = np.asarray(decode_meta["token_index"], dtype=np.int64)
+        sampling_seed = np.asarray(decode_meta["sampling_seed"], dtype=np.uint64)
+        step_t = np.asarray(decode_meta["step_t"], dtype=np.int64)
+
+        valid_job_indices: List[int] = []
+        valid_row_indices: List[int] = []
+        valid_ego_ids: List[int] = []
+        target_rtgs: List[np.ndarray] = []
+        query_gaps: List[int] = []
+
+        for job_idx, job in enumerate(jobs):
+            prepared = job["prepared"]
+            if not prepared["target_rtg_valid"] or int(prepared["query_gap"]) <= 0:
+                continue
+            if not any(float(value) != 0.0 for value in prepared["ego_reweight_tilt"]):
+                continue
+
+            focal_idx = int(job["focal_idx"])
+            owner_focal_id = prepared.get("ego_context_owner_focal_id")
+            if owner_focal_id is None or get_prepared_focal_id(
+                prepared,
+                focal_idx,
+            ) != int(owner_focal_id):
+                continue
+
+            ego_id = prepared.get("ego_id")
+            if ego_id is None:
+                continue
+            row_idx = row_by_job_and_vehicle.get((int(job_idx), int(ego_id)))
+            if row_idx is None:
+                continue
+
+            valid_job_indices.append(job_idx)
+            valid_row_indices.append(row_idx)
+            valid_ego_ids.append(int(ego_id))
+            target_rtgs.append(np.asarray(prepared["target_rtg"], dtype=np.float32))
+            query_gaps.append(int(prepared["query_gap"]))
+
+        if not valid_row_indices:
+            return scales
+
+        valid_row_index_arr = np.asarray(valid_row_indices, dtype=np.int64)
+        valid_job_index_t = torch.as_tensor(
+            valid_job_indices,
+            dtype=torch.long,
+            device=rtg_logits.device,
+        )
+        valid_idx_in_model_t = torch.as_tensor(
+            idx_in_model[valid_row_index_arr],
+            dtype=torch.long,
+            device=rtg_logits.device,
+        )
+        valid_token_index_t = torch.as_tensor(
+            token_index[valid_row_index_arr],
+            dtype=torch.long,
+            device=rtg_logits.device,
+        )
+        raw_ego_logits = rtg_logits[
+            valid_job_index_t,
+            valid_idx_in_model_t,
+            valid_token_index_t,
+        ]
+        sampled_rtgs = sample_untilted_rtg_side_channel_batched_impl(
+            teacher=self,
+            flat_rtg_logits=raw_ego_logits,
+            sampling_seed=sampling_seed[valid_row_index_arr],
+            step_t=step_t[valid_row_index_arr],
+            veh_id=np.asarray(valid_ego_ids, dtype=np.int64),
+            stage_tag=_UNTILTED_RTG_STAGE_TAG,
+        )
+        component_errors = np.square(
+            (
+                sampled_rtgs - np.asarray(target_rtgs, dtype=np.float32)
+            )
+            / self._get_rtg_component_widths()
+        ).astype(np.float32, copy=False)
+        error_values = np.sum(component_errors, axis=1, dtype=np.float32)
+
+        for idx, job_idx in enumerate(valid_job_indices):
+            running_stats = self._get_policy_reweighting_running_stats()
+            error_value = float(error_values[idx])
+            normalized_error = self._normalize_policy_reweighting_error(
+                error_value=error_value,
+                running_stats=running_stats,
+            )
+            scales[job_idx] = compute_scale_from_error(
+                error_value=error_value,
+                config=self.policy_reweighting_config,
+                running_stats=running_stats,
+            )
+            self._accumulate_new_policy_reweighting_update_sample(
+                effective_scale=scales[job_idx],
+                raw_rtg_error=error_value,
+                normalized_rtg_error=normalized_error,
+                component_errors=component_errors[idx],
+                query_gap=query_gaps[idx],
+            )
+            self._get_policy_reweighting_error_rms().update(
+                np.asarray([error_value], dtype=np.float64)
+            )
+
+        return scales
 
     def _compute_ego_action_scales_by_job(
         self,
@@ -677,19 +880,35 @@ class ExternalTeacher:
         List[Optional[Dict[str, int]]],
     ]:
         with torch.inference_mode():
-            decoded_opponent = self._decode_prepared_batch(opponent_prepared_batch)
-            decoded_ego = self._decode_prepared_batch(ego_prepared_batch)
-            if joint_side_channel_flags is None:
-                joint_side_channel_flags_list = [False] * len(decoded_opponent)
-            else:
-                if len(joint_side_channel_flags) != len(decoded_opponent):
-                    raise ValueError(
-                        "joint_side_channel_flags length must match "
-                        "opponent_prepared_batch length."
-                    )
-                joint_side_channel_flags_list = [
-                    bool(flag) for flag in joint_side_channel_flags
-                ]
+            decoded_opponent: List[Optional[Dict[str, Any]]] = []
+            decoded_ego: List[Optional[Dict[str, Any]]] = []
+            try:
+                decoded_opponent = self._decode_prepared_batch(
+                    opponent_prepared_batch
+                )
+                decoded_ego = self._decode_prepared_batch(ego_prepared_batch)
+            except Exception:
+                for prepared in decoded_opponent:
+                    release_prepared_payload(prepared)
+                raise
+            try:
+                if joint_side_channel_flags is None:
+                    joint_side_channel_flags_list = [False] * len(decoded_opponent)
+                else:
+                    if len(joint_side_channel_flags) != len(decoded_opponent):
+                        raise ValueError(
+                            "joint_side_channel_flags length must match "
+                            "opponent_prepared_batch length."
+                        )
+                    joint_side_channel_flags_list = [
+                        bool(flag) for flag in joint_side_channel_flags
+                    ]
+            except Exception:
+                for prepared in decoded_opponent:
+                    release_prepared_payload(prepared)
+                for prepared in decoded_ego:
+                    release_prepared_payload(prepared)
+                raise
             try:
                 opponent_results: List[Optional[Dict[str, Any]]] = [None] * len(
                     decoded_opponent

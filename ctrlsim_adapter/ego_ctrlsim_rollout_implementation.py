@@ -15,6 +15,7 @@ def needs_ego_ctrlsim_dual_forward(args: Any) -> bool:
     return bool(
         getattr(args, "use_ego_ctrlsim_kl_loss", False)
         or getattr(args, "use_policy_reweighting", False)
+        or getattr(args, "use_policy_reweighting_new", False)
         or getattr(args, "use_enhanced_regret", False)
     )
 

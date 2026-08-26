@@ -256,8 +256,29 @@ def _build_prepared_payload(
                 "token_index": token_index,
                 "dead_ids": [],
                 "sampling_seed": sampling_seed,
+                "target_rtg": np.zeros(3, dtype=np.float32),
+                "target_rtg_valid": False,
+                "query_gap": 0,
             }
         )
+
+    target_rtg = np.zeros(3, dtype=np.float32)
+    target_rtg_valid = False
+    query_gap = 0
+    focal_ids = np.asarray(focal_layout["focal_ids"], dtype=np.int64)
+    query_contains_ego = ego_id is not None and np.any(focal_ids == int(ego_id))
+    if (
+        bool(getattr(adapter, "use_policy_reweighting_new", False))
+        and any(ego_reweight_tilt)
+        and query_contains_ego
+        and adapter._policy_reweighting_state.has_pending
+    ):
+        target_rtg = np.asarray(
+            adapter._policy_reweighting_state.target_rtg,
+            dtype=np.float32,
+        ).reshape(3).copy()
+        target_rtg_valid = True
+        query_gap = int(adapter._policy_reweighting_state.query_gap)
 
     prepared_dict = {
         "status": "ok",
@@ -271,6 +292,9 @@ def _build_prepared_payload(
         ),
         "ego_reweight_tilt": tuple(int(v) for v in ego_reweight_tilt),
         "delayed_ego_action_scale": float(delayed_ego_action_scale),
+        "target_rtg": target_rtg,
+        "target_rtg_valid": target_rtg_valid,
+        "query_gap": query_gap,
         "sampling": {
             "action_temperature": adapter.action_temperature,
             "nucleus_sampling": adapter.nucleus_sampling,
@@ -341,10 +365,18 @@ def prepare_step_pack(
         )
     )
     use_policy_reweighting = bool(getattr(adapter, "use_policy_reweighting", False))
+    use_policy_reweighting_new = bool(
+        getattr(adapter, "use_policy_reweighting_new", False)
+    )
+    uses_policy_reweighting = use_policy_reweighting or use_policy_reweighting_new
     ego_prepare_requested = (
         ego_needs_kl_prepare
         or ego_needs_rtg_prepare
-        or (ego_policy_ready and opponent_needs_prepare and use_policy_reweighting)
+        or (
+            ego_policy_ready
+            and opponent_needs_prepare
+            and (use_policy_reweighting or use_policy_reweighting_new)
+        )
     )
     ego_needs_prepare = ego_prepare_requested
     if ego_prepare_requested:
@@ -396,7 +428,7 @@ def prepare_step_pack(
             else {}
         )
         joint_tilt_by_veh_id[int(ego_id)] = (
-            ego_reweight_tilt if use_policy_reweighting else (0, 0, 0)
+            ego_reweight_tilt if uses_policy_reweighting else (0, 0, 0)
         )
         opponent_prepared = _build_prepared_payload(
             adapter,
@@ -448,7 +480,7 @@ def prepare_step_pack(
     if ego_needs_prepare:
         ego_ctrlsim_tilt_by_veh_id = (
             {int(ego_id): ego_reweight_tilt}
-            if use_policy_reweighting
+            if uses_policy_reweighting
             else {}
         )
         ego_ctrlsim_prepared = _build_prepared_payload(

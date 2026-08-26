@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from ctrlsim_adapter.policy_reweighting_helpers import AdversarialRTGConfig
+from ctrlsim_adapter.policy_reweighting_helpers import (
+    AdversarialRTGConfig,
+    resolve_policy_reweighting_mode,
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,8 @@ class NocturneCtrlSimEnvConfig:
     use_ego_ctrlsim_kl_loss: bool
     use_enhanced_regret: bool
     use_policy_reweighting: bool
+    use_policy_reweighting_new: bool
+    policy_reweighting_mode: str
     policy_reweighting_target: str
     policy_reweighting_config: AdversarialRTGConfig
     inference_precision: str
@@ -162,12 +167,24 @@ def build_nocturne_ctrlsim_env_config(
             f"got {policy_reweighting_target}"
         )
 
-    use_policy_reweighting = bool(
-        kwargs.get("use_policy_reweighting", False)
+    policy_reweighting_mode = resolve_policy_reweighting_mode(
+        use_policy_reweighting=bool(
+            kwargs.get("use_policy_reweighting", False)
+        ),
+        use_policy_reweighting_new=bool(
+            kwargs.get("use_policy_reweighting_new", False)
+        ),
     )
+    use_policy_reweighting = policy_reweighting_mode == "legacy"
+    use_policy_reweighting_new = policy_reweighting_mode == "new"
     if use_policy_reweighting and tilting_mode != "none":
         raise ValueError(
             "use_policy_reweighting requires tilting_mode='none', "
+            f"got tilting_mode={tilting_mode}"
+        )
+    if use_policy_reweighting_new and tilting_mode != "none":
+        raise ValueError(
+            "use_policy_reweighting_new requires tilting_mode='none', "
             f"got tilting_mode={tilting_mode}"
         )
     policy_reweighting_config = AdversarialRTGConfig(
@@ -214,6 +231,8 @@ def build_nocturne_ctrlsim_env_config(
         use_ego_ctrlsim_kl_loss=bool(kwargs.get("use_ego_ctrlsim_kl_loss", False)),
         use_enhanced_regret=bool(kwargs.get("use_enhanced_regret", False)),
         use_policy_reweighting=use_policy_reweighting,
+        use_policy_reweighting_new=use_policy_reweighting_new,
+        policy_reweighting_mode=policy_reweighting_mode,
         policy_reweighting_target=policy_reweighting_target,
         policy_reweighting_config=policy_reweighting_config,
         inference_precision=str(kwargs.get("inference_precision", "fp32")),

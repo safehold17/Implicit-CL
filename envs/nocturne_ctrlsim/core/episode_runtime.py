@@ -202,7 +202,10 @@ def _resolve_episode_ego_reweight_tilt(
         setattr(level, "has_ego_reweight_tilt", has_tilt)
         env.current_level = level
 
-    if not getattr(env, "use_policy_reweighting", False):
+    if not (
+        getattr(env, "use_policy_reweighting", False)
+        or getattr(env, "use_policy_reweighting_new", False)
+    ):
         if has_stored_tilt or stored_tilt != (0, 0, 0):
             _write_level_tilt((0, 0, 0), False)
         return (0, 0, 0)
@@ -363,6 +366,7 @@ class NocturneCtrlSimRuntime:
             vehicles_to_control
             or getattr(env, "use_ego_ctrlsim_kl_loss", False)
             or getattr(env, "use_policy_reweighting", False)
+            or getattr(env, "use_policy_reweighting_new", False)
             or getattr(env, "use_enhanced_regret", False)
         )
         env.opponent._veh_id_to_preproc_idx = dict(env._veh_id_to_preproc_idx)
@@ -543,6 +547,7 @@ class NocturneCtrlSimRuntime:
             include_ego_ctrlsim_prepared=bool(
                 getattr(env, "use_ego_ctrlsim_kl_loss", False)
                 or getattr(env, "use_policy_reweighting", False)
+                or getattr(env, "use_policy_reweighting_new", False)
                 or getattr(env, "use_enhanced_regret", False)
             ),
         )

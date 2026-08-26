@@ -214,6 +214,16 @@ def update_vehicle_data_dict(
         t=t,
         vehicles_by_id=vehicles_by_id,
     )
+    pending_ego_reward_count = None
+    if (
+        bool(getattr(adapter, "use_policy_reweighting_new", False))
+        and adapter._policy_reweighting_state.has_pending
+        and ego_id in vehicles_by_id
+        and ego_id in vehicle_data_dict
+    ):
+        if ego_id not in update_vehicle_ids:
+            update_vehicle_ids = [*update_vehicle_ids, ego_id]
+        pending_ego_reward_count = len(vehicle_data_dict[ego_id]["dense_reward"])
     reward_values = _compute_rewards_batched(
         rew_cfg=rew_cfg,
         vehicles_by_id=vehicles_by_id,
@@ -283,5 +293,12 @@ def update_vehicle_data_dict(
     )
 
     if adapter._policy is not None and adapter._policy.real_time_rewards:
-        return adapter._compute_dense_reward(t, vehicle_data_dict)
+        vehicle_data_dict = adapter._compute_dense_reward(t, vehicle_data_dict)
+        if pending_ego_reward_count is not None:
+            ego_dense_rewards = vehicle_data_dict[ego_id]["dense_reward"]
+            if len(ego_dense_rewards) == pending_ego_reward_count + 1:
+                adapter._policy_reweighting_state.accumulate_realized_reward(
+                    ego_dense_rewards[-1]
+                )
+        return vehicle_data_dict
     return adapter._compute_nearest_dist_all(t, vehicle_data_dict)
